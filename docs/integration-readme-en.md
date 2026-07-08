@@ -7,6 +7,16 @@
 
 Home Assistant integration for CUKTECH chargers via MQTT, providing real-time monitoring, port control, and automation support.
 
+## Preview
+
+### Integration Page
+
+![HA Integration](ha_integration.png)
+
+### Lovelace Dashboard
+
+![HA Lovelace](ha_lovelace.png)
+
 ## Prerequisites
 
 [BLE Server](https://github.com/kairui1108/cuktech-ble-server) must be deployed first.

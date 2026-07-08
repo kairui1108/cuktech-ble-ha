@@ -7,6 +7,16 @@
 
 通过 MQTT 将 CUKTECH 充电器数据接入 Home Assistant，提供实时监控、端口控制和自动化支持。
 
+## 效果预览
+
+### 集成页面
+
+![HA Integration](ha_integration.png)
+
+### Lovelace 仪表盘
+
+![HA Lovelace](ha_lovelace.png)
+
 ## 前置条件
 
 需要先部署 [BLE Server](https://github.com/kairui1108/cuktech-ble-server)

@@ -1,0 +1,222 @@
+  - title: 充电器
+    type: sections
+    max_columns: 4
+    icon: mdi:flash
+    path: charger
+    sections:
+      - type: grid
+        cards:
+          - type: iframe
+            url: http://192.168.1.63:8199/static/device_info.html
+            aspect_ratio: '4:3'
+            grid_options:
+              columns: 12
+              rows: 8.6
+            hide_background: true
+        visibility:
+          - condition: state
+            entity: sensor.cuktech_ble_status
+            state_not: unavailable
+      - type: grid
+        cards:
+          - type: sensor
+            entity: sensor.cuktech_charger_total_power
+            graph: line
+            detail: 2
+            hours_to_show: 6
+            name: 总功率
+            grid_options:
+              columns: 12
+              rows: 2
+          - type: custom:mushroom-template-card
+            primary: 'C1: {{ states(''sensor.cuktech_charger_c1_power'') }}W'
+            secondary: >-
+              {{ states('sensor.cuktech_charger_c1_voltage') }}V · {{
+              states('sensor.cuktech_charger_c1_current') }}A · {{
+              states('sensor.cuktech_charger_c1_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.cuktech_charger_c1_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.cuktech_charger_c1_power
+          - type: custom:mushroom-template-card
+            primary: 'C2: {{ states(''sensor.cuktech_charger_c2_power'') }}W'
+            secondary: >-
+              {{ states('sensor.cuktech_charger_c2_voltage') }}V · {{
+              states('sensor.cuktech_charger_c2_current') }}A· {{
+              states('sensor.cuktech_charger_c2_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.cuktech_charger_c2_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.cuktech_charger_c2_power
+          - type: custom:mushroom-template-card
+            primary: 'C3: {{ states(''sensor.cuktech_charger_c3_power'') }}W'
+            secondary: >-
+              {{ states('sensor.cuktech_charger_c3_voltage') }}V · {{
+              states('sensor.cuktech_charger_c3_current') }}A· {{
+              states('sensor.cuktech_charger_c3_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.cuktech_charger_c3_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.cuktech_charger_c3_power
+          - type: custom:mushroom-template-card
+            primary: 'A: {{ states(''sensor.cuktech_charger_a_power'') }}W'
+            secondary: >-
+              {{ states('sensor.cuktech_charger_a_voltage') }}V · {{
+              states('sensor.cuktech_charger_a_current') }}A· {{
+              states('sensor.cuktech_charger_a_protocol') }}
+            icon: mdi:usb-port
+            icon_color: >-
+              {% if is_state('binary_sensor.cuktech_charger_a_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.cuktech_charger_a_power
+          - type: custom:mushroom-entity-card
+            entity: switch.cuktech_charger_c1_duan_kou
+            name: C1
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.cuktech_charger_c2_duan_kou
+            name: C2
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.cuktech_charger_c3_duan_kou
+            name: C3
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.cuktech_charger_usb_a_duan_kou
+            name: USB-A
+            icon: mdi:usb-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-template-card
+            primary: BLE 连接
+            secondary: null
+            icon: mdi:bluetooth
+            icon_color: blue
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.cuktech_toggle
+          - type: custom:mushroom-template-card
+            primary: 重启服务
+            secondary: null
+            icon: mdi:restart
+            icon_color: amber
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.cuktech_restart
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.cuktech_charger_total_power'') }} W'
+            secondary: 总功率
+            icon: mdi:flash
+            icon_color: >-
+              {% set p = states('sensor.cuktech_charger_total_power') | float(0)
+              %} {% if p > 100 %}red{% elif p > 50 %}orange{% else %}green{%
+              endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.cuktech_charger_total_power
+            grid_options:
+              columns: 6
+              rows: 1
+          - type: custom:mushroom-entity-card
+            entity: switch.cuktech_charger_usb_achang_tong_dian
+            name: USB-A常通电
+            icon: mdi:usb-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-number-card
+            entity: number.cuktech_charger_c1_dao_ji_shi
+            name: C1
+            icon: mdi:timer-outline
+            layout: horizontal
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: custom:mushroom-number-card
+            entity: number.cuktech_charger_c2_dao_ji_shi
+            name: C2
+            icon: mdi:timer-outline
+            layout: horizontal
+          - type: custom:mushroom-number-card
+            entity: number.cuktech_charger_c3_dao_ji_shi
+            name: C3
+            icon: mdi:timer-outline
+            layout: horizontal
+          - type: custom:mushroom-number-card
+            entity: number.cuktech_charger_usb_a_dao_ji_shi
+            name: USB-A
+            icon: mdi:timer-outline
+            layout: horizontal
+          - type: custom:mushroom-select-card
+            entity: select.cuktech_charger_chang_jing_mo_shi
+            name: 场景模式
+            icon: mdi:view-dashboard
+          - type: custom:mushroom-select-card
+            entity: select.cuktech_charger_xi_ping_shi_jian
+            name: 息屏时间
+            icon: mdi:monitor-off
+          - type: custom:mushroom-select-card
+            entity: select.cuktech_charger_yu_yan
+            name: 语言
+            icon: mdi:translate
+          - type: custom:mushroom-entity-card
+            entity: switch.cuktech_charger_kong_xian_xi_ping
+            name: 空闲息屏
+            icon: mdi:monitor-off
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.cuktech_charger_ping_mu_fang_xiang_suo
+            name: 屏幕方向锁
+            icon: mdi:screen-rotation-lock
+            tap_action:
+              action: toggle
+        column_span: 2
+      - type: grid
+        cards:
+          - type: iframe
+            url: http://192.168.1.63:8199/static/countdown.html
+            aspect_ratio: '4:3'
+            grid_options:
+              columns: full
+              rows: 6.5
+            hide_background: true
+      - type: grid
+        cards:
+          - type: iframe
+            url: http://192.168.1.63:8199/static/power_chart.html
+            aspect_ratio: '2:1'
+            grid_options:
+              columns: full
+              rows: 6
+            hide_background: true
+        column_span: 2
+      - type: grid
+        cards:
+          - type: iframe
+            url: http://192.168.1.63:8199/static/port_monitor.html
+            aspect_ratio: '16:9'
+            grid_options:
+              columns: full
+              rows: 6
+            hide_background: true
+        column_span: 2
+      - type: grid
+        cards: []
+        column_span: 2

@@ -8,6 +8,16 @@
 
 通过 BLE（低功耗蓝牙）将 CUKTECH 10 GaN Charger Ultra 充电器接入 Home Assistant，实现实时功率监控、端口控制和自动化。
 
+## 效果预览
+
+### 集成页面
+
+![HA Integration](docs/ha_integration.png)
+
+### Lovelace 仪表盘
+
+![HA Lovelace](docs/ha_lovelace.png)
+
 ## 功能特性
 
 - **实时功率监控**：通过 MQTT 推送电压、电流、功率数据
