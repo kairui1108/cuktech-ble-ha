@@ -1,0 +1,10 @@
+/var/log/cuktech-ble-server.log {
+    daily
+    rotate 3
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su ruikai ruikai
+}

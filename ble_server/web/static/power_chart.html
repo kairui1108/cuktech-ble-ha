@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { 
+            height: 100%;
+            overflow: hidden;
+        }
+        :root {
+            --bg: #1c1c1c; --card-bg: #252525; --card-border: #3b3b3b;
+            --text: #e1e1e1; --text-dim: #959595;
+            --accent: #03a9f4; --accent-rgb: 3, 169, 244;
+            --success: #389e3d; --success-rgb: 56, 158, 61;
+            --warning: #ffa42b; --warning-rgb: 255, 164, 43;
+            --danger: #db4437; --danger-rgb: 219, 68, 55;
+            --border-radius: 8px;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif; 
+            background: var(--bg); 
+            color: var(--text); 
+            padding: 16px;
+        }
+        .card { 
+            background: var(--card-bg); 
+            border: 1px solid var(--card-border); 
+            border-radius: var(--border-radius); 
+            padding: 20px; 
+            height: calc(100% - 32px);
+            display: flex;
+            flex-direction: column;
+        }
+        .card-title { 
+            font-size: 12px; 
+            font-weight: 600; 
+            color: var(--text-dim); 
+            text-transform: uppercase; 
+            letter-spacing: 1px; 
+            margin-bottom: 16px; 
+            display: flex; 
+            align-items: center; 
+            gap: 8px; 
+        }
+        .card-title::before { 
+            content: ''; 
+            width: 3px; 
+            height: 14px; 
+            background: var(--accent); 
+            border-radius: 2px; 
+        }
+        .chart-container { 
+            position: relative; 
+            flex: 1;
+            min-height: 0;
+        }
+        .chart-container canvas {
+            width: 100% !important;
+            height: 100% !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="card-title">功率曲线</div>
+        <div class="chart-container"><canvas id="powerChart"></canvas></div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        const MAX_POINTS = 60;
+        let powerChart = null;
+
+        function initChart() {
+            const ctx = document.getElementById('powerChart').getContext('2d');
+            powerChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { label: 'C1', data: [], borderColor: '#03a9f4', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: false },
+                        { label: 'C2', data: [], borderColor: '#7c4dff', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: false },
+                        { label: 'C3', data: [], borderColor: '#389e3d', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: false },
+                        { label: 'A', data: [], borderColor: '#ffa42b', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: false },
+                        { label: 'Total', data: [], borderColor: '#ffffff', borderWidth: 2.5, tension: 0.3, pointRadius: 0, fill: false, borderDash: [5, 3] },
+                    ]
+                },
+                options: { 
+                    responsive: true, 
+                    maintainAspectRatio: false, 
+                    animation: { duration: 0 }, 
+                    interaction: { intersect: false, mode: 'index' },
+                    plugins: { 
+                        legend: { 
+                            display: true, 
+                            position: 'top', 
+                            labels: { color: '#959595', font: { size: 11 }, boxWidth: 12, padding: 12 } 
+                        } 
+                    },
+                    scales: { 
+                        x: { 
+                            display: true, 
+                            grid: { color: 'rgba(255,255,255,0.04)' }, 
+                            ticks: { color: '#666', maxTicksLimit: 8, font: { size: 10 } } 
+                        }, 
+                        y: { 
+                            display: true, 
+                            grid: { color: 'rgba(255,255,255,0.04)' }, 
+                            ticks: { color: '#666', font: { size: 10 } }, 
+                            beginAtZero: true 
+                        } 
+                    }
+                }
+            });
+        }
+
+        function updateChart(ports) {
+            if (!powerChart) return;
+            const now = new Date();
+            const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0') + ':' + now.getSeconds().toString().padStart(2, '0');
+            powerChart.data.labels.push(timeStr);
+            if (powerChart.data.labels.length > MAX_POINTS) powerChart.data.labels.shift();
+            let totalPower = 0;
+            for (let i = 1; i <= 4; i++) {
+                const power = ports[i]?.power || 0;
+                totalPower += power;
+                powerChart.data.datasets[i - 1].data.push(power);
+                if (powerChart.data.datasets[i - 1].data.length > MAX_POINTS) powerChart.data.datasets[i - 1].data.shift();
+            }
+            powerChart.data.datasets[4].data.push(totalPower);
+            if (powerChart.data.datasets[4].data.length > MAX_POINTS) powerChart.data.datasets[4].data.shift();
+            powerChart.update('none');
+        }
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/api/status`);
+                const data = await res.json();
+                updateChart(data.ports);
+            } catch (e) {
+                console.error('Fetch error:', e);
+            }
+        }
+
+        initChart();
+        fetchStatus();
+        setInterval(fetchStatus, 2000);
+    </script>
+</body>
+</html>

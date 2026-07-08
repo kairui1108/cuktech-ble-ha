@@ -1,0 +1,8 @@
+
+# CUKTECH BLE Server 控制
+cuktech_start: "/config/cuktech_api.sh start"
+cuktech_stop: "/config/cuktech_api.sh stop"
+cuktech_restart: "/config/cuktech_api.sh restart"
+cuktech_status: "/config/cuktech_api.sh status"
+cuktech_toggle: "/config/cuktech_api.sh toggle"
+cuktech_server_status: "/config/cuktech_api.sh status"

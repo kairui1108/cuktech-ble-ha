@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { 
+            height: 100%;
+            overflow: hidden;
+        }
+        :root {
+            --bg: #1c1c1c; --card-bg: #252525; --card-border: #3b3b3b;
+            --text: #e1e1e1; --text-dim: #959595;
+            --accent: #03a9f4; --accent-rgb: 3, 169, 244;
+            --success: #389e3d; --success-rgb: 56, 158, 61;
+            --warning: #ffa42b; --warning-rgb: 255, 164, 43;
+            --danger: #db4437; --danger-rgb: 219, 68, 55;
+            --port-c1: #03a9f4; --port-c2: #7c4dff; --port-c3: #389e3d; --port-a: #ffa42b;
+            --border-radius: 8px;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif; 
+            background: var(--bg); 
+            color: var(--text); 
+            padding: 16px;
+        }
+        .card { 
+            background: var(--card-bg); 
+            border: 1px solid var(--card-border); 
+            border-radius: var(--border-radius); 
+            padding: 16px; 
+            height: calc(100% - 32px);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .card-title { 
+            font-size: 12px; 
+            font-weight: 600; 
+            color: var(--text-dim); 
+            text-transform: uppercase; 
+            letter-spacing: 1px; 
+            margin-bottom: 12px; 
+            display: flex; 
+            align-items: center; 
+            gap: 8px; 
+            flex-shrink: 0;
+        }
+        .card-title::before { 
+            content: ''; 
+            width: 3px; 
+            height: 14px; 
+            background: var(--accent); 
+            border-radius: 2px; 
+        }
+        .port-grid { 
+            display: grid; 
+            grid-template-columns: repeat(2, 1fr); 
+            gap: 8px;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .port-card { 
+            background: rgba(255, 255, 255, 0.03); 
+            border-radius: 8px; 
+            padding: 14px; 
+            border: 1px solid transparent; 
+            transition: all 0.3s; 
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .port-card:hover { border-color: rgba(var(--accent-rgb), 0.3); }
+        .port-card.active { border-color: rgba(var(--accent-rgb), 0.3); background: rgba(var(--accent-rgb), 0.05); }
+        .port-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+        .port-name { font-size: 16px; font-weight: 700; }
+        .port-name.c1 { color: var(--port-c1); }
+        .port-name.c2 { color: var(--port-c2); }
+        .port-name.c3 { color: var(--port-c3); }
+        .port-name.a { color: var(--port-a); }
+        .port-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+        .port-stat { text-align: center; }
+        .port-stat-value { font-size: 15px; font-weight: 600; }
+        .port-stat-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
+        .port-toggle { position: relative; width: 36px; height: 20px; }
+        .port-toggle input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255, 255, 255, 0.1); border-radius: 20px; transition: 0.3s; }
+        .toggle-slider:before { content: ""; position: absolute; height: 14px; width: 14px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.3s; }
+        .port-toggle input:checked + .toggle-slider { background: var(--accent); box-shadow: 0 0 12px rgba(var(--accent-rgb), 0.4); }
+        .port-toggle input:checked + .toggle-slider:before { transform: translateX(16px); }
+        .port-protocol { text-align: center; margin-top: 6px; font-size: 10px; color: var(--text-dim); }
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.8); z-index: 100; justify-content: center; align-items: center; padding: 20px; }
+        .modal-overlay.show { display: flex; }
+        .modal { 
+            background: var(--card-bg); 
+            border: 1px solid var(--card-border); 
+            border-radius: var(--border-radius); 
+            padding: 16px; 
+            width: 100%;
+            height: 100%;
+            max-width: 100%;
+            max-height: 100%;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-shrink: 0; }
+        .modal-title { font-size: 16px; font-weight: 600; }
+        .modal-close { width: 28px; height: 28px; border: none; border-radius: 50%; background: rgba(255, 255, 255, 0.1); color: var(--text); font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        .modal-close:hover { background: rgba(255, 255, 255, 0.2); }
+        .modal-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; flex-shrink: 0; }
+        .power-item { text-align: center; padding: 10px 6px; background: rgba(255, 255, 255, 0.03); border-radius: 8px; }
+        .power-value { font-size: 20px; font-weight: 700; color: var(--accent); line-height: 1; }
+        .power-value.success { color: var(--success); }
+        .power-value.warning { color: var(--warning); }
+        .power-label { font-size: 9px; color: var(--text-dim); margin-top: 4px; text-transform: uppercase; }
+        .modal-chart-container { position: relative; flex: 1; min-height: 0; }
+        .modal-chart-container canvas { width: 100% !important; height: 100% !important; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="card-title">端口监控</div>
+        <div class="port-grid" id="portGrid"></div>
+    </div>
+
+    <div class="modal-overlay" id="portModal">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title" id="modalTitle">C1 端口详情</span>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-stats">
+                <div class="power-item"><div class="power-value" id="modalVoltage">0.0</div><div class="power-label">电压 V</div></div>
+                <div class="power-item"><div class="power-value success" id="modalCurrent">0.0</div><div class="power-label">电流 A</div></div>
+                <div class="power-item"><div class="power-value warning" id="modalPower">0.0</div><div class="power-label">功率 W</div></div>
+                <div class="power-item"><div class="power-value" id="modalProtocol" style="font-size:12px">idle</div><div class="power-label">协议</div></div>
+            </div>
+            <div class="modal-chart-container"><canvas id="modalChart"></canvas></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        const PORT_MAP = { 1: 'C1', 2: 'C2', 3: 'C3', 4: 'A' };
+        const PORT_KEY_MAP = { 1: 'c1', 2: 'c2', 3: 'c3', 4: 'a' };
+        const MAX_POINTS = 60;
+        let modalChart = null, currentModalPort = null;
+        const portHistory = { 
+            1: { voltage: [], current: [], power: [], protocol: [] }, 
+            2: { voltage: [], current: [], power: [], protocol: [] }, 
+            3: { voltage: [], current: [], power: [], protocol: [] }, 
+            4: { voltage: [], current: [], power: [], protocol: [] } 
+        };
+
+        function renderPorts(ports) {
+            const grid = document.getElementById('portGrid');
+            let html = '';
+            for (const [id, name] of Object.entries(PORT_MAP)) {
+                const port = ports[id] || { voltage: 0, current: 0, power: 0, enabled: false, protocol: 'idle' };
+                const key = PORT_KEY_MAP[id];
+                html += `
+                    <div class="port-card ${port.enabled ? 'active' : ''}" id="port-${id}" onclick="handlePortClick(event, ${id})">
+                        <div class="port-header">
+                            <span class="port-name ${key}">${name}</span>
+                            <label class="port-toggle" onclick="event.stopPropagation()">
+                                <input type="checkbox" id="toggle-${key}" ${port.enabled ? 'checked' : ''} onchange="togglePort('${key}', this.checked)">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="port-stats">
+                            <div class="port-stat"><div class="port-stat-value">${port.voltage.toFixed(1)}</div><div class="port-stat-label">电压 V</div></div>
+                            <div class="port-stat"><div class="port-stat-value">${port.current.toFixed(1)}</div><div class="port-stat-label">电流 A</div></div>
+                            <div class="port-stat"><div class="port-stat-value">${port.power.toFixed(1)}</div><div class="port-stat-label">功率 W</div></div>
+                        </div>
+                        <div class="port-protocol">${port.protocol}</div>
+                    </div>`;
+            }
+            grid.innerHTML = html;
+        }
+
+        function handlePortClick(event, portId) {
+            if (event.target.closest('.port-toggle')) return;
+            openModal(portId);
+        }
+
+        function openModal(portId) {
+            currentModalPort = portId;
+            document.getElementById('modalTitle').textContent = `${PORT_MAP[portId]} 端口详情`;
+            document.getElementById('modalTitle').style.color = `var(--port-${PORT_KEY_MAP[portId]})`;
+            initModalChart();
+            updateModalChart();
+            document.getElementById('portModal').classList.add('show');
+        }
+
+        function closeModal() { 
+            document.getElementById('portModal').classList.remove('show'); 
+            currentModalPort = null; 
+        }
+
+        function initModalChart() {
+            if (modalChart) modalChart.destroy();
+            const ctx = document.getElementById('modalChart').getContext('2d');
+            modalChart = new Chart(ctx, {
+                type: 'line',
+                data: { labels: [], datasets: [
+                    { label: '电压 (V)', data: [], borderColor: '#03a9f4', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: false, yAxisID: 'y' },
+                    { label: '电流 (A)', data: [], borderColor: '#389e3d', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: false, yAxisID: 'y' },
+                    { label: '功率 (W)', data: [], borderColor: '#ffa42b', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: false, yAxisID: 'y1' },
+                ]},
+                options: { 
+                    responsive: true, 
+                    maintainAspectRatio: false, 
+                    animation: { duration: 0 }, 
+                    interaction: { intersect: false, mode: 'index' },
+                    plugins: { 
+                        legend: { display: true, position: 'top', labels: { color: '#959595', font: { size: 10 }, boxWidth: 10, padding: 8 } } 
+                    },
+                    scales: { 
+                        x: { display: true, grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#666', maxTicksLimit: 6, font: { size: 9 } } },
+                        y: { type: 'linear', display: true, position: 'left', grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#03a9f4', font: { size: 9 } }, beginAtZero: true, title: { display: true, text: 'V / A', color: '#959595', font: { size: 9 } } },
+                        y1: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#ffa42b', font: { size: 9 } }, beginAtZero: true, title: { display: true, text: 'W', color: '#959595', font: { size: 9 } } }
+                    }
+                }
+            });
+        }
+
+        function updateModalChart() {
+            if (!currentModalPort || !modalChart) return;
+            const h = portHistory[currentModalPort];
+            modalChart.data.labels = [...h.voltage.map((_, i) => i)];
+            modalChart.data.datasets[0].data = [...h.voltage];
+            modalChart.data.datasets[1].data = [...h.current];
+            modalChart.data.datasets[2].data = [...h.power];
+            modalChart.update('none');
+            document.getElementById('modalVoltage').textContent = (h.voltage[h.voltage.length - 1] || 0).toFixed(1);
+            document.getElementById('modalCurrent').textContent = (h.current[h.current.length - 1] || 0).toFixed(1);
+            document.getElementById('modalPower').textContent = (h.power[h.power.length - 1] || 0).toFixed(1);
+            const protocolEl = document.getElementById('modalProtocol');
+            if (protocolEl) {
+                const lastProtocol = h.protocol ? h.protocol[h.protocol.length - 1] : 'idle';
+                protocolEl.textContent = lastProtocol;
+                protocolEl.style.color = lastProtocol !== 'idle' ? 'var(--accent)' : 'var(--text-dim)';
+            }
+        }
+
+        document.getElementById('portModal').addEventListener('click', function(e) { if (e.target === this) closeModal(); });
+
+        async function togglePort(port, on) {
+            const toggle = document.getElementById(`toggle-${port}`);
+            if (toggle) toggle.disabled = true;
+            try {
+                const res = await fetch(`${API_BASE}/api/port`, { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify({ port, action: on ? 'on' : 'off' }) 
+                });
+                const result = await res.json();
+                if (!result.ok) {
+                    if (toggle) toggle.checked = !on;
+                }
+            } catch (e) {
+                if (toggle) toggle.checked = !on;
+            } finally {
+                if (toggle) toggle.disabled = false;
+                fetchStatus();
+            }
+        }
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/api/status`);
+                const data = await res.json();
+                renderPorts(data.ports);
+                for (let i = 1; i <= 4; i++) {
+                    const port = data.ports[i] || { voltage: 0, current: 0, power: 0, protocol: 'idle' };
+                    portHistory[i].voltage.push(port.voltage);
+                    portHistory[i].current.push(port.current);
+                    portHistory[i].power.push(port.power);
+                    portHistory[i].protocol.push(port.protocol);
+                    if (portHistory[i].voltage.length > MAX_POINTS) {
+                        portHistory[i].voltage.shift();
+                        portHistory[i].current.shift();
+                        portHistory[i].power.shift();
+                        portHistory[i].protocol.shift();
+                    }
+                }
+                if (currentModalPort) updateModalChart();
+            } catch (e) {}
+        }
+
+        fetchStatus();
+        setInterval(fetchStatus, 2000);
+    </script>
+</body>
+</html>

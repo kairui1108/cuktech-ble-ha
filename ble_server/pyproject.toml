@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cuktech-ble-server"
+version = "1.0.1"
+description = "CUKTECH 10 GaN Charger BLE Server for Home Assistant"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.9",
+    "paho-mqtt>=2.0",
+    "bleak>=0.21",
+    "cryptography>=41",
+    "pyyaml>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

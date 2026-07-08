@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { 
+            height: 100%;
+            overflow: hidden;
+        }
+        :root {
+            --bg: #1c1c1c; --card-bg: #252525; --card-border: #3b3b3b;
+            --text: #e1e1e1; --text-dim: #959595;
+            --accent: #03a9f4; --accent-rgb: 3, 169, 244;
+            --success: #389e3d; --success-rgb: 56, 158, 61;
+            --warning: #ffa42b; --warning-rgb: 255, 164, 43;
+            --danger: #db4437; --danger-rgb: 219, 68, 55;
+            --border-radius: 8px;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif; 
+            background: var(--bg); 
+            color: var(--text); 
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .charger-layout {
+            display: grid;
+            grid-template-columns: 180px 1fr;
+            gap: 20px;
+            align-items: start;
+            width: 100%;
+        }
+        .charger-image {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 0;
+        }
+        .charger-image img {
+            max-width: 100%;
+            max-height: 200px;
+            object-fit: contain;
+        }
+        .charger-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            min-width: 0;
+            overflow: hidden;
+        }
+        .control-box { 
+            background: rgba(255, 255, 255, 0.03); 
+            border-radius: 10px; 
+            padding: 12px; 
+            min-width: 0; 
+            overflow: hidden;
+        }
+        .control-label { 
+            font-size: 11px; 
+            color: var(--text-dim); 
+            text-transform: uppercase; 
+            letter-spacing: 0.5px; 
+            margin-bottom: 8px; 
+        }
+        .status-badge { 
+            display: inline-flex; 
+            align-items: center; 
+            gap: 8px; 
+            padding: 6px 16px; 
+            border-radius: 20px; 
+            font-size: 13px; 
+            font-weight: 500; 
+        }
+        .status-badge.connected { 
+            background: rgba(var(--success-rgb), 0.12); 
+            color: var(--success); 
+            box-shadow: 0 0 20px rgba(var(--success-rgb), 0.1); 
+        }
+        .status-badge.disconnected { 
+            background: rgba(var(--danger-rgb), 0.12); 
+            color: var(--danger); 
+        }
+        .status-dot { 
+            width: 8px; 
+            height: 8px; 
+            border-radius: 50%; 
+            background: currentColor; 
+            animation: pulse 2s infinite; 
+        }
+        .status-badge.disconnected .status-dot { animation: none; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .port-count { font-size: 14px; font-weight: 600; color: var(--success); }
+        .port-count-label { font-size: 11px; color: var(--text-dim); }
+        .btn-group { display: flex; gap: 10px; }
+        .btn { 
+            flex: 1; 
+            padding: 12px 16px; 
+            border: none; 
+            border-radius: 10px; 
+            font-size: 13px; 
+            font-weight: 600; 
+            cursor: pointer; 
+            transition: all 0.2s; 
+            text-transform: uppercase; 
+            letter-spacing: 0.5px; 
+        }
+        .btn:active { transform: scale(0.96); }
+        .btn-primary { 
+            background: rgba(var(--accent-rgb), 0.15); 
+            color: var(--accent); 
+            border: 1px solid rgba(var(--accent-rgb), 0.3); 
+        }
+        .btn-primary:hover { 
+            background: rgba(var(--accent-rgb), 0.25); 
+            box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.2); 
+        }
+        .btn-danger { 
+            background: rgba(var(--danger-rgb), 0.15); 
+            color: var(--danger); 
+            border: 1px solid rgba(var(--danger-rgb), 0.3); 
+        }
+        .btn-danger:hover { 
+            background: rgba(var(--danger-rgb), 0.25); 
+            box-shadow: 0 2px 12px rgba(var(--danger-rgb), 0.2); 
+        }
+        .btn-secondary { 
+            background: rgba(255, 255, 255, 0.06); 
+            color: var(--text); 
+            border: 1px solid var(--card-border); 
+        }
+        .btn-secondary:hover { 
+            background: rgba(255, 255, 255, 0.1); 
+            border-color: var(--accent); 
+        }
+        .stat-box { 
+            text-align: center; 
+            padding: 12px 8px; 
+            background: rgba(255, 255, 255, 0.03); 
+            border-radius: 10px; 
+            min-width: 0; 
+        }
+        .stat-value { 
+            font-size: 22px; 
+            font-weight: 700; 
+            color: var(--accent); 
+            line-height: 1; 
+        }
+        .stat-value.warning { color: var(--warning); }
+        .stat-label { 
+            font-size: 10px; 
+            color: var(--text-dim); 
+            margin-top: 4px; 
+            text-transform: uppercase; 
+        }
+        @media (max-width: 600px) {
+            .charger-layout { grid-template-columns: 1fr; }
+            .charger-image { max-height: 150px; }
+            .charger-controls { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="charger-layout">
+        <div class="charger-image">
+            <img id="chargerImage" src="" alt="CUKTECH Charger">
+        </div>
+        <div class="charger-controls">
+            <div class="control-box">
+                <div class="control-label">连接状态</div>
+                <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
+                    <div id="statusBadge" class="status-badge disconnected">
+                        <span class="status-dot"></span>
+                        <span id="statusText">连接中...</span>
+                    </div>
+                    <span class="port-count" id="activePorts">0</span>
+                    <span class="port-count-label">活跃端口</span>
+                </div>
+            </div>
+            <div class="control-box">
+                <div class="control-label">BLE 控制</div>
+                <div class="btn-group">
+                    <button class="btn btn-primary" id="bleToggle" onclick="bleToggle()">连接设备</button>
+                    <button class="btn btn-secondary" onclick="bleRestart()">重启</button>
+                </div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="totalPower">0.0</div>
+                <div class="stat-label">总功率 (W)</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value warning" id="maxVoltage">0.0</div>
+                <div class="stat-label">最高电压 (V)</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const chargerImg = document.getElementById('chargerImage');
+        fetch('/static/charger.png')
+            .then(r => r.blob())
+            .then(blob => {
+                const reader = new FileReader();
+                reader.onloadend = () => { chargerImg.src = reader.result; };
+                reader.readAsDataURL(blob);
+            })
+            .catch(() => { chargerImg.style.display = 'none'; });
+
+        const API_BASE = window.location.origin;
+        let bleConnected = false;
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/api/status`);
+                const data = await res.json();
+                
+                bleConnected = data.connected && data.authenticated;
+                
+                const badge = document.getElementById('statusBadge');
+                const text = document.getElementById('statusText');
+                
+                if (bleConnected) {
+                    badge.className = 'status-badge connected';
+                    text.textContent = '已连接';
+                } else if (data.connected) {
+                    badge.className = 'status-badge connected';
+                    text.textContent = '认证中...';
+                } else {
+                    badge.className = 'status-badge disconnected';
+                    text.textContent = '未连接';
+                }
+                
+                const btn = document.getElementById('bleToggle');
+                if (bleConnected) {
+                    btn.textContent = '断开设备';
+                    btn.className = 'btn btn-danger';
+                } else {
+                    btn.textContent = '连接设备';
+                    btn.className = 'btn btn-primary';
+                }
+                
+                let totalPower = 0, activeCount = 0, maxV = 0;
+                for (const [id, port] of Object.entries(data.ports || {})) {
+                    if ((port.current > 0 || port.power > 0) && port.enabled) {
+                        totalPower += port.power;
+                        activeCount++;
+                        maxV = Math.max(maxV, port.voltage);
+                    }
+                }
+                document.getElementById('totalPower').textContent = totalPower.toFixed(1);
+                document.getElementById('activePorts').textContent = activeCount;
+                document.getElementById('maxVoltage').textContent = maxV.toFixed(1);
+            } catch (e) {
+                console.error('Fetch error:', e);
+            }
+        }
+
+        async function bleToggle() {
+            const btn = document.getElementById('bleToggle');
+            btn.disabled = true;
+            try {
+                await fetch(`${API_BASE}/api/enable`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: !bleConnected })
+                });
+                setTimeout(fetchStatus, 1000);
+            } catch (e) {
+                console.error('BLE toggle error:', e);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function bleRestart() {
+            await fetch(`${API_BASE}/api/enable`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: false })
+            });
+            setTimeout(async () => {
+                await fetch(`${API_BASE}/api/enable`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: true })
+                });
+                setTimeout(fetchStatus, 2000);
+            }, 2000);
+        }
+
+        fetchStatus();
+        setInterval(fetchStatus, 2000);
+    </script>
+</body>
+</html>

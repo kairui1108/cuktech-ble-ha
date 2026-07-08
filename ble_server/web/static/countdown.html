@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { 
+            height: 100%;
+            overflow: hidden;
+        }
+        :root {
+            --bg: #1c1c1c; --card-bg: #252525; --card-border: #3b3b3b;
+            --text: #e1e1e1; --text-dim: #959595;
+            --accent: #03a9f4; --accent-rgb: 3, 169, 244;
+            --success: #389e3d; --success-rgb: 56, 158, 61;
+            --warning: #ffa42b; --warning-rgb: 255, 164, 43;
+            --danger: #db4437; --danger-rgb: 219, 68, 55;
+            --port-c1: #03a9f4; --port-c2: #7c4dff; --port-c3: #389e3d; --port-a: #ffa42b;
+            --border-radius: 8px;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif; 
+            background: var(--bg); 
+            color: var(--text); 
+            padding: 16px;
+        }
+        .card { 
+            background: var(--card-bg); 
+            border: 1px solid var(--card-border); 
+            border-radius: var(--border-radius); 
+            padding: 16px; 
+            height: calc(100% - 32px);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .card-title { 
+            font-size: 12px; 
+            font-weight: 600; 
+            color: var(--text-dim); 
+            text-transform: uppercase; 
+            letter-spacing: 1px; 
+            margin-bottom: 12px; 
+            display: flex; 
+            align-items: center; 
+            gap: 8px; 
+            flex-shrink: 0;
+        }
+        .card-title::before { 
+            content: ''; 
+            width: 3px; 
+            height: 14px; 
+            background: var(--accent); 
+            border-radius: 2px; 
+        }
+        .countdown-grid { 
+            display: grid; 
+            grid-template-columns: repeat(2, 1fr); 
+            gap: 8px;
+            flex: 1;
+            min-height: 0;
+        }
+        .countdown-item { 
+            background: rgba(255, 255, 255, 0.03); 
+            border-radius: 8px; 
+            padding: 10px; 
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .countdown-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+        .countdown-port { font-size: 13px; font-weight: 600; }
+        .countdown-port.c1 { color: var(--port-c1); }
+        .countdown-port.c2 { color: var(--port-c2); }
+        .countdown-port.c3 { color: var(--port-c3); }
+        .countdown-port.a { color: var(--port-a); }
+        .countdown-current { font-size: 10px; color: var(--text-dim); }
+        .countdown-quick { display: flex; gap: 3px; flex-wrap: wrap; justify-content: center; overflow: hidden; }
+        .countdown-quick-btn { 
+            padding: 4px 6px; 
+            border: 1px solid rgba(var(--success-rgb), 0.3); 
+            border-radius: 4px; 
+            background: rgba(var(--success-rgb), 0.15); 
+            color: var(--success); 
+            font-size: 9px; 
+            cursor: pointer; 
+            transition: all 0.2s; 
+            flex-shrink: 0;
+        }
+        .countdown-quick-btn:hover { background: rgba(var(--success-rgb), 0.25); }
+        .countdown-actions { display: flex; justify-content: center; margin-top: auto; }
+        .countdown-clear-btn { 
+            padding: 6px 14px; 
+            border: 1px solid rgba(var(--danger-rgb), 0.3); 
+            border-radius: 6px; 
+            background: rgba(var(--danger-rgb), 0.15); 
+            color: var(--danger); 
+            font-size: 10px; 
+            cursor: pointer; 
+            transition: all 0.2s; 
+        }
+        .countdown-clear-btn:hover { background: rgba(var(--danger-rgb), 0.25); }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="card-title">倒计时设置</div>
+        <div class="countdown-grid" id="countdownGrid"></div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        const PORT_MAP = { 1: 'C1', 2: 'C2', 3: 'C3', 4: 'A' };
+        const PORT_KEY_MAP = { 1: 'c1', 2: 'c2', 3: 'c3', 4: 'a' };
+        const COUNTDOWN_PIIDS = { 1: 9, 2: 10, 3: 11, 4: 12 };
+        const PORT_KEY_TO_ID = { 'c1': 1, 'c2': 2, 'c3': 3, 'a': 4 };
+        const QUICK_MINUTES = [15, 30, 60, 90, 120, 240];
+        let countdownRendered = false;
+
+        function renderCountdown(settings) {
+            const grid = document.getElementById('countdownGrid');
+            if (!countdownRendered) {
+                let html = '';
+                for (const [id, name] of Object.entries(PORT_MAP)) {
+                    const key = PORT_KEY_MAP[id];
+                    html += `
+                        <div class="countdown-item">
+                            <div class="countdown-header">
+                                <span class="countdown-port ${key}">${name}</span>
+                                <span class="countdown-current" id="countdown-status-${key}">未设置</span>
+                            </div>
+                            <div class="countdown-quick">
+                                ${QUICK_MINUTES.map(m => `<button class="countdown-quick-btn" onclick="setCountdown('${key}', ${m})">${m}分</button>`).join('')}
+                            </div>
+                            <div class="countdown-actions">
+                                <button class="countdown-clear-btn" onclick="setCountdown('${key}', 0)">清除</button>
+                            </div>
+                        </div>`;
+                }
+                grid.innerHTML = html;
+                countdownRendered = true;
+            }
+            for (const [id, name] of Object.entries(PORT_MAP)) {
+                const piid = COUNTDOWN_PIIDS[id];
+                const currentVal = settings[String(piid)] || 0;
+                const key = PORT_KEY_MAP[id];
+                const statusEl = document.getElementById(`countdown-status-${key}`);
+                if (statusEl) {
+                    statusEl.textContent = currentVal > 0 ? currentVal + '分钟' : '未设置';
+                }
+            }
+        }
+
+        const countdownPending = {};
+
+        async function setCountdown(port, minutes) {
+            if (countdownPending[port]) return;
+            countdownPending[port] = true;
+            const id = PORT_KEY_TO_ID[port];
+            const btn = document.querySelector(`#countdownGrid .countdown-item:nth-child(${id}) .countdown-set-btn`);
+            const statusEl = document.getElementById(`countdown-status-${port}`);
+            if (btn) { btn.disabled = true; btn.textContent = '设置中...'; }
+            const expectedText = minutes > 0 ? minutes + '分钟' : '未设置';
+            const piid = COUNTDOWN_PIIDS[id];
+            if (!piid) { countdownPending[port] = false; if (btn) { btn.disabled = false; btn.textContent = '设置'; } return; }
+            try {
+                await fetch(`${API_BASE}/api/set`, { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify({ piid, value: minutes }) 
+                });
+                fetchStatus();
+                if (statusEl) {
+                    const observer = new MutationObserver(() => {
+                        if (statusEl.textContent === expectedText) {
+                            observer.disconnect();
+                            countdownPending[port] = false;
+                            if (btn) { btn.disabled = false; btn.textContent = '设置'; }
+                        }
+                    });
+                    observer.observe(statusEl, { childList: true, characterData: true, subtree: true });
+                    setTimeout(() => { observer.disconnect(); countdownPending[port] = false; if (btn) { btn.disabled = false; btn.textContent = '设置'; } }, 10000);
+                } else {
+                    setTimeout(() => { countdownPending[port] = false; if (btn) { btn.disabled = false; btn.textContent = '设置'; } }, 3000);
+                }
+            } catch (e) { 
+                countdownPending[port] = false; 
+                if (btn) { btn.disabled = false; btn.textContent = '设置'; } 
+            }
+        }
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/api/status`);
+                const data = await res.json();
+                renderCountdown(data.settings || {});
+            } catch (e) {}
+        }
+
+        fetchStatus();
+        setInterval(fetchStatus, 5000);
+    </script>
+</body>
+</html>

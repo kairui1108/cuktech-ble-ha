@@ -1,0 +1,20 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "CUKTECH Charger",
+        "description": "Set up your CUKTECH charger. This integration uses MQTT to receive real-time data from the CUKTECH BLE server.",
+        "data": {
+          "name": "Device Name",
+          "server_url": "BLE Server URL"
+        }
+      }
+    },
+    "error": {
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "Device is already configured"
+    }
+  }
+}

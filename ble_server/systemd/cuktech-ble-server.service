@@ -1,0 +1,28 @@
+[Unit]
+Description=CUKTECH BLE Server for Home Assistant
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=ruikai
+WorkingDirectory=/home/ruikai/cuktech/ble_server
+ExecStart=/home/ruikai/cuktech/ble_server/.venv/bin/python -u ha_server.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cuktech-ble
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ruikai/cuktech/ble_server
+PrivateTmp=true
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
