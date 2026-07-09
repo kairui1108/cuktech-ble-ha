@@ -1,6 +1,7 @@
 """CUKTECH Charger integration for Home Assistant - MQTT based."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -77,6 +78,7 @@ class CuktechMQTTCoordinator:
         self._mqtt_connected = False
         self._last_status_time: float = 0
         self._health_check_task = None
+        self._health_failures = 0
 
     @property
     def available(self) -> bool:
@@ -85,6 +87,8 @@ class CuktechMQTTCoordinator:
 
     def register_callback(self, cb) -> None:
         """Register a callback for state updates."""
+        if len(self._callbacks) > 100:
+            _LOGGER.warning("Too many callbacks registered: %d", len(self._callbacks))
         self._callbacks.append(cb)
 
     def unregister_callback(self, cb) -> None:
@@ -104,18 +108,19 @@ class CuktechMQTTCoordinator:
 
     async def async_setup(self) -> None:
         """Set up MQTT subscriptions."""
-        for attempt in range(30):
+        base_delay = 1
+        max_delay = 30
+        for attempt in range(10):
             try:
                 await mqtt.async_publish(self.hass, TOPIC_PROBE, "ready")
                 break
             except Exception as err:
-                if attempt < 29:
-                    _LOGGER.debug("MQTT not ready, attempt %d: %s", attempt + 1, err)
-                    await self.hass.async_add_executor_job(lambda: None)
-                    import asyncio
-                    await asyncio.sleep(2)
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                if attempt < 9:
+                    _LOGGER.debug("MQTT not ready, attempt %d/%d, retrying in %ds: %s", attempt + 1, 10, delay, err)
+                    await asyncio.sleep(delay)
                 else:
-                    _LOGGER.error("MQTT not ready after 30 attempts")
+                    _LOGGER.error("MQTT not ready after 10 attempts")
                     raise ConfigEntryNotReady("MQTT not available")
 
         for port_name in ("c1", "c2", "c3", "a"):
@@ -171,6 +176,9 @@ class CuktechMQTTCoordinator:
             port_name = topic_parts[-1]
             piid = PORT_MAP.get(port_name)
             if piid:
+                _LOGGER.debug("Port %s: voltage=%s current=%s power=%s protocol=%s",
+                    port_name, payload.get("voltage"), payload.get("current"),
+                    payload.get("power"), payload.get("protocol"))
                 self._port_data[str(piid)] = payload
                 self._notify_callbacks()
         except json.JSONDecodeError as err:
@@ -182,7 +190,9 @@ class CuktechMQTTCoordinator:
     def _on_settings_message(self, msg: Any) -> None:
         """Handle settings message."""
         try:
-            self._settings = json.loads(msg.payload)
+            payload = json.loads(msg.payload)
+            _LOGGER.debug("Settings updated: %s", list(payload.keys()))
+            self._settings = payload
             self._notify_callbacks()
         except json.JSONDecodeError as err:
             _LOGGER.debug("Settings JSON parse error: %s", err)
@@ -197,6 +207,8 @@ class CuktechMQTTCoordinator:
             was_available = self._available
             self._mqtt_connected = payload.get("connected", False)
             self._last_status_time = time.time()
+            if self._mqtt_connected:
+                self._health_failures = 0
             self._update_availability()
             if self._available and not was_available:
                 _LOGGER.info("BLE server is now available (MQTT)")
@@ -222,16 +234,23 @@ class CuktechMQTTCoordinator:
                 if resp.status == 200:
                     was_available = self._available
                     self._last_status_time = time.time()
+                    self._health_failures = 0
                     self._update_availability()
                     if self._available and not was_available:
                         _LOGGER.info("BLE server is now available (HTTP)")
                 else:
+                    self._health_failures += 1
                     if self._available:
-                        _LOGGER.warning("BLE server returned HTTP status %d", resp.status)
+                        _LOGGER.warning("BLE server returned HTTP status %d (failure #%d)", resp.status, self._health_failures)
+                    elif self._health_failures % 10 == 0:
+                        _LOGGER.warning("BLE server HTTP check failed %d times", self._health_failures)
                     self._available = False
         except Exception as err:
+            self._health_failures += 1
             if self._available:
                 _LOGGER.warning("BLE server HTTP health check failed: %s", err)
+            elif self._health_failures % 10 == 0:
+                _LOGGER.warning("BLE server HTTP check failed %d times: %s", self._health_failures, err)
             self._available = False
 
     async def async_set_value(self, piid: int, value: Any) -> None:

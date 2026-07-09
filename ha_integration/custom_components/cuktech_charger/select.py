@@ -20,6 +20,12 @@ SELECT_PIIDS = {
     13: {"name": "语言", "icon": "mdi:translate", "options": ["English", "中文"]},
 }
 
+# Derive option map from SELECT_PIIDS and PIID_DISPLAY for consistency
+SELECT_OPTION_MAP = {}
+for piid, cfg in SELECT_PIIDS.items():
+    display = PIID_DISPLAY.get(piid, {})
+    SELECT_OPTION_MAP[piid] = {v: k for k, v in display.items() if v in cfg["options"]}
+
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -89,7 +95,7 @@ class CuktechSelect(SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Select an option."""
-        display = PIID_DISPLAY.get(self._piid, {})
-        value = next((k for k, v in display.items() if v == option), None)
+        option_map = SELECT_OPTION_MAP.get(self._piid, {})
+        value = option_map.get(option)
         if value is not None:
             await self.coordinator.async_set_value(self._piid, value)

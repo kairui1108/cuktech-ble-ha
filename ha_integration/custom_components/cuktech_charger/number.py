@@ -87,7 +87,12 @@ class CuktechCountdown(NumberEntity):
         if not self.coordinator.data:
             return None
         v = self.coordinator.data.get(str(self._piid))
-        return float(v) if v is not None else 0
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the countdown value."""
