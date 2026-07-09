@@ -30,8 +30,7 @@ def real_history():
         })
     yield h
     h.close()
-    from pathlib import Path as P
-    P(db_path).unlink(missing_ok=True)
+    Path(db_path).unlink(missing_ok=True)
 
     def close(self):
         pass

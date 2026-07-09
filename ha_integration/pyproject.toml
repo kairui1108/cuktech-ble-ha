@@ -1,3 +1,17 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cuktech-charger-ha-integration"
+version = "1.0.1"
+description = "Home Assistant integration for CUKTECH 10 GaN Charger Ultra"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["custom_components"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

@@ -158,7 +158,7 @@ class PortHistory:
                 AVG(power) as avg_power,
                 MAX(power) as max_power,
                 SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) as active_count,
-                SUM(power) * 5 / 3600 as energy_wh
+                AVG(power) * (MAX(timestamp) - MIN(timestamp)) / 3600 as energy_wh
             FROM port_history
             WHERE port = ? AND timestamp >= ?""",
             (port, cutoff)

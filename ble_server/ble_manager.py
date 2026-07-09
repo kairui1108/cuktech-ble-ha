@@ -6,10 +6,10 @@ import os
 import time
 
 try:
-    from cuktech_ble.ble import CuktechBLEController, CHAR_CMD_RECV
+    from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-    from cuktech_ble.ble import CuktechBLEController, CHAR_CMD_RECV
+    from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV
 
 from state import ChargerState, PORT_NAMES, PORT_BITS, PORT_DEFAULT, decode_port, decode_pdo_caps
 

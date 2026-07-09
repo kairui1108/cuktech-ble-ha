@@ -200,9 +200,12 @@ class Server:
                 await self.ble.stop()
             for piid in range(1, 5):
                 await self.state.update_port(piid, PORT_DEFAULT)
-            for piid, pname in PORT_NAMES.items():
-                self.mqtt_publish(f"{self.config.topic_port}/{pname}", PORT_DEFAULT)
-            self.mqtt_publish(self.config.topic_status, {"connected": False}, retain=True)
+            if self.mqtt_client and self.mqtt_client.is_connected():
+                for piid, pname in PORT_NAMES.items():
+                    self.mqtt_publish(f"{self.config.topic_port}/{pname}", PORT_DEFAULT)
+                self.mqtt_publish(self.config.topic_status, {"connected": False}, retain=True)
+            else:
+                _LOGGER.warning("MQTT not connected, port data not cleared via MQTT")
         self.invalidate_status_cache()
         return web.json_response({"ok": True, "enabled": enabled})
 
@@ -377,8 +380,9 @@ async def cors_middleware(request, handler):
         response = web.Response()
     else:
         response = await handler(request)
-    origin = request.headers.get("Origin", "*")
-    response.headers["Access-Control-Allow-Origin"] = origin
+    origin = request.headers.get("Origin", "")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return response

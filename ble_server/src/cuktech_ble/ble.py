@@ -1020,30 +1020,22 @@ async def cmd_monitor(mac=DEVICE_MAC):
 
                         # 只处理端口数据推送 (B4=0x04, piid=1-4)
                         if b4 == 0x04 and piid in port_names:
-                            # Push格式: B9=04(len) B10=50(type) B11-B14=value
-                            if len(pt) >= 15:
-                                raw4 = pt[11:15]
-                            elif len(pt) >= 13:
-                                raw4 = pt[10:14]
-                            else:
-                                continue
-                            if len(raw4) < 4:
-                                continue
-                            b0, b1, b2, b3 = raw4[0], raw4[1], raw4[2], raw4[3]
-                            name = port_names[piid]
+                            # 复用 decode_port 解析逻辑
+                            port_info = decode_port(piid, pt)
+                            if port_info:
+                                name = port_names[piid]
+                                # 跳过重复值
+                                key = piid
+                                current = (port_info["voltage"], port_info["current"], port_info["power"])
+                                if last_values.get(key) == current:
+                                    continue
+                                last_values[key] = current
 
-                            # 跳过重复值
-                            key = piid
-                            if last_values.get(key) == raw4:
-                                continue
-                            last_values[key] = raw4
-
-                            hi16 = (b0 << 8) | b1
-                            lo16 = (b2 << 8) | b3
-                            print(f"  [{name}] "
-                                  f"[{b0:3d} {b1:3d} {b2:3d} {b3:3d}] "
-                                  f"H={hi16:5d} L={lo16:5d}  "
-                                  f"raw={raw4.hex()}")
+                                print(f"  [{name}] "
+                                      f"V={port_info['voltage']:.1f} "
+                                      f"I={port_info['current']:.1f} "
+                                      f"P={port_info['power']:.1f} "
+                                      f"protocol={port_info['protocol']}")
 
                     elif data[2] == 0x00 and len(data) >= 6:
                         frame_count = data[4] + 0x100 * data[5]

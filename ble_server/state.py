@@ -48,9 +48,11 @@ class PortState:
     def __eq__(self, other):
         if not isinstance(other, PortState):
             return False
-        return (self.voltage == other.voltage and self.current == other.current
-                and self.power == other.power and self.active == other.active
-                and self.protocol == other.protocol)
+        return (abs(self.voltage - other.voltage) < 0.01 and
+                abs(self.current - other.current) < 0.01 and
+                abs(self.power - other.power) < 0.1 and
+                self.active == other.active and
+                self.protocol == other.protocol)
 
 
 class ChargerState:
