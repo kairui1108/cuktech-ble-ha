@@ -85,6 +85,31 @@ else:
     _CRYPTO_IMPORT_ERROR = None
 
 
+def mac_str_to_bytes(mac_str):
+    """MAC 地址字符串转字节数组 (reversed for Xiaomi protocol)。"""
+    parts = mac_str.replace("-", ":").split(":")
+    return bytes([int(p, 16) for p in reversed(parts)])
+
+
+def require_runtime_dependencies():
+    """Raise a clear error if optional BLE runtime dependencies are missing."""
+    missing = []
+    try:
+        import bleak
+    except ImportError:
+        missing.append("bleak")
+    try:
+        import cryptography
+    except ImportError:
+        missing.append("cryptography")
+    if missing:
+        raise RuntimeError(
+            "Missing runtime dependencies: "
+            + ", ".join(missing)
+            + ". Install them with `python -m pip install -e .`."
+        )
+
+
 # ============================================================
 # Device configuration
 # ============================================================
@@ -159,5 +184,18 @@ TIMER_PORTS = {'c1': 9, 'c2': 10, 'c3': 11, 'a': 12}
 
 # 端口控制位掩码 (PIID 16): bit0=C1, bit1=C2, bit2=C3, bit3=A
 PORT_BITS = {'c1': 0, 'c2': 1, 'c3': 2, 'a': 3}
+
+PROTOCOL_NAMES = {
+    0x01: "PD", 0x03: "PD", 0x04: "PD", 0x05: "PD", 0x06: "PD",
+    0x07: "PD Fixed", 0x08: "PD PPS", 0x0a: "PD", 0x0b: "PD",
+    0x30: "PD", 0x60: "USB-A", 0x70: "QC", 0x80: "PD",
+}
+
+PD_FIXED_VOLTAGES = {5.0, 9.0, 12.0, 15.0, 20.0}
+
+PDO_KIND_BY_HIGH_BYTE = {
+    0x07: "PD Fixed",
+    0x08: "PD PPS",
+}
 
 
