@@ -39,6 +39,11 @@ Thumbs.db
 # Logs
 *.log
 
+# SQLite database
+*.db
+*.db-shm
+*.db-wal
+
 # BLE Server specific
 cuktech-ble-server/.venv/
 cuktech-ble-server/__pycache__/

@@ -18,5 +18,9 @@ server:
   host: "0.0.0.0"
   port: 8199
   command_timeout: 10.0
-  reconnect_delay: 5.0
+  reconnect_base_delay: 1.0       # 初始重连延迟（秒）
+  reconnect_max_delay: 300.0      # 最大重连延迟（秒）
   settings_refresh_interval: 60.0
+  log_level: "info"                    # debug, info, warning, error
+  history_retention_days: 2            # 保留最近N天的历史数据
+  history_db_path: "port_history.db"   # SQLite 数据库文件路径

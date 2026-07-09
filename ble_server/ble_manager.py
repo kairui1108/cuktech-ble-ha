@@ -38,15 +38,32 @@ class BLEManager:
         self.cmd_queue = asyncio.Queue()
         self._stop_event = asyncio.Event()
         self._mqtt_publish = None
+        self._reconnect_attempts = 0
+        self._base_reconnect_delay = config.server.reconnect_base_delay
+        self._max_reconnect_delay = config.server.reconnect_max_delay
+        self._history = None
 
     def set_mqtt_publisher(self, publisher):
         self._mqtt_publish = publisher
 
+    def set_history(self, history):
+        self._history = history
+
+    def _get_reconnect_delay(self):
+        """Calculate exponential backoff delay."""
+        delay = min(
+            self._base_reconnect_delay * (2 ** min(self._reconnect_attempts, 10)),
+            self._max_reconnect_delay
+        )
+        return delay
+
     async def start(self):
         self._stop_event.clear()
+        self._reconnect_attempts = 0
         while not self._stop_event.is_set():
             try:
                 await self._connect_and_run()
+                self._reconnect_attempts = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -54,9 +71,11 @@ class BLEManager:
             finally:
                 await self._disconnect()
             if not self._stop_event.is_set():
-                _LOGGER.info("Reconnecting in %.0fs...", self.config.server.reconnect_delay)
+                delay = self._get_reconnect_delay()
+                self._reconnect_attempts += 1
+                _LOGGER.info("Reconnecting in %.0fs (attempt %d)...", delay, self._reconnect_attempts)
                 try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=self.config.server.reconnect_delay)
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
                     break
                 except asyncio.TimeoutError:
                     pass
@@ -269,6 +288,10 @@ class BLEManager:
                 if old != port_info:
                     _invalidate()
                     self._publish_port(PORT_NAMES[piid], port_info)
+                    if self._history and port_info.get("active", False):
+                        loop = asyncio.get_running_loop()
+                        task = loop.run_in_executor(None, self._history.record_port_data, piid, port_info)
+                        task.add_done_callback(lambda t: _LOGGER.error("History write failed: %s", t.exception()) if t.done() and t.exception() else None)
 
     async def _handle_multiframe(self, data):
         """Handle multi-frame BLE data. Data is ACKed but not processed further.

@@ -3,9 +3,17 @@
 Supports YAML config file and environment variables.
 YAML file takes precedence over environment variables.
 """
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+LOG_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+}
 
 
 def _load_yaml_config():
@@ -51,8 +59,12 @@ class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 8199
     command_timeout: float = 10.0
-    reconnect_delay: float = 5.0
     settings_refresh_interval: float = 60.0
+    log_level: str = "info"
+    history_retention_days: int = 2
+    history_db_path: str = "port_history.db"
+    reconnect_base_delay: float = 1.0
+    reconnect_max_delay: float = 300.0
 
 
 @dataclass
@@ -101,8 +113,12 @@ def load_config() -> Config:
         host=server_cfg.get("host", "0.0.0.0"),
         port=server_cfg.get("port", 8199),
         command_timeout=server_cfg.get("command_timeout", 10.0),
-        reconnect_delay=server_cfg.get("reconnect_delay", 5.0),
         settings_refresh_interval=server_cfg.get("settings_refresh_interval", 60.0),
+        log_level=os.environ.get("CUKTECH_LOG_LEVEL", server_cfg.get("log_level", "info")),
+        history_retention_days=int(os.environ.get("CUKTECH_HISTORY_RETENTION_DAYS", server_cfg.get("history_retention_days", 2))),
+        history_db_path=os.environ.get("CUKTECH_HISTORY_DB_PATH", server_cfg.get("history_db_path", "port_history.db")),
+        reconnect_base_delay=float(server_cfg.get("reconnect_base_delay", 1.0)),
+        reconnect_max_delay=float(server_cfg.get("reconnect_max_delay", 300.0)),
     )
 
     return Config(ble=ble, mqtt=mqtt, server=server)

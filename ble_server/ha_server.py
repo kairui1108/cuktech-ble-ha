@@ -3,14 +3,19 @@
 BLE data is published to MQTT for real-time updates in Home Assistant.
 """
 import asyncio
+import gzip
+import hashlib
 import json
 import logging
+import os
+import time
 from pathlib import Path
 from aiohttp import web
 
-from config import load_config
+from config import load_config, LOG_LEVELS
 from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS, PIID_RANGES
 from ble_manager import BLEManager, set_status_cache_invalidator
+from history import PortHistory
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +35,14 @@ class Server:
         self._start_lock = asyncio.Lock()
         self._status_cache_bytes = None
         self._status_cache_valid = False
+        self._chart_cache = {}
+        self._chart_cache_ttl = 10
+        self._chart_cache_max = 50
+        self.history = PortHistory(
+            db_path=self.config.server.history_db_path,
+            retention_days=self.config.server.history_retention_days,
+        )
+        logging.getLogger().setLevel(LOG_LEVELS.get(self.config.server.log_level, logging.INFO))
 
     def mqtt_publish(self, topic, payload, retain=False):
         if self.mqtt_client and self.mqtt_client.is_connected():
@@ -193,6 +206,156 @@ class Server:
         self.invalidate_status_cache()
         return web.json_response({"ok": True, "enabled": enabled})
 
+    async def handle_log_level(self, request):
+        """Get or set log level."""
+        if request.method == "GET":
+            current = logging.getLogger().level
+            level_name = logging.getLevelName(current).lower()
+            return web.json_response({
+                "level": level_name,
+                "available": list(LOG_LEVELS.keys()),
+            })
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+
+        level = data.get("level", "").lower()
+        if level not in LOG_LEVELS:
+            return web.json_response({"ok": False, "error": f"invalid level: {level}"}, status=400)
+
+        logging.getLogger().setLevel(LOG_LEVELS[level])
+        _LOGGER.info("Log level changed to %s", level)
+        return web.json_response({"ok": True, "level": level})
+
+    async def handle_chart(self, request):
+        """Get chart-ready data for all ports with caching and ETag."""
+        hours = min(float(request.query.get("hours", 1)), 720)
+        interval = max(int(request.query.get("interval", 30)), 5)
+        cache_key = f"{hours}:{interval}"
+
+        # Check cache
+        now = time.time()
+        if cache_key in self._chart_cache:
+            cached_time, cached_etag, cached_body = self._chart_cache[cache_key]
+            if now - cached_time < self._chart_cache_ttl:
+                # Check ETag
+                if_none_match = request.headers.get("If-None-Match")
+                if if_none_match == cached_etag:
+                    return web.Response(status=304)
+                return web.Response(
+                    body=cached_body,
+                    content_type="application/json",
+                    headers={"ETag": cached_etag},
+                )
+
+        # Generate data
+        now_ts = time.time()
+        start_ts = now_ts - hours * 3600
+        aligned_start = (int(start_ts) // interval) * interval
+
+        use_date = hours > 12
+        all_labels = []
+        for t in range(aligned_start, int(now_ts) + 1, interval):
+            if use_date:
+                all_labels.append(time.strftime("%m-%d %H:%M", time.localtime(t)))
+            else:
+                all_labels.append(time.strftime("%H:%M", time.localtime(t)))
+
+        raw_rows = self.history.query_history_multi(1, 4, hours, interval)
+
+        port_data = {p: {} for p in range(1, 5)}
+        for row in raw_rows:
+            port = row["port"]
+            bucket = int(row["bucket"])
+            if use_date:
+                label = time.strftime("%m-%d %H:%M", time.localtime(bucket))
+            else:
+                label = time.strftime("%H:%M", time.localtime(bucket))
+            port_data[port][label] = {
+                "power": row["power"],
+                "voltage": row["voltage"],
+                "current": row["current"],
+            }
+
+        labels = all_labels
+        power_datasets = []
+        voltage_datasets = []
+        current_datasets = []
+        port_names = ["C1", "C2", "C3", "A"]
+
+        for port in range(1, 5):
+            pd = port_data[port]
+            power_datasets.append({"label": port_names[port - 1], "data": [round(pd.get(l, {}).get("power", 0), 1) for l in labels]})
+            voltage_datasets.append({"label": port_names[port - 1], "data": [round(pd.get(l, {}).get("voltage", 0), 2) for l in labels]})
+            current_datasets.append({"label": port_names[port - 1], "data": [round(pd.get(l, {}).get("current", 0), 2) for l in labels]})
+
+        total_power = [round(sum(power_datasets[p]["data"][i] for p in range(4)), 1) for i in range(len(labels))]
+
+        result = {
+            "ok": True,
+            "labels": labels,
+            "datasets": {
+                "power": power_datasets + [{"label": "Total", "data": total_power}],
+                "voltage": voltage_datasets,
+                "current": current_datasets,
+            },
+        }
+
+        body = json.dumps(result, ensure_ascii=False).encode()
+        etag = hashlib.md5(body).hexdigest()
+
+        # Update cache with cleanup
+        self._chart_cache[cache_key] = (now, etag, body)
+        if len(self._chart_cache) > self._chart_cache_max:
+            expired = [k for k, (t, _, _) in self._chart_cache.items() if now - t > self._chart_cache_ttl]
+            for k in expired:
+                del self._chart_cache[k]
+            # If still over max, remove oldest entries
+            if len(self._chart_cache) > self._chart_cache_max:
+                sorted_keys = sorted(self._chart_cache.keys(), key=lambda k: self._chart_cache[k][0])
+                for k in sorted_keys[:len(self._chart_cache) - self._chart_cache_max]:
+                    del self._chart_cache[k]
+
+        return web.Response(
+            body=body,
+            content_type="application/json",
+            headers={"ETag": etag},
+        )
+
+    async def handle_statistics(self, request):
+        """Get port statistics."""
+        try:
+            port = int(request.match_info.get("port", 1))
+        except ValueError:
+            return web.json_response({"ok": False, "error": "invalid port"}, status=400)
+        hours = min(float(request.query.get("hours", 24)), 720)
+
+        if port not in range(1, 5):
+            return web.json_response({"ok": False, "error": "invalid port"}, status=400)
+
+        stats = self.history.get_statistics(port, int(hours))
+        return web.json_response({"ok": True, "data": stats})
+
+    async def handle_export(self, request):
+        """Export port history as CSV."""
+        try:
+            port = int(request.match_info.get("port", 1))
+        except ValueError:
+            return web.json_response({"ok": False, "error": "invalid port"}, status=400)
+        hours = min(float(request.query.get("hours", 24)), 720)
+
+        if port not in range(1, 5):
+            return web.json_response({"ok": False, "error": "invalid port"}, status=400)
+
+        csv_data = self.history.export_csv(port, int(hours))
+        return web.Response(
+            body=csv_data,
+            content_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=port_{port}_history.csv"},
+        )
+
     async def handle_index(self, request):
         return web.FileResponse(WEB_DIR / "index.html")
 
@@ -221,12 +384,48 @@ async def cors_middleware(request, handler):
     return response
 
 
-app = web.Application(middlewares=[cors_middleware])
+@web.middleware
+async def gzip_middleware(request, handler):
+    response = await handler(request)
+    if request.headers.get("Accept-Encoding", "").find("gzip") == -1:
+        return response
+    if response.content_length is not None and response.content_length < 1024:
+        return response
+    if response.content_type and "text" not in response.content_type and "json" not in response.content_type:
+        return response
+    body = response.body
+    if isinstance(body, bytes):
+        compressed = gzip.compress(body)
+        if len(compressed) < len(body):
+            response.body = compressed
+            response.headers["Content-Encoding"] = "gzip"
+            response.headers["Content-Length"] = str(len(compressed))
+    return response
+
+
+@web.middleware
+async def cache_middleware(request, handler):
+    response = await handler(request)
+    if request.path.startswith("/static/"):
+        if request.path.endswith((".js", ".css", ".png", ".ico", ".woff", ".woff2")):
+            if os.environ.get("CUKTECH_ENV") == "development":
+                response.headers["Cache-Control"] = "no-cache"
+            else:
+                response.headers["Cache-Control"] = "public, max-age=604800, immutable"
+    return response
+
+
+app = web.Application(middlewares=[cors_middleware, gzip_middleware, cache_middleware])
 app.router.add_get("/", lambda r: get_server().handle_index(r))
 app.router.add_get("/api/status", lambda r: get_server().handle_status(r))
 app.router.add_post("/api/set", lambda r: get_server().handle_set(r))
 app.router.add_post("/api/port", lambda r: get_server().handle_port(r))
 app.router.add_post("/api/enable", lambda r: get_server().handle_enable(r))
+app.router.add_get("/api/log-level", lambda r: get_server().handle_log_level(r))
+app.router.add_post("/api/log-level", lambda r: get_server().handle_log_level(r))
+app.router.add_get("/api/chart", lambda r: get_server().handle_chart(r))
+app.router.add_get("/api/statistics/{port}", lambda r: get_server().handle_statistics(r))
+app.router.add_get("/api/export/{port}", lambda r: get_server().handle_export(r))
 app.router.add_static("/static", WEB_DIR / "static", show_index=False)
 
 
@@ -235,6 +434,8 @@ async def on_startup(app_):
     async with s._start_lock:
         s.loop = asyncio.get_running_loop()
         set_status_cache_invalidator(s.invalidate_status_cache)
+        s.history.connect()
+        s.ble.set_history(s.history)
         s.setup_mqtt()
         if s.mqtt_client:
             s.setup_mqtt_subscriptions()
@@ -257,6 +458,7 @@ async def on_shutdown(app_):
     if s.mqtt_client:
         s.mqtt_client.loop_stop()
         s.mqtt_client.disconnect()
+    s.history.close()
 
 
 app.on_startup.append(on_startup)

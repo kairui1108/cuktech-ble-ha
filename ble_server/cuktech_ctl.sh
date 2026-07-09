@@ -112,6 +112,11 @@ do_start() {
 
     do_cleanup
 
+    # Keep last 1000 lines of log before restarting
+    if [ -f "$LOG_FILE" ]; then
+        tail -1000 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
+    fi
+
     echo "Starting CUKTECH BLE Server..."
     cd "$SCRIPT_DIR"
     nohup "$PYTHON" -u "$SERVER" >> "$LOG_FILE" 2>&1 &
