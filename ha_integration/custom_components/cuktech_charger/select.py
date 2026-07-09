@@ -10,21 +10,9 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
-from .const import DOMAIN, DEVICE_INFO, PIID_DISPLAY
+from .const import DOMAIN, DEVICE_INFO, PIID_DISPLAY, SELECT_PIIDS, SELECT_OPTION_MAP
 
 _LOGGER = logging.getLogger(__name__)
-
-SELECT_PIIDS = {
-    5: {"name": "场景模式", "icon": "mdi:cog", "options": ["AI模式", "数码生态", "单口模式", "均衡模式"]},
-    6: {"name": "息屏时间", "icon": "mdi:monitor", "options": ["5分钟", "1分钟", "10分钟", "30分钟", "常亮"]},
-    13: {"name": "语言", "icon": "mdi:translate", "options": ["English", "中文"]},
-}
-
-# Derive option map from SELECT_PIIDS and PIID_DISPLAY for consistency
-SELECT_OPTION_MAP = {}
-for piid, cfg in SELECT_PIIDS.items():
-    display = PIID_DISPLAY.get(piid, {})
-    SELECT_OPTION_MAP[piid] = {v: k for k, v in display.items() if v in cfg["options"]}
 
 
 async def async_setup_entry(

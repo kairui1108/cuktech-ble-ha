@@ -48,6 +48,23 @@ PIID_DISPLAY = {
     20: {0: "关闭", 1: "开启"},
 }
 
+# Select options for each setting
+SELECT_PIIDS = {
+    5: {"name": "场景模式", "icon": "mdi:cog", "options": ["AI模式", "数码生态", "单口模式", "均衡模式"]},
+    6: {"name": "息屏时间", "icon": "mdi:monitor", "options": ["5分钟", "1分钟", "10分钟", "30分钟", "常亮"]},
+    13: {"name": "语言", "icon": "mdi:translate", "options": ["English", "中文"]},
+}
+
+# Derive option map from SELECT_PIIDS and PIID_DISPLAY (keep first match for duplicates)
+SELECT_OPTION_MAP = {}
+for piid, cfg in SELECT_PIIDS.items():
+    display = PIID_DISPLAY.get(piid, {})
+    option_map = {}
+    for k, v in display.items():
+        if v in cfg["options"] and v not in option_map:
+            option_map[v] = k
+    SELECT_OPTION_MAP[piid] = option_map
+
 # Device info
 DEVICE_INFO = {
     "name": "CUKTECH Charger",
