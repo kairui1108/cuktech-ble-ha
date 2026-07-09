@@ -1,35 +1,12 @@
-"""Tests for HA Integration entity platforms."""
+"""Tests for HA Integration entity lifecycle and coordinator integration."""
 import sys
 import json
 import time
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
-# Mock homeassistant modules
-import types
-ha_core = types.ModuleType("homeassistant.core")
-ha_core.callback = lambda func: func
-ha_core.HomeAssistant = MagicMock
-
-sys.modules['homeassistant'] = MagicMock()
-sys.modules['homeassistant.components'] = MagicMock()
-sys.modules['homeassistant.components.mqtt'] = MagicMock()
-sys.modules['homeassistant.components.select'] = MagicMock()
-sys.modules['homeassistant.components.number'] = MagicMock()
-sys.modules['homeassistant.components.switch'] = MagicMock()
-sys.modules['homeassistant.components.binary_sensor'] = MagicMock()
-sys.modules['homeassistant.components.sensor'] = MagicMock()
-sys.modules['homeassistant.config_entries'] = MagicMock()
-sys.modules['homeassistant.const'] = MagicMock()
-sys.modules['homeassistant.core'] = ha_core
-sys.modules['homeassistant.exceptions'] = MagicMock()
-sys.modules['homeassistant.helpers'] = MagicMock()
-sys.modules['homeassistant.helpers.aiohttp_client'] = MagicMock()
-sys.modules['homeassistant.helpers.entity_platform'] = MagicMock()
-sys.modules['homeassistant.helpers.event'] = MagicMock()
-
-from pathlib import Path
+# conftest.py handles all homeassistant mocking
 sys.path.insert(0, str(Path(__file__).parent.parent / "custom_components"))
 
 from custom_components.cuktech_charger import CuktechMQTTCoordinator
