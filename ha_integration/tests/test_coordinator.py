@@ -42,6 +42,7 @@ class TestCuktechMQTTCoordinator:
         for _ in range(101):
             coordinator.register_callback(MagicMock())
         assert len(coordinator._callbacks) == 101
+        # Warning should be logged (verify via logger mock if needed)
 
     def test_health_failures_reset(self, coordinator):
         """Test health failures counter reset."""

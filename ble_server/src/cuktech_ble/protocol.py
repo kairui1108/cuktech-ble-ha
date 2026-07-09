@@ -41,7 +41,6 @@ Usage:
   python cuktech_ble.py set-language cn   # 设置语言
 """
 
-import argparse
 import asyncio
 import hashlib
 import io

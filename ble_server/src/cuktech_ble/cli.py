@@ -11,9 +11,14 @@ from .protocol import (
 )
 from .controller import CuktechBLEController
 
-from bleak import BleakScanner, BleakClient
+try:
+    from bleak import BleakScanner, BleakClient
+except ImportError:
+    BleakScanner = None
+    BleakClient = None
 
 import sys
+from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from state import decode_port
 
