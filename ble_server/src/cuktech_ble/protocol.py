@@ -41,15 +41,12 @@ Usage:
   python cuktech_ble.py set-language cn   # 设置语言
 """
 
-import asyncio
-import hashlib
 import io
 import logging
 import os
 import secrets
 import struct
 import sys
-import time
 
 _LOGGER = logging.getLogger("cuktech_ble")
 
@@ -151,7 +148,6 @@ CHAR_CMD_SEND = "0000001a-0000-1000-8000-00805f9b34fb"
 CHAR_CMD_RECV = "0000001b-0000-1000-8000-00805f9b34fb"
 CHAR_FW_VERSION = "00000004-0000-1000-8000-00805f9b34fb"
 
-# Notification CCCD handles
 # CCCD handles (kept for reference, Bleak handles these automatically)
 CCCD_DEVICE_INFO = 0x0020
 CCCD_AUTH_DATA = 0x0011

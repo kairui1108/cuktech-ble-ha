@@ -7,8 +7,26 @@ import secrets
 import struct
 import time
 
+try:
+    from bleak import BleakClient
+except ImportError:
+    BleakClient = None
+
+try:
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives.hmac import HMAC as CryptoHMAC
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.ciphers.aead import AESCCM
+except ImportError:
+    HKDF = None
+    CryptoHMAC = None
+    hashes = None
+    default_backend = None
+    AESCCM = None
+
 from .protocol import (
-    DEVICE_MAC, DEVICE_TOKEN, PRODUCT_ID,
+    DEVICE_MAC, DEVICE_TOKEN,
     HANDLE_DEVICE_INFO, HANDLE_AUTH_CTRL, HANDLE_AUTH_DATA,
     HANDLE_CMD_SEND, HANDLE_CMD_RECV, HANDLE_FW_VERSION,
     CHAR_DEVICE_INFO, CHAR_AUTH_CTRL, CHAR_AUTH_DATA,
@@ -26,11 +44,10 @@ _LOGGER = logging.getLogger("cuktech_ble")
 class CuktechBLEController:
     """CUKTECH 充电器 BLE 直连控制器。"""
 
-    def __init__(self, mac=DEVICE_MAC, token=DEVICE_TOKEN, product_id=PRODUCT_ID):
+    def __init__(self, mac=DEVICE_MAC, token=DEVICE_TOKEN):
         require_runtime_dependencies()
         self.mac = mac
         self.token = token
-        self.product_id = product_id
         self.mac_bytes = mac_str_to_bytes(mac)
         self.client = None
         self.authenticated = False
@@ -329,7 +346,7 @@ class CuktechBLEController:
         """消耗设备认证后的自动推送数据。"""
         _LOGGER.debug("Waiting for device init push...")
         push_count = 0
-        start = asyncio.get_event_loop().time()
+        start = asyncio.get_running_loop().time()
         max_drain_seconds = 6.0
         max_push_count = 60
 
@@ -338,7 +355,7 @@ class CuktechBLEController:
             if push_count >= max_push_count:
                 _LOGGER.debug("Init push limit reached (%d), stopping drain", max_push_count)
                 break
-            if asyncio.get_event_loop().time() - start >= max_drain_seconds:
+            if asyncio.get_running_loop().time() - start >= max_drain_seconds:
                 _LOGGER.debug("Init push drain timeout (%.1fs), continuing", max_drain_seconds)
                 break
 
@@ -552,12 +569,12 @@ class CuktechBLEController:
 
     async def _recv_set_response(self, siid, piid, timeout=8.0):
         """接收 SET 命令的响应: 期望 ACK (B4=0x01) + Result (B4=0x04)。"""
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         got_ack = False
         result_value = None
 
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
 
@@ -582,7 +599,7 @@ class CuktechBLEController:
                 if b4 == 0x01 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
                     # SET ACK
                     got_ack = True
-                    deadline = asyncio.get_event_loop().time() + 1.0
+                    deadline = asyncio.get_running_loop().time() + 1.0
                     continue
                 elif b4 == 0x04 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
                     # SET Result - 解析值
@@ -613,10 +630,10 @@ class CuktechBLEController:
 
     async def _recv_get_response(self, siid, piid, timeout=8.0):
         """接收 GET 命令的响应: 期望 B4=0x03, 值在 B12。"""
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
 
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
 
@@ -645,7 +662,7 @@ class CuktechBLEController:
                     return {'piid': piid, 'value': result_value, 'raw': pt}
                 else:
                     # 推送通知 (跳过, 延长超时)
-                    deadline = asyncio.get_event_loop().time() + 3.0
+                    deadline = asyncio.get_running_loop().time() + 3.0
                     continue
 
             elif data[2] == 0x00 and len(data) >= 6:

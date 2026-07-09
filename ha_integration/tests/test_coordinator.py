@@ -12,6 +12,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "custom_components"))
 from custom_components.cuktech_charger import CuktechMQTTCoordinator
 
 
+class _AsyncContextManager:
+    def __init__(self, resp):
+        self._resp = resp
+    async def __aenter__(self):
+        return self._resp
+    async def __aexit__(self, *args):
+        return False
+
+
 class TestCuktechMQTTCoordinator:
     """Test CuktechMQTTCoordinator."""
 
@@ -37,12 +46,14 @@ class TestCuktechMQTTCoordinator:
         coordinator.unregister_callback(callback)
         assert callback not in coordinator._callbacks
 
-    def test_callback_limit(self, coordinator):
-        """Test callback limit warning."""
-        for _ in range(101):
-            coordinator.register_callback(MagicMock())
-        assert len(coordinator._callbacks) == 101
-        # Warning should be logged (verify via logger mock if needed)
+    def test_callback_limit(self, coordinator, caplog):
+        """Test callback limit warning is logged."""
+        import logging
+        with caplog.at_level(logging.WARNING):
+            for _ in range(105):
+                coordinator.register_callback(MagicMock())
+        assert len(coordinator._callbacks) == 105
+        assert any("Too many callbacks" in msg for msg in caplog.messages)
 
     def test_health_failures_reset(self, coordinator):
         """Test health failures counter reset."""
@@ -117,12 +128,11 @@ class TestCuktechMQTTCoordinator:
     @pytest.mark.asyncio
     async def test_async_health_check_success(self, coordinator):
         """Test HTTP health check succeeds."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import MagicMock, patch
+        from types import SimpleNamespace
 
-        resp = AsyncMock()
-        resp.status = 200
-        session = AsyncMock()
-        session.get = AsyncMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=resp), __aexit__=AsyncMock()))
+        session = MagicMock()
+        session.get = MagicMock(return_value=_AsyncContextManager(SimpleNamespace(status=200)))
 
         with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
             await coordinator._async_health_check(None)
@@ -133,10 +143,10 @@ class TestCuktechMQTTCoordinator:
     @pytest.mark.asyncio
     async def test_async_health_check_failure(self, coordinator):
         """Test HTTP health check handles failure."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import MagicMock, patch
 
-        session = AsyncMock()
-        session.get = AsyncMock(side_effect=Exception("Timeout"))
+        session = MagicMock()
+        session.get = MagicMock(side_effect=Exception("Timeout"))
 
         with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
             await coordinator._async_health_check(None)
@@ -147,14 +157,116 @@ class TestCuktechMQTTCoordinator:
     @pytest.mark.asyncio
     async def test_async_health_check_bad_status(self, coordinator):
         """Test HTTP health check handles bad status code."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import MagicMock, patch
+        from types import SimpleNamespace
 
-        resp = AsyncMock()
-        resp.status = 503
-        session = AsyncMock()
-        session.get = AsyncMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=resp), __aexit__=AsyncMock()))
+        session = MagicMock()
+        session.get = MagicMock(return_value=_AsyncContextManager(SimpleNamespace(status=503)))
 
         with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
             await coordinator._async_health_check(None)
 
         assert coordinator._available is False
+
+    def test_on_port_message_malformed_json(self, coordinator):
+        """Test _on_port_message handles malformed JSON gracefully."""
+        msg = MagicMock()
+        msg.topic = "cuktech/charger/port/c1"
+        msg.payload = b"not json"
+
+        # Should not raise
+        coordinator._on_port_message(msg)
+        assert coordinator._port_data == {}
+
+    def test_on_port_message_empty_payload(self, coordinator):
+        """Test _on_port_message handles empty payload - stores empty dict."""
+        msg = MagicMock()
+        msg.topic = "cuktech/charger/port/c1"
+        msg.payload = b"{}"
+
+        coordinator._on_port_message(msg)
+        # Empty JSON is valid, stores {} for port 1
+        assert coordinator._port_data == {"1": {}}
+
+    def test_on_port_message_unknown_topic(self, coordinator):
+        """Test _on_port_message ignores unknown topics."""
+        msg = MagicMock()
+        msg.topic = "cuktech/charger/unknown"
+        msg.payload = b'{"voltage": 20.0}'
+
+        coordinator._on_port_message(msg)
+        assert len(coordinator._port_data) == 0
+
+    def test_on_settings_message_malformed_json(self, coordinator):
+        """Test _on_settings_message handles malformed JSON gracefully."""
+        msg = MagicMock()
+        msg.topic = "cuktech/charger/settings"
+        msg.payload = b"not json"
+
+        coordinator._on_settings_message(msg)
+        assert coordinator._settings == {}
+
+    def test_on_status_message_malformed_json(self, coordinator):
+        """Test _on_status_message handles malformed JSON gracefully."""
+        msg = MagicMock()
+        msg.topic = "cuktech/charger/status"
+        msg.payload = b"not json"
+
+        # Should not raise
+        coordinator._on_status_message(msg)
+
+    def test_on_status_message_connected_false(self, coordinator):
+        """Test _on_status_message with connected=False sets _mqtt_connected but device stays available."""
+        msg = MagicMock()
+        msg.topic = "cuktech/charger/status"
+        msg.payload = json.dumps({"connected": False}).encode()
+
+        coordinator._on_status_message(msg)
+        assert coordinator._mqtt_connected is False
+        # _last_status_time is updated, so http_recent makes available True
+        assert coordinator.available is True
+
+    @pytest.mark.asyncio
+    async def test_async_set_value(self, coordinator):
+        """Test async_set_value publishes MQTT command with correct topic/payload."""
+        from unittest.mock import patch, AsyncMock
+        with patch('custom_components.cuktech_charger.mqtt') as mock_mqtt:
+            mock_mqtt.async_publish = AsyncMock()
+            await coordinator.async_set_value(5, 1)
+            mock_mqtt.async_publish.assert_called_once()
+            call_args = mock_mqtt.async_publish.call_args
+            topic = call_args[0][1]
+            assert "set" in topic
+            payload = json.loads(call_args[0][2])
+            assert payload["piid"] == 5
+            assert payload["value"] == 1
+
+    @pytest.mark.asyncio
+    async def test_async_port_control(self, coordinator):
+        """Test async_port_control publishes MQTT command with correct topic/payload."""
+        from unittest.mock import patch, AsyncMock
+        with patch('custom_components.cuktech_charger.mqtt') as mock_mqtt:
+            mock_mqtt.async_publish = AsyncMock()
+            await coordinator.async_port_control("c1", "on")
+            mock_mqtt.async_publish.assert_called_once()
+            call_args = mock_mqtt.async_publish.call_args
+            topic = call_args[0][1]
+            assert "port" in topic
+            payload = json.loads(call_args[0][2])
+            assert payload["port"] == "c1"
+            assert payload["action"] == "on"
+
+    def test_notify_callbacks(self, coordinator):
+        """Test _notify_callbacks calls all registered callbacks."""
+        cb1 = MagicMock()
+        cb2 = MagicMock()
+        coordinator.register_callback(cb1)
+        coordinator.register_callback(cb2)
+        coordinator._notify_callbacks()
+        cb1.assert_called_once()
+        cb2.assert_called_once()
+
+    def test_port_data_property(self, coordinator):
+        """Test port_data property returns _port_data."""
+        coordinator._port_data = {"1": {"voltage": 20.0}}
+        assert coordinator.port_data == {"1": {"voltage": 20.0}}

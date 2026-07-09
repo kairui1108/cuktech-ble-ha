@@ -18,8 +18,8 @@ except ImportError:
     BleakClient = None
 
 import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from state import decode_port
 
 
