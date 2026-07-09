@@ -6,16 +6,16 @@ import sys
 
 from .protocol import (
     DEVICE_MAC, DEVICE_TOKEN, SIID_CHARGER, PIID_NAMES, PIID_DISPLAY,
-    PORT_BITS, TIMER_PORTS, SET_COMMANDS,
+    PORT_BITS, TIMER_PORTS, CHAR_CMD_RECV,
     mac_str_to_bytes, require_runtime_dependencies,
 )
-from .controller import CuktechBLEController, CHAR_CMD_RECV
+from .controller import CuktechBLEController
 
-try:
-    from bleak import BleakScanner, BleakClient
-except ImportError:
-    BleakScanner = None
-    BleakClient = None
+from bleak import BleakScanner, BleakClient
+
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from state import decode_port
 
 
 # ============================================================

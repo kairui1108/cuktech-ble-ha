@@ -112,3 +112,48 @@ class TestCuktechMQTTCoordinator:
 
         assert coordinator._health_failures == 0
         assert coordinator._mqtt_connected is True
+
+    @pytest.mark.asyncio
+    async def test_async_health_check_success(self, coordinator):
+        """Test HTTP health check succeeds."""
+        from unittest.mock import AsyncMock, patch
+
+        resp = AsyncMock()
+        resp.status = 200
+        session = AsyncMock()
+        session.get = AsyncMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=resp), __aexit__=AsyncMock()))
+
+        with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
+            await coordinator._async_health_check(None)
+
+        assert coordinator._available is True
+        assert coordinator._health_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_async_health_check_failure(self, coordinator):
+        """Test HTTP health check handles failure."""
+        from unittest.mock import AsyncMock, patch
+
+        session = AsyncMock()
+        session.get = AsyncMock(side_effect=Exception("Timeout"))
+
+        with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
+            await coordinator._async_health_check(None)
+
+        assert coordinator._available is False
+        assert coordinator._health_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_async_health_check_bad_status(self, coordinator):
+        """Test HTTP health check handles bad status code."""
+        from unittest.mock import AsyncMock, patch
+
+        resp = AsyncMock()
+        resp.status = 503
+        session = AsyncMock()
+        session.get = AsyncMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=resp), __aexit__=AsyncMock()))
+
+        with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
+            await coordinator._async_health_check(None)
+
+        assert coordinator._available is False
