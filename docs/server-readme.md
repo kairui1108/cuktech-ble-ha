@@ -68,7 +68,8 @@ server:
   host: "0.0.0.0"
   port: 8199
   command_timeout: 10.0
-  reconnect_delay: 5.0
+  reconnect_base_delay: 1.0
+  reconnect_max_delay: 300.0
   settings_refresh_interval: 60.0
 ```
 

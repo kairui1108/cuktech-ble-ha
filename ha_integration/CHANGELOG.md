@@ -7,6 +7,17 @@
 - ConfigFlow tests: async_step_user form/create/unique_id/errors/abort
 - Coordinator tests: async_set_value, async_port_control with payload verification
 - MQTT LWT (Last Will and Testament) for crash detection
+- async_will_remove_from_hass super() calls on all entities
+- _notify_callbacks iterates list copy to prevent mutation during iteration
+
+### Fixed
+- Availability logic: HTTP failure respects MQTT connected state
+- MQTT `connected: false` no longer falsely marks device available
+- Duplicate entities: removed PIID 19/20 from SENSOR_PIIDS (already in SETTING_PIIDS)
+- MQTT publish error handling: async_set_value/port_control wrapped in try/except
+- Config flow error messages now use HA translation keys
+- test_health_failures renamed to match actual assertion
+- conftest.py: real HA base classes for proper @property support
 
 ### Fixed
 - Availability logic: HTTP failure respects MQTT connected state

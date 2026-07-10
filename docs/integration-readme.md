@@ -63,26 +63,26 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 
 | 实体 | 说明 | 单位 |
 |------|------|------|
-| `sensor.cuktech_c1_voltage` | C1 电压 | V |
-| `sensor.cuktech_c1_current` | C1 电流 | A |
-| `sensor.cuktech_c1_power` | C1 功率 | W |
-| `sensor.cuktech_c1_protocol` | C1 协议 | - |
-| `sensor.cuktech_c2_voltage` | C2 电压 | V |
-| `sensor.cuktech_c2_current` | C2 电流 | A |
-| `sensor.cuktech_c2_power` | C2 功率 | W |
-| `sensor.cuktech_c2_protocol` | C2 协议 | - |
-| `sensor.cuktech_c3_voltage` | C3 电压 | V |
-| `sensor.cuktech_c3_current` | C3 电流 | A |
-| `sensor.cuktech_c3_power` | C3 功率 | W |
-| `sensor.cuktech_c3_protocol` | C3 协议 | - |
+| `sensor.cuktech_charger_c1_voltage` | C1 电压 | V |
+| `sensor.cuktech_charger_c1_current` | C1 电流 | A |
+| `sensor.cuktech_charger_c1_power` | C1 功率 | W |
+| `sensor.cuktech_charger_c1_protocol` | C1 协议 | - |
+| `sensor.cuktech_charger_c2_voltage` | C2 电压 | V |
+| `sensor.cuktech_charger_c2_current` | C2 电流 | A |
+| `sensor.cuktech_charger_c2_power` | C2 功率 | W |
+| `sensor.cuktech_charger_c2_protocol` | C2 协议 | - |
+| `sensor.cuktech_charger_c3_voltage` | C3 电压 | V |
+| `sensor.cuktech_charger_c3_current` | C3 电流 | A |
+| `sensor.cuktech_charger_c3_power` | C3 功率 | W |
+| `sensor.cuktech_charger_c3_protocol` | C3 协议 | - |
 | `sensor.cuktech_a_voltage` | A 电压 | V |
 | `sensor.cuktech_a_current` | A 电流 | A |
 | `sensor.cuktech_a_power` | A 功率 | W |
 | `sensor.cuktech_a_protocol` | A 协议 | - |
-| `sensor.cuktech_total_power` | 总功率 | W |
-| `sensor.cuktech_c1_countdown` | C1 倒计时 | min |
-| `sensor.cuktech_c2_countdown` | C2 倒计时 | min |
-| `sensor.cuktech_c3_countdown` | C3 倒计时 | min |
+| `sensor.cuktech_charger_total_power` | 总功率 | W |
+| `sensor.cuktech_charger_c1_countdown` | C1 倒计时 | min |
+| `sensor.cuktech_charger_c2_countdown` | C2 倒计时 | min |
+| `sensor.cuktech_charger_c3_countdown` | C3 倒计时 | min |
 | `sensor.cuktech_a_countdown` | A 倒计时 | min |
 | `sensor.cuktech_idle_screenoff` | 空闲息屏 | - |
 | `sensor.cuktech_screen_dir_lock` | 屏幕方向锁 | - |
@@ -91,9 +91,9 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 
 | 实体 | 说明 |
 |------|------|
-| `switch.cuktech_c1_port` | C1 端口开关 |
-| `switch.cuktech_c2_port` | C2 端口开关 |
-| `switch.cuktech_c3_port` | C3 端口开关 |
+| `switch.cuktech_charger_c1_port` | C1 端口开关 |
+| `switch.cuktech_charger_c2_port` | C2 端口开关 |
+| `switch.cuktech_charger_c3_port` | C3 端口开关 |
 | `switch.cuktech_a_port` | A 端口开关 |
 | `switch.cuktech_usb_a_always_on` | USB-A 常通电 |
 | `switch.cuktech_idle_screenoff` | 空闲息屏 |
@@ -111,19 +111,19 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 
 | 实体 | 说明 |
 |------|------|
-| `binary_sensor.cuktech_c1_active` | C1 活跃状态 |
-| `binary_sensor.cuktech_c2_active` | C2 活跃状态 |
-| `binary_sensor.cuktech_c3_active` | C3 活跃状态 |
+| `binary_sensor.cuktech_charger_charger_c1_active` | C1 活跃状态 |
+| `binary_sensor.cuktech_charger_charger_c2_active` | C2 活跃状态 |
+| `binary_sensor.cuktech_charger_charger_c3_active` | C3 活跃状态 |
 | `binary_sensor.cuktech_a_active` | A 活跃状态 |
 
 ### 数字（Number）
 
 | 实体 | 说明 | 范围 |
 |------|------|------|
-| `number.cuktech_c1_countdown` | C1 倒计时设置 | 0-999 分钟 |
-| `number.cuktech_c2_countdown` | C2 倒计时设置 | 0-999 分钟 |
-| `number.cuktech_c3_countdown` | C3 倒计时设置 | 0-999 分钟 |
-| `number.cuktech_a_countdown` | A 倒计时设置 | 0-999 分钟 |
+| `number.cuktech_charger_c1_countdown` | C1 倒计时设置 | 0-1440 分钟 |
+| `number.cuktech_charger_c2_countdown` | C2 倒计时设置 | 0-1440 分钟 |
+| `number.cuktech_charger_c3_countdown` | C3 倒计时设置 | 0-1440 分钟 |
+| `number.cuktech_a_countdown` | A 倒计时设置 | 0-1440 分钟 |
 
 ## 协议说明
 
@@ -145,7 +145,7 @@ automation:
   - alias: "CUKTECH 充电完成通知"
     trigger:
       - platform: state
-        entity_id: binary_sensor.cuktech_c1_active
+        entity_id: binary_sensor.cuktech_charger_charger_c1_active
         to: "off"
     condition:
       - condition: template
@@ -163,12 +163,12 @@ automation:
   - alias: "CUKTECH 总功率告警"
     trigger:
       - platform: numeric_state
-        entity_id: sensor.cuktech_total_power
+        entity_id: sensor.cuktech_charger_total_power
         above: 100
     action:
       - service: notify.notify
         data:
-          message: "CUKTECH 充电器总功率超过 100W：{{ states('sensor.cuktech_total_power') }}W"
+          message: "CUKTECH 充电器总功率超过 100W：{{ states('sensor.cuktech_charger_total_power') }}W"
 ```
 
 ### 电价时段自动切换场景

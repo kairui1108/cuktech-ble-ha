@@ -9,6 +9,11 @@ PORT_DEFAULT = {"voltage": 0.0, "current": 0.0, "power": 0.0, "active": False, "
 PORT_NAMES = {1: "c1", 2: "c2", 3: "c3", 4: "a"}
 PORT_BITS = {"c1": 0, "c2": 1, "c3": 2, "a": 3}
 
+# PIIDs that can be set via commands (read/write)
+# PIID 1-4: port data (read-only, pushed by device)
+# PIID 7: protocol control (write-only, not included)
+# PIID 14: screen direction (write-only, not included)
+# PIID 17-18: PDO capabilities (read-only, fetched separately)
 VALID_PIIDS = {5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 19, 20}
 PIID_RANGES = {
     5: (1, 4), 6: (0, 5), 8: (0, 1440), 9: (0, 1440), 10: (0, 1440),

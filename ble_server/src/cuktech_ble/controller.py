@@ -38,6 +38,11 @@ from .protocol import (
 
 _LOGGER = logging.getLogger("cuktech_ble")
 
+
+class AuthConnectionError(ConnectionError):
+    pass
+
+
 # ============================================================
 # BLE 控制器
 # ============================================================
@@ -53,6 +58,8 @@ class CuktechBLEController:
         self.authenticated = False
         self._notify_queues = {}
         self._send_it = 0
+        self._miot_seq = 1
+        self._session_keys = None
 
     def _make_notify_handler(self, name):
         """创建通知回调函数 (基于队列，避免竞态条件)。"""
@@ -122,8 +129,9 @@ class CuktechBLEController:
             return received
 
         else:
-            _LOGGER.warning("Unknown auth response format: %s", data.hex())
-            return data
+            _LOGGER.warning("Unknown auth response format: data[2]=0x%02x, len=%d, data=%s",
+                           data[2], len(data), data.hex())
+            return None
 
     async def connect(self):
         """连接到设备。"""
@@ -153,8 +161,42 @@ class CuktechBLEController:
 
         return True
 
+    async def stop_all_notifications(self):
+        """取消所有已订阅的 GATT 通知通道。
+
+        在断开连接前调用，避免 BlueZ GATT 缓存积累错误的 CCCD
+        描述符状态，导致快速重连时认证失败。
+        """
+        chars_to_stop = []
+        for name in ("auth_ctrl", "auth_data", "cmd_send", "cmd_recv", "dev_info"):
+            if name in self._notify_queues:
+                chars_to_stop.append(name)
+
+        for name in chars_to_stop:
+            char_uuid = {
+                "auth_ctrl": CHAR_AUTH_CTRL,
+                "auth_data": CHAR_AUTH_DATA,
+                "cmd_send": CHAR_CMD_SEND,
+                "cmd_recv": CHAR_CMD_RECV,
+                "dev_info": CHAR_DEVICE_INFO,
+            }.get(name)
+            if char_uuid and self.client and self.client.is_connected:
+                try:
+                    await self.client.stop_notify(char_uuid)
+                except Exception:
+                    pass
+            # 清空对应队列
+            q = self._notify_queues.pop(name, None)
+            if q:
+                while not q.empty():
+                    try:
+                        q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+
     async def disconnect(self):
         """断开连接。"""
+        await self.stop_all_notifications()
         if self.client and self.client.is_connected:
             await self.client.disconnect()
             _LOGGER.info("Disconnected")
@@ -203,15 +245,7 @@ class CuktechBLEController:
           4. 验证设备 HMAC, 发送我方 HMAC
           5. 收到 0x21 = 登录成功
         """
-        max_retries = 3
-        for attempt in range(max_retries):
-            result = await self._try_authenticate()
-            if result:
-                return True
-            if attempt < max_retries - 1:
-                _LOGGER.warning("  Auth attempt %d/%d failed, retrying...", attempt + 1, max_retries)
-                await asyncio.sleep(2)
-        return False
+        return await self._try_authenticate()
 
     async def _try_authenticate(self):
         """执行单次认证尝试。"""
@@ -249,25 +283,49 @@ class CuktechBLEController:
             _LOGGER.debug("  密钥交换数据: %d bytes", len(key_data))
 
         # 检测: 充电器状态机不同步 — 发送了重复的 init 响应而非 key exchange
-        # 成功时 key_data 应为 244 bytes 且 byte[2]==0x04; 失败时是 6 bytes 的重复 init
-        if key_data and len(key_data) < 20:
-            _LOGGER.warning("  [!] 设备状态不同步 (key_data=%d bytes), 跳过本次认证", len(key_data))
+        # 正常 key exchange: byte[2] == 0x04, len >= 20
+        # 异常: byte[2] == 0x04 但 len < 20 (重复 init 响应 0000040006f2)
+        is_desync = (
+            key_data
+            and len(key_data) < 20
+            and len(key_data) >= 3
+            and key_data[2] == 0x04
+        )
+        if is_desync:
+            _LOGGER.warning("  [!] 设备状态不同步 (key_data=%d bytes, byte[2]=0x%02x), 等待设备恢复...",
+                            len(key_data), key_data[2])
+            # 等待设备发完 key exchange 数据（可能在后续通知中）
+            for _ in range(3):
+                try:
+                    extra = await self.wait_notify("auth_data", timeout=3.0)
+                    if extra and len(extra) >= 20 and extra[2] == 0x04:
+                        _LOGGER.info("  收到延迟的 key exchange 数据: %d bytes", len(extra))
+                        key_data = extra
+                        break
+                except Exception:
+                    break
+            else:
+                _LOGGER.warning("  [!] 设备未恢复，放弃本次认证")
+                return False
+        elif not key_data:
+            _LOGGER.warning("  [!] 未收到密钥交换数据")
             return False
 
         # 回传相同长度的占位数据 (使用 0xf2 与 BLE 日志一致)
-        pad_len = max(0, len(key_data) - 4) if key_data else 240
+        pad_len = max(0, len(key_data) - 4)
         placeholder = bytes([0x00, 0x00, 0x05, 0x01]) + bytes([0xf2] * pad_len)
         await self.client.write_gatt_char(CHAR_AUTH_DATA, placeholder, response=False)
 
-        # 等待设备处理占位符，清空可能残留的通知数据
-        await asyncio.sleep(0.2)
-        queue = self._notify_queues.get("auth_data")
-        if queue:
-            while not queue.empty():
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+        # 等待设备处理占位符，两次 drain 消费残留通知
+        for drain_wait in (0.3, 0.3):
+            await asyncio.sleep(drain_wait)
+            queue = self._notify_queues.get("auth_data")
+            if queue:
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
 
         # ---- Phase B: 登录认证 (CMD_LOGIN) ----
         _LOGGER.info("  [2/5] 发送登录命令 (CMD_LOGIN=0x24)...")
@@ -282,10 +340,15 @@ class CuktechBLEController:
         CMD_SEND_KEY = bytes([0x00, 0x00, 0x00, 0x0b, 0x01, 0x00])
         await self.client.write_gatt_char(CHAR_AUTH_DATA, CMD_SEND_KEY, response=False)
 
-        # 等待 RCV_RDY
-        data = await self.wait_notify("auth_data", timeout=3.0)
-        if not data or data != bytes([0x00, 0x00, 0x01, 0x01]):
-            _LOGGER.warning("  [!] 未收到 RCV_RDY, got: %s", data.hex() if data else 'None')
+        # 等待 RCV_RDY（跳过残留的 key exchange 等数据）
+        for _retry in range(5):
+            data = await self.wait_notify("auth_data", timeout=3.0)
+            if data == bytes([0x00, 0x00, 0x01, 0x01]):
+                break
+            if data:
+                _LOGGER.debug("  [Phase B] skipped %d bytes (expecting RCV_RDY)", len(data))
+        else:
+            _LOGGER.warning("  [!] 未收到 RCV_RDY after retries")
             return False
 
         # 发送随机密钥 (带帧头 0100)
@@ -710,8 +773,7 @@ class CuktechBLEController:
                     _LOGGER.debug("GET response: value=%s", result_value)
                     return {'piid': piid, 'value': result_value, 'raw': pt}
                 else:
-                    # 推送通知 (跳过, 延长超时)
-                    deadline = asyncio.get_running_loop().time() + 3.0
+                    # 推送通知 (跳过, 不重置 deadline 避免无限延期)
                     continue
 
             elif data[2] == 0x00 and len(data) >= 6:

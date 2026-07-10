@@ -2,38 +2,52 @@
 
 ## v1.0.2
 
-### BLE Server
+### BLE Server — 连接稳定性修复
 
-- **模块拆分**: ble.py 拆分为 protocol.py（常量）/ controller.py（核心逻辑）/ cli.py（用户界面）
-- **BLEManager 单元测试**: 新增 28 个测试覆盖 init/reconnect/publish/process/multiframe/inline/send/disconnect
-- **协议测试**: 新增 _env_hex_bytes、odd-length hex、MAC 格式测试
-- **BleakClient/HKDF 导入修复**: try/except 导入避免运行时 NameError
-- **CORS 安全**: 白名单 localhost Origin，移除未使用的 PUT/DELETE 方法
+- **BLE 认证重连修复**: 设备 session 状态不同步时，Phase A 恢复 + Phase B RCV_RDY 重试机制
+- **bluetoothctl disconnect MAC**: 断连时发送明确 BLE 断连通知，让设备重置 session
+- **Auth 失败不再重复 power cycle**: 避免设备收到多次断连通知导致状态混乱
+- **power cycle 后适配器就绪检查**: 轮询 `hciconfig hci0` 等待 UP 状态
+- **desync 检测**: Phase A 恢复后二次 drain 清理残留 key exchange 数据
+- **auth 失败 CCCD 清理**: 断连前调用 stop_all_notifications() 清除 GATT 订阅
+- **stop() 竞态修复**: _stop_event 触发后跳过 GATT 操作，避免和 power cycle 并发
+- **AuthConnectionError 自定义异常**: 区分 auth 失败和普通连接错误
+- **auth 失败退避策略**: 连续失败 5 次后停止重试，通知用户手动重启充电器
 - **MQTT LWT**: 添加 Last Will and Testament，崩溃时自动通知 HA
-- **Falsity zero 修复**: energy_wh 0.0 值不再被错误过滤
-- **pad_len 防护**: 防止负数 pad_len 导致协议失步
-- **multiframe 完整消费**: 大帧数时消费所有帧而非只消费 10 帧
-- **队列竞态修复**: drain queue 使用 while True + try/except 替代 empty() 检查
-- **弃用 API 修复**: 全部 asyncio.get_event_loop() 替换为 get_running_loop()
-- **Windows 控制台修复**: sys.stdout 副作用移到 CLI 入口函数
-- **query 参数校验**: float/int 转换加 try/except 返回 400
+- **BLE keepalive**: 每 10 秒读 GATT 特征值检测空闲断连
+- **测试隔离**: conftest.py 全局 mock asyncio.create_subprocess_exec，防止测试影响真实 BLE
+
+### BLE Server — 代码质量
+
+- **模块拆分**: ble.py → protocol.py / controller.py / cli.py
+- **PIID 统一定义**: protocol.py 新增 READABLE_SETTINGS_PIIDS
+- **_recv_get_response**: 推送通知不再延长 deadline，防止无限超时
+- **chart 优化**: 单次遍历构建 power/voltage/current 数组，消除重复 strftime
+- **cuktech_ctl.sh**: 新增 clear-log 和 clear-history 命令，动态生成 systemd service
 
 ### HA Integration
 
-- **Entity 类单元测试**: 新增 30 个测试实例化真实 Entity 类
-- **ConfigFlow 完整测试**: async_step_user 表单/创建/去重/错误/中断
-- **Availability 修复**: HTTP 失败时尊重 MQTT 连接状态
-- **MQTT connected:false 修复**: 不再误标记设备为 available
-- **重复实体移除**: PIID 19/20 从 SENSOR_PIIDS 移除，避免 sensor+switch 重复
-- **MQTT 异常捕获**: async_set_value/port_control 加 try/except
-- **Translation key**: config_flow 错误使用 HA 翻译机制
-- **Entity category**: 诊断/配置实体添加 EntityCategory
-- **HA 基类 Mock**: conftest.py 使用真实 HA 基类支持 @property
+- **_notify_callbacks**: 遍历 list(self._callbacks) 副本，防止遍历中被修改
+- **async_will_remove_from_hass**: 所有 Entity 添加 super() 调用
+- **test_health_failures**: 重命名测试名以匹配实际断言
+- **PIID 6 重复值**: 添加注释说明设备固件行为
+
+### Web UI
+
+- **MQTT 状态显示**: BLE 和 MQTT 连接状态并排显示（绿/红色圆点）
+- **按钮防重复提交**: bleToggle/bleRestart 添加 disabled 保护
+- **按钮文字直接决定操作**: 不依赖 bleConnected 状态，避免状态不同步
+
+### 文档
+
+- **README**: 目录结构更新（protocol.py/controller.py/cli.py）
+- **docs**: 实体名称格式修正、countdown 范围更新、reconnect 配置更新
+- **bump-version.sh**: 同时更新 ha_integration/pyproject.toml 版本
 
 ### 测试
 
-- **总计 161 个测试**: BLE Server 91 + HA Integration 70，全部通过
-- **覆盖模块**: protocol/controller/ble_manager/ha_server/history/config/state/config_flow/coordinator/entities
+- **总计 171 个测试**: BLE Server 101 + HA Integration 70，全部通过
+- **新增测试**: BLEManager 重连循环/Auth 失败/Multiframe 边界/并发命令/解密失败计数/MQTT 重连
 
 ## v1.0.1
 

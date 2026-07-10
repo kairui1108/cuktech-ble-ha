@@ -6,10 +6,12 @@ import os
 import time
 
 try:
-    from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION
+    from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION, AuthConnectionError
+    from cuktech_ble.protocol import READABLE_SETTINGS_PIIDS
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-    from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION
+    from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION, AuthConnectionError
+    from cuktech_ble.protocol import READABLE_SETTINGS_PIIDS
 
 from state import ChargerState, PORT_NAMES, PORT_BITS, PORT_DEFAULT, decode_port, decode_pdo_caps
 
@@ -39,6 +41,7 @@ class BLEManager:
         self._stop_event = asyncio.Event()
         self._mqtt_publish = None
         self._reconnect_attempts = 0
+        self._decrypt_failures = 0
         self._base_reconnect_delay = config.server.reconnect_base_delay
         self._max_reconnect_delay = config.server.reconnect_max_delay
         self._history = None
@@ -60,24 +63,51 @@ class BLEManager:
     async def start(self):
         self._stop_event.clear()
         self._reconnect_attempts = 0
+        self._decrypt_failures = 0
+        self._auth_fail_count = 0
         first_run = True
         last_error = None
         while not self._stop_event.is_set():
             try:
                 await self._connect_and_run()
                 self._reconnect_attempts = 0
+                self._decrypt_failures = 0
+                self._auth_fail_count = 0
                 first_run = False
                 last_error = None
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 last_error = e
-                _LOGGER.error("BLE loop error: %s", e)
+                _LOGGER.error("BLE loop error: %s", e, exc_info=True)
             finally:
                 await self._disconnect()
             if not self._stop_event.is_set():
-                await self._force_disconnect_bluetooth()
-                delay = self._get_reconnect_delay()
+                if isinstance(last_error, AuthConnectionError):
+                    # auth 失败可能有两类原因:
+                    # 1. 设备端 session 未清除 (需等待设备自然超时)
+                    # 2. BlueZ GATT 缓存损坏 (需 power cycle 本地适配器)
+                    # 因此 auth 失败也应重置本地适配器，避免陷入永久失败
+                    self._auth_fail_count += 1
+                    await self._force_disconnect_bluetooth()
+                    if self._auth_fail_count >= 5:
+                        _LOGGER.error(
+                            "Auth failed %d times consecutively. "
+                            "Device session is stuck. Please power-cycle the charger "
+                            "(unplug and replug) to reset its BLE session.",
+                            self._auth_fail_count)
+                        self._publish_status({"connected": False, "error": "device_session_stuck"}, retain=True)
+                        # 等待 5 分钟后自动重试（给用户时间手动重启）
+                        delay = 300
+                    else:
+                        delay = min(60 * self._auth_fail_count, 180)
+                    _LOGGER.warning("Auth failed %d times, reset adapter and waiting %ds...",
+                                    self._auth_fail_count, delay)
+                elif last_error:
+                    await self._force_disconnect_bluetooth()
+                    delay = self._get_reconnect_delay()
+                else:
+                    delay = self._get_reconnect_delay()
                 self._reconnect_attempts += 1
                 _LOGGER.info("Reconnecting in %.0fs (attempt %d)...", delay, self._reconnect_attempts)
                 try:
@@ -113,13 +143,16 @@ class BLEManager:
         _LOGGER.info("Connected, authenticating...")
 
         if not await self.ctrl.authenticate():
-            _LOGGER.warning("Auth failed, waiting 5s for device state to clear...")
+            _LOGGER.warning("Auth failed, disconnecting BLE...")
             try:
-                await self.ctrl.client.disconnect()
+                if self.ctrl.client and self.ctrl.client.is_connected:
+                    await self.ctrl.stop_all_notifications()
+                    await self.ctrl.client.disconnect()
             except Exception:
                 pass
-            await asyncio.sleep(5)
-            raise ConnectionError("Auth failed")
+            # 等待设备处理断连，避免旧连接未完全释放时新连接冲突
+            await asyncio.sleep(2)
+            raise AuthConnectionError("Auth failed")
 
         await self.state.set_connection(True, True)
         _invalidate()
@@ -132,21 +165,29 @@ class BLEManager:
     async def _disconnect(self):
         if self.ctrl:
             client = self.ctrl.client if self.ctrl else None
-            was_connected = client and client.is_connected if client else False
-            try:
-                if client and client.is_connected:
-                    try:
-                        await asyncio.wait_for(client.disconnect(), timeout=3.0)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            was_connected = bool(client and client.is_connected)
+            # 如果已触发 stop，跳过 GATT cleanup（_force_disconnect_bluetooth 会处理）
+            if not self._stop_event.is_set():
+                try:
+                    await self.ctrl.stop_all_notifications()
+                except Exception:
+                    pass
+                try:
+                    if client and client.is_connected:
+                        try:
+                            await asyncio.wait_for(client.disconnect(), timeout=3.0)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             self.ctrl = None
             if was_connected and not self._stop_event.is_set():
                 _LOGGER.error("BLE device disconnected unexpectedly")
         await self.state.set_connection(False, False)
         _invalidate()
         self._publish_status({"connected": False}, retain=True)
+        # bluetoothctl disconnect MAC 由 _force_disconnect_bluetooth() 统一处理
+        # 此处不再重复调用，避免设备收到多次断连通知导致状态混乱
 
     async def _force_disconnect_bluetooth(self):
         """使用 bluetoothctl 强制断开蓝牙连接并重置适配器"""
@@ -174,7 +215,23 @@ class BLEManager:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(proc.communicate(), timeout=5)
-            await asyncio.sleep(3)
+            # 等待适配器就绪，最多10秒
+            for _ in range(10):
+                await asyncio.sleep(1)
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "hciconfig", "hci0",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+                    if b"UP" in stdout:
+                        _LOGGER.info("BT adapter ready")
+                        break
+                except Exception:
+                    pass
+            else:
+                _LOGGER.warning("BT adapter not ready after 10s, proceeding anyway")
         except Exception as e:
             _LOGGER.warning("bluetoothctl power cycle failed: %s", e)
 
@@ -197,14 +254,16 @@ class BLEManager:
                     await self._refresh_settings()
                     last_refresh = now
                 if now - last_keepalive > 10:
-                    try:
-                        await self.ctrl.client.read_gatt_char(CHAR_FW_VERSION)
-                        last_keepalive = now
-                    except Exception:
-                        client = self.ctrl.client if self.ctrl else None
-                        if not client or not client.is_connected:
-                            _LOGGER.warning("BLE keepalive: connection lost, triggering reconnect")
-                            raise ConnectionError("BLE disconnected via keepalive")
+                    if self.ctrl and self.ctrl.client and self.ctrl.client.is_connected:
+                        try:
+                            await self.ctrl.client.read_gatt_char(CHAR_FW_VERSION)
+                            last_keepalive = now
+                        except Exception:
+                            pass
+                    else:
+                        if self.ctrl is None or not self.ctrl.client or not self.ctrl.client.is_connected:
+                            if now - last_keepalive > 30:
+                                raise ConnectionError('BLE disconnected via keepalive')
                 if now - last_notify > 60:
                     client = self.ctrl.client if self.ctrl else None
                     if not client or not client.is_connected:
@@ -226,7 +285,8 @@ class BLEManager:
     async def _fetch_settings(self, update_existing=False):
         settings = dict(self.state.settings) if update_existing else {}
         pdo_caps = {}
-        for piid in [5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20]:
+        fail_count = 0
+        for piid in READABLE_SETTINGS_PIIDS:
             try:
                 result = await self.ctrl.send_miot_command(2, piid)
                 if result and "value" in result:
@@ -236,8 +296,11 @@ class BLEManager:
                     elif piid == 18:
                         pdo_caps["c3a"] = decode_pdo_caps(result["value"], "c3", "a")
             except Exception as e:
+                fail_count += 1
                 _LOGGER.debug("Failed to read PIID %d: %s", piid, e)
             await asyncio.sleep(0.1)
+        if fail_count == 14:
+            _LOGGER.warning("All PIID reads failed, BLE channel may be broken")
         await self.state.update_settings(settings)
         await self.state.update_pdo_caps(pdo_caps)
         _invalidate()
@@ -285,7 +348,9 @@ class BLEManager:
         port, action = cmd_data
         try:
             cur = await self.ctrl.send_miot_command(2, 16)
-            cur_val = cur.get("value", 0x0F) if cur else 0x0F
+            cur_val = cur.get("value", 0) if cur else 0
+            if cur is None:
+                _LOGGER.warning('Failed to read port state, using 0')
             if port == "all":
                 new_val = 0x0F if action == "on" else 0x00
             else:
@@ -293,7 +358,7 @@ class BLEManager:
                 new_val = cur_val | (1 << bit) if action == "on" else cur_val & ~(1 << bit)
             if new_val != cur_val:
                 await self.ctrl.send_miot_command(2, 16, value=new_val)
-            await self.state.update_settings({"16": new_val})
+                await self.state.update_settings({"16": new_val})
             _invalidate()
             self._publish_settings(retain=True)
             if cmd_future and not cmd_future.done():
@@ -309,7 +374,11 @@ class BLEManager:
             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
         pt = self.ctrl.decrypt(encrypted_payload)
         if not pt or len(pt) < 8:
+            self._decrypt_failures += 1
+            if self._decrypt_failures >= 10:
+                _LOGGER.warning("Decrypt failed %d times consecutively, session may be stale", self._decrypt_failures)
             return
+        self._decrypt_failures = 0
         b4 = pt[4]
         piid = pt[7] if len(pt) > 7 else -1
         if b4 == 0x04 and piid in PORT_NAMES:

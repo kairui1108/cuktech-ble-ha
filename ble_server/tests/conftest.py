@@ -4,11 +4,21 @@ import sqlite3
 import tempfile
 import pytest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from history import PortHistory
+
+
+@pytest.fixture(autouse=True)
+def mock_subprocess():
+    """Prevent any test from calling real subprocess (hciconfig, bluetoothctl, etc.)."""
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    with patch("asyncio.create_subprocess_exec", return_value=AsyncMock(return_value=mock_proc)):
+        yield
 
 
 @pytest.fixture

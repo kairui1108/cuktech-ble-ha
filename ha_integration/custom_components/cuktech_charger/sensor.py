@@ -69,6 +69,7 @@ class CuktechPortSensor(SensorEntity):
     async def async_will_remove_from_hass(self) -> None:
         """Unregister callback when removed."""
         self.coordinator.unregister_callback(self._update)
+        await super().async_will_remove_from_hass()
 
     @callback
     def _update(self) -> None:
@@ -122,6 +123,7 @@ class CuktechTotalPowerSensor(SensorEntity):
     async def async_will_remove_from_hass(self) -> None:
         """Unregister callback when removed."""
         self.coordinator.unregister_callback(self._update)
+        await super().async_will_remove_from_hass()
 
     @callback
     def _update(self) -> None:
@@ -178,6 +180,7 @@ class CuktechPortProtocolSensor(SensorEntity):
     async def async_will_remove_from_hass(self) -> None:
         """Unregister callback when removed."""
         self.coordinator.unregister_callback(self._update)
+        await super().async_will_remove_from_hass()
 
     @callback
     def _update(self) -> None:

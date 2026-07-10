@@ -5,14 +5,49 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_FILE="$SCRIPT_DIR/cuktech-ble-server.service"
 LOGROTATE_FILE="$SCRIPT_DIR/cuktech-ble-server.logrotate"
-VENV_DIR="$(dirname "$SCRIPT_DIR")/.venv"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+VENV_DIR="$PROJECT_DIR/.venv"
+CURRENT_USER="$(whoami)"
 
 echo "Installing CUKTECH BLE Server systemd service..."
+echo "  User: $CURRENT_USER"
+echo "  Dir:  $PROJECT_DIR"
 
-# Copy service file
-sudo cp "$SERVICE_FILE" /etc/systemd/system/cuktech-ble-server.service
-sudo sed -i "s|ExecStart=.*|ExecStart=$VENV_DIR/bin/python -u $(dirname "$SCRIPT_DIR")/ha_server.py|" /etc/systemd/system/cuktech-ble-server.service
-sudo sed -i "s|WorkingDirectory=.*|WorkingDirectory=$(dirname "$SCRIPT_DIR")|" /etc/systemd/system/cuktech-ble-server.service
+# Generate service file with current user and paths
+sudo tee /etc/systemd/system/cuktech-ble-server.service > /dev/null <<EOF
+[Unit]
+Description=CUKTECH BLE Server for Home Assistant
+After=network.target bluetooth.target
+Wants=network.target bluetooth.target
+
+[Service]
+Type=simple
+User=$CURRENT_USER
+WorkingDirectory=$PROJECT_DIR
+ExecStart=$VENV_DIR/bin/python -u $PROJECT_DIR/ha_server.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cuktech-ble
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=$PROJECT_DIR /tmp
+PrivateTmp=true
+
+# Bluetooth access
+SupplementaryGroups=bluetooth
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo systemctl daemon-reload
 
 # Copy logrotate config

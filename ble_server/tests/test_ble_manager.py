@@ -340,3 +340,274 @@ class TestInvalidate:
     def test_invalidate_no_callback(self):
         set_status_cache_invalidator(None)
         _invalidate()
+
+
+class TestReconnectLoop:
+    """Test BLE disconnect/reconnect cycle."""
+
+    @pytest.mark.asyncio
+    async def test_reconnect_after_disconnect(self):
+        """Test start() retries when _connect_and_run raises ConnectionError."""
+        mgr = make_manager()
+        call_count = 0
+
+        async def fake_connect_and_run():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ConnectionError("BLE disconnected")
+
+        mgr._connect_and_run = fake_connect_and_run
+        mgr._force_disconnect_bluetooth = AsyncMock()
+        mgr._disconnect = AsyncMock()
+
+        wait_calls = 0
+
+        async def fake_wait_for(coro, timeout):
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls >= 2:
+                mgr._stop_event.set()
+            raise asyncio.TimeoutError()
+
+        with patch("asyncio.wait_for", side_effect=fake_wait_for):
+            await mgr.start()
+
+        assert call_count == 2
+        assert mgr._reconnect_attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_stop_breaks_reconnect_loop(self):
+        """Test stop() breaks the reconnect loop."""
+        mgr = make_manager()
+        call_count = 0
+
+        async def fake_connect_and_run():
+            nonlocal call_count
+            call_count += 1
+            raise ConnectionError("BLE disconnected")
+
+        mgr._connect_and_run = fake_connect_and_run
+        mgr._force_disconnect_bluetooth = AsyncMock()
+
+        # Stop after first failure
+        async def fake_wait_for(coro, timeout):
+            mgr._stop_event.set()
+            raise asyncio.TimeoutError()
+
+        with patch("asyncio.wait_for", side_effect=fake_wait_for):
+            await mgr.start()
+
+        # Should only have tried once before stop broke the loop
+        assert call_count == 1
+        assert mgr._stop_event.is_set()
+
+
+class TestAuthFailureRetry:
+    """Test auth failure handling."""
+
+    @pytest.mark.asyncio
+    async def test_auth_failure_raises_auth_error(self):
+        """Test _connect raises AuthConnectionError (not ConnectionError) on auth failure."""
+        mgr = make_manager()
+
+        mock_ctrl = MagicMock()
+        mock_ctrl.authenticate = AsyncMock(return_value=False)
+        mock_ctrl.client = MagicMock()
+        mock_ctrl.client.disconnect = AsyncMock()
+        mock_ctrl.read_device_info = AsyncMock()
+        mock_ctrl.connect = AsyncMock()
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        with patch("bleak.BleakScanner") as mock_scanner:
+            mock_scanner.find_device_by_address = AsyncMock(return_value=MagicMock())
+            with patch("ble_manager.CuktechBLEController", return_value=mock_ctrl):
+                with patch("asyncio.create_subprocess_exec", return_value=AsyncMock(return_value=mock_proc)):
+                    from ble_manager import AuthConnectionError
+                    with pytest.raises(AuthConnectionError):
+                        await mgr._connect()
+
+    @pytest.mark.asyncio
+    async def test_auth_failure_triggers_power_cycle(self):
+        """Test auth failure now triggers power cycle to reset BlueZ GATT cache."""
+        mgr = make_manager()
+        mgr._force_disconnect_bluetooth = AsyncMock()
+        mgr._disconnect = AsyncMock()
+        mgr._publish_status = MagicMock()
+
+        call_count = 0
+
+        async def fake_connect_and_run():
+            nonlocal call_count
+            call_count += 1
+            from ble_manager import AuthConnectionError
+            raise AuthConnectionError("Auth failed")
+
+        mgr._connect_and_run = fake_connect_and_run
+
+        wait_calls = 0
+
+        async def fake_wait_for(coro, timeout):
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls >= 2:
+                mgr._stop_event.set()
+            raise asyncio.TimeoutError()
+
+        with patch("asyncio.wait_for", side_effect=fake_wait_for):
+            await mgr.start()
+
+        # After our fix: auth failure SHOULD trigger power cycle
+        assert mgr._force_disconnect_bluetooth.call_count >= 1
+        assert call_count == 2
+
+
+class TestMultiframeBoundary:
+    """Test multi-frame data edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_multiframe_zero_frames(self):
+        """Test multiframe with frame_count=0 does not crash."""
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+
+        # data[2]=0x00, frame_count = data[4] + 0x100*data[5] = 0 + 0 = 0
+        data = bytes([0, 0, 0x00, 4, 0x00, 0x00])
+
+        await mgr._handle_multiframe(data)
+
+        # Should ACK then ACK done, no frame consumption
+        assert mgr.ctrl.client.write_gatt_char.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_multiframe_large_count(self):
+        """Test multiframe with frame_count=1001 drains frames."""
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+        call_count = 0
+
+        async def fake_wait_notify(name, timeout=5.0):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 5:
+                raise asyncio.TimeoutError()
+            return bytes(20)
+
+        mgr.ctrl.wait_notify = fake_wait_notify
+
+        # frame_count = 0x03e9 = 1001
+        data = bytes([0, 0, 0x00, 4, 0x03, 0xe9])
+
+        await mgr._handle_multiframe(data)
+
+        # ACK + drain loop hit 5 times before timeout + final ACK
+        assert mgr.ctrl.client.write_gatt_char.call_count == 2
+        assert call_count == 6
+
+
+class TestConcurrency:
+    """Test concurrent command processing."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_commands(self):
+        """Test multiple commands in queue are all processed."""
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.send_miot_command = AsyncMock(return_value={"ok": True})
+        publisher = MagicMock()
+        mgr.set_mqtt_publisher(publisher)
+
+        futures = []
+        for _ in range(3):
+            future = asyncio.get_running_loop().create_future()
+            await mgr.cmd_queue.put(("set", (5, 1), future))
+            futures.append(future)
+
+        await mgr._process_commands()
+
+        for f in futures:
+            assert f.done()
+            assert f.result() == {"ok": True}
+
+
+class TestDecryptFailure:
+    """Test decrypt failure counting."""
+
+    @pytest.mark.asyncio
+    async def test_decrypt_failure_count_increments(self):
+        """Test _decrypt_failures increments on repeated decrypt failures."""
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+        mgr.ctrl.decrypt = MagicMock(return_value=None)
+
+        data = bytes([0, 0, 0x02, 4]) + b'\x00' * 10
+        await mgr._handle_inline_data(data)
+        assert mgr._decrypt_failures == 1
+
+        await mgr._handle_inline_data(data)
+        assert mgr._decrypt_failures == 2
+
+        await mgr._handle_inline_data(data)
+        assert mgr._decrypt_failures == 3
+
+    @pytest.mark.asyncio
+    async def test_decrypt_failure_resets_on_success(self):
+        """Test _decrypt_failures resets to 0 after successful decrypt."""
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+        mgr.ctrl.decrypt = MagicMock(return_value=None)
+
+        data = bytes([0, 0, 0x02, 4]) + b'\x00' * 10
+        await mgr._handle_inline_data(data)
+        await mgr._handle_inline_data(data)
+        assert mgr._decrypt_failures == 2
+
+        # Now provide valid decrypt
+        decrypted = bytes([0, 0, 0, 0, 0x04, 0, 0, 1, 0, 0x0a, 25, 201])
+        mgr.ctrl.decrypt = MagicMock(return_value=decrypted)
+
+        await mgr._handle_inline_data(data)
+        assert mgr._decrypt_failures == 0
+
+
+class TestMQTTPublisherReconnect:
+    """Test MQTT reconnect restores publisher."""
+
+    def test_on_connect_sets_mqtt_publisher(self):
+        """Test on_connect callback sets MQTT publisher on reconnect."""
+        mgr = make_manager()
+        publisher = MagicMock()
+
+        # Simulate what ha_server.py does: on_connect sets publisher
+        mgr.set_mqtt_publisher(publisher)
+        assert mgr._mqtt_publish is publisher
+
+        # Simulate disconnect losing publisher
+        mgr.set_mqtt_publisher(None)
+        assert mgr._mqtt_publish is None
+
+        # Simulate on_connect restoring it
+        mgr.set_mqtt_publisher(publisher)
+        assert mgr._mqtt_publish is publisher
+
+    def test_on_connect_publishes_status(self):
+        """Test on_connect publishes status after reconnect."""
+        mgr = make_manager()
+        publisher = MagicMock()
+        mgr.set_mqtt_publisher(publisher)
+
+        # Simulate the on_connect flow from ha_server.py
+        mgr._publish_status({"connected": True, "authenticated": True}, retain=True)
+        publisher.assert_called_once_with(
+            "cuktech/charger/status", {"connected": True, "authenticated": True}, retain=True
+        )

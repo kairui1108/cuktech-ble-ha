@@ -55,12 +55,12 @@ class TestCuktechMQTTCoordinator:
         assert len(coordinator._callbacks) == 105
         assert any("Too many callbacks" in msg for msg in caplog.messages)
 
-    def test_health_failures_reset(self, coordinator):
-        """Test health failures counter reset."""
+    def test_health_failures_not_reset_by_availability(self, coordinator):
+        """Test health failures counter is NOT reset by _update_availability alone."""
         coordinator._health_failures = 5
         coordinator._mqtt_connected = True
         coordinator._update_availability()
-        assert coordinator._health_failures == 5  # Not reset here, only in _on_status_message
+        assert coordinator._health_failures == 5  # Only reset on MQTT reconnect, only in _on_status_message
 
     def test_update_availability_mqtt(self, coordinator):
         """Test availability update with MQTT connected."""

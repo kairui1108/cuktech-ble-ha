@@ -61,26 +61,26 @@ Restart Home Assistant, then add the integration from the Integrations page.
 
 | Entity | Description | Unit |
 |--------|-------------|------|
-| `sensor.cuktech_c1_voltage` | C1 Voltage | V |
-| `sensor.cuktech_c1_current` | C1 Current | A |
-| `sensor.cuktech_c1_power` | C1 Power | W |
-| `sensor.cuktech_c1_protocol` | C1 Protocol | - |
-| `sensor.cuktech_c2_voltage` | C2 Voltage | V |
-| `sensor.cuktech_c2_current` | C2 Current | A |
-| `sensor.cuktech_c2_power` | C2 Power | W |
-| `sensor.cuktech_c2_protocol` | C2 Protocol | - |
-| `sensor.cuktech_c3_voltage` | C3 Voltage | V |
-| `sensor.cuktech_c3_current` | C3 Current | A |
-| `sensor.cuktech_c3_power` | C3 Power | W |
-| `sensor.cuktech_c3_protocol` | C3 Protocol | - |
+| `sensor.cuktech_charger_c1_voltage` | C1 Voltage | V |
+| `sensor.cuktech_charger_c1_current` | C1 Current | A |
+| `sensor.cuktech_charger_c1_power` | C1 Power | W |
+| `sensor.cuktech_charger_c1_protocol` | C1 Protocol | - |
+| `sensor.cuktech_charger_c2_voltage` | C2 Voltage | V |
+| `sensor.cuktech_charger_c2_current` | C2 Current | A |
+| `sensor.cuktech_charger_c2_power` | C2 Power | W |
+| `sensor.cuktech_charger_c2_protocol` | C2 Protocol | - |
+| `sensor.cuktech_charger_c3_voltage` | C3 Voltage | V |
+| `sensor.cuktech_charger_c3_current` | C3 Current | A |
+| `sensor.cuktech_charger_c3_power` | C3 Power | W |
+| `sensor.cuktech_charger_c3_protocol` | C3 Protocol | - |
 | `sensor.cuktech_a_voltage` | A Voltage | V |
 | `sensor.cuktech_a_current` | A Current | A |
 | `sensor.cuktech_a_power` | A Power | W |
 | `sensor.cuktech_a_protocol` | A Protocol | - |
-| `sensor.cuktech_total_power` | Total Power | W |
-| `sensor.cuktech_c1_countdown` | C1 Countdown | min |
-| `sensor.cuktech_c2_countdown` | C2 Countdown | min |
-| `sensor.cuktech_c3_countdown` | C3 Countdown | min |
+| `sensor.cuktech_charger_total_power` | Total Power | W |
+| `sensor.cuktech_charger_c1_countdown` | C1 Countdown | min |
+| `sensor.cuktech_charger_c2_countdown` | C2 Countdown | min |
+| `sensor.cuktech_charger_c3_countdown` | C3 Countdown | min |
 | `sensor.cuktech_a_countdown` | A Countdown | min |
 | `sensor.cuktech_idle_screenoff` | Idle Screen Off | - |
 | `sensor.cuktech_screen_dir_lock` | Screen Dir Lock | - |
@@ -89,9 +89,9 @@ Restart Home Assistant, then add the integration from the Integrations page.
 
 | Entity | Description |
 |--------|-------------|
-| `switch.cuktech_c1_port` | C1 Port Switch |
-| `switch.cuktech_c2_port` | C2 Port Switch |
-| `switch.cuktech_c3_port` | C3 Port Switch |
+| `switch.cuktech_charger_c1_port` | C1 Port Switch |
+| `switch.cuktech_charger_c2_port` | C2 Port Switch |
+| `switch.cuktech_charger_c3_port` | C3 Port Switch |
 | `switch.cuktech_a_port` | A Port Switch |
 | `switch.cuktech_usb_a_always_on` | USB-A Always On |
 | `switch.cuktech_idle_screenoff` | Idle Screen Off |
@@ -109,19 +109,19 @@ Restart Home Assistant, then add the integration from the Integrations page.
 
 | Entity | Description |
 |--------|-------------|
-| `binary_sensor.cuktech_c1_active` | C1 Active |
-| `binary_sensor.cuktech_c2_active` | C2 Active |
-| `binary_sensor.cuktech_c3_active` | C3 Active |
+| `binary_sensor.cuktech_charger_charger_c1_active` | C1 Active |
+| `binary_sensor.cuktech_charger_charger_c2_active` | C2 Active |
+| `binary_sensor.cuktech_charger_charger_c3_active` | C3 Active |
 | `binary_sensor.cuktech_a_active` | A Active |
 
 ### Numbers
 
 | Entity | Description | Range |
 |--------|-------------|-------|
-| `number.cuktech_c1_countdown` | C1 Countdown Setting | 0-999 min |
-| `number.cuktech_c2_countdown` | C2 Countdown Setting | 0-999 min |
-| `number.cuktech_c3_countdown` | C3 Countdown Setting | 0-999 min |
-| `number.cuktech_a_countdown` | A Countdown Setting | 0-999 min |
+| `number.cuktech_charger_c1_countdown` | C1 Countdown Setting | 0-1440 min |
+| `number.cuktech_charger_c2_countdown` | C2 Countdown Setting | 0-1440 min |
+| `number.cuktech_charger_c3_countdown` | C3 Countdown Setting | 0-1440 min |
+| `number.cuktech_a_countdown` | A Countdown Setting | 0-1440 min |
 
 ## Protocol Reference
 
@@ -143,7 +143,7 @@ automation:
   - alias: "CUKTECH Charge Complete"
     trigger:
       - platform: state
-        entity_id: binary_sensor.cuktech_c1_active
+        entity_id: binary_sensor.cuktech_charger_charger_c1_active
         to: "off"
     condition:
       - condition: template
@@ -161,12 +161,12 @@ automation:
   - alias: "CUKTECH High Power Alert"
     trigger:
       - platform: numeric_state
-        entity_id: sensor.cuktech_total_power
+        entity_id: sensor.cuktech_charger_total_power
         above: 100
     action:
       - service: notify.notify
         data:
-          message: "CUKTECH total power exceeds 100W: {{ states('sensor.cuktech_total_power') }}W"
+          message: "CUKTECH total power exceeds 100W: {{ states('sensor.cuktech_charger_total_power') }}W"
 ```
 
 ### Off-Peak Scene Switch

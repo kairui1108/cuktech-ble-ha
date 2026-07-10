@@ -17,7 +17,6 @@ except ImportError:
     BleakScanner = None
     BleakClient = None
 
-import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from state import decode_port

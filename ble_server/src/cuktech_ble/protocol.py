@@ -178,6 +178,9 @@ PIID_DISPLAY = {
     20: {0: '关闭', 1: '开启'},
 }
 
+# Settings PIIDs that can be read via GET command
+READABLE_SETTINGS_PIIDS = [5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20]
+
 TIMER_PORTS = {'c1': 9, 'c2': 10, 'c3': 11, 'a': 12}
 
 # 端口控制位掩码 (PIID 16): bit0=C1, bit1=C2, bit2=C3, bit3=A

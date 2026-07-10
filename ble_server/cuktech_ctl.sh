@@ -79,7 +79,21 @@ except: pass
 do_cleanup() {
     echo "Cleaning up old processes and BLE connections..."
     mqtt_cleanup
-    lsof -i :8199 -t 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+    local PORT
+    PORT=$("$PYTHON" -c "
+import yaml
+from pathlib import Path
+cfg_path = Path('$SCRIPT_DIR/config.yaml')
+if cfg_path.exists():
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f) or {}
+    print(cfg.get('server', {}).get('port', 8199))
+else:
+    print(8199)
+" 2>/dev/null || echo 8199)
+    lsof -i :"$PORT" -t 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+    pkill -f "$SCRIPT_DIR/ha_server.py" 2>/dev/null || true
+    sleep 2
     pkill -9 -f "$SCRIPT_DIR/ha_server.py" 2>/dev/null || true
     # Read MAC from config.yaml for BLE disconnect
     local MAC
@@ -111,11 +125,6 @@ do_start() {
     fi
 
     do_cleanup
-
-    # Keep last 1000 lines of log before restarting
-    if [ -f "$LOG_FILE" ]; then
-        tail -1000 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
-    fi
 
     echo "Starting CUKTECH BLE Server..."
     cd "$SCRIPT_DIR"

@@ -291,7 +291,7 @@
 
         function updateUI(data) {
             bleConnected = data.connected && data.authenticated;
-            updateStatusBadge(data.connected, data.authenticated);
+            updateStatusBadge(data.connected, data.authenticated, data.mqtt_connected);
             updateBleButton();
             renderPorts(data.ports);
             updateSettingsUI(data.settings || {});
@@ -311,12 +311,12 @@
             if (currentModalPort) updateModalChart();
         }
 
-        function updateStatusBadge(connected, authenticated) {
+        function updateStatusBadge(connected, authenticated, mqttConnected) {
             const badge = document.getElementById('statusBadge');
-            const text = document.getElementById('statusText');
-            if (connected && authenticated) { badge.className = 'status-badge connected'; text.textContent = '已连接'; }
-            else if (connected) { badge.className = 'status-badge connected'; text.textContent = '认证中...'; }
-            else { badge.className = 'status-badge disconnected'; text.textContent = '未连接'; }
+            badge.className = (connected && authenticated) ? 'status-badge connected' : 'status-badge disconnected';
+
+            const mqttBadge = document.getElementById('mqttBadge');
+            mqttBadge.className = mqttConnected ? 'status-badge connected' : 'status-badge disconnected';
         }
 
         function updateBleButton() {
@@ -482,20 +482,29 @@
 
         async function bleToggle() {
             const btn = document.getElementById('bleToggle');
+            if (btn.disabled) return;
             btn.disabled = true;
             try {
-                await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !bleConnected }) });
-                setTimeout(fetchStatus, 1000);
+                const enable = btn.textContent === '连接设备';
+                await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: enable }) });
+                await new Promise(r => setTimeout(r, 500));
+                await fetchStatus();
             } catch (e) { console.error('BLE toggle error:', e); }
             finally { btn.disabled = false; }
         }
 
         async function bleRestart() {
-            await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
-            setTimeout(async () => {
+            const btn = document.getElementById('bleToggle');
+            if (btn.disabled) return;
+            btn.disabled = true;
+            try {
+                await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+                await new Promise(r => setTimeout(r, 2000));
                 await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
-                setTimeout(fetchStatus, 2000);
-            }, 2000);
+                await new Promise(r => setTimeout(r, 500));
+                await fetchStatus();
+            } catch (e) { console.error('BLE restart error:', e); }
+            finally { btn.disabled = false; }
         }
 
         // Set initial active button

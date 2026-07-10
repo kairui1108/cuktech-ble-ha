@@ -161,9 +161,13 @@
                     <div class="control-box">
                         <div class="control-label">连接状态</div>
                         <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
-                            <div id="statusBadge" class="status-badge disconnected">
+                            <div id="statusBadge" class="status-badge disconnected" title="BLE 设备连接状态">
                                 <span class="status-dot"></span>
-                                <span id="statusText">连接中...</span>
+                                <span>BLE</span>
+                            </div>
+                            <div id="mqttBadge" class="status-badge disconnected" title="MQTT 连接状态">
+                                <span class="status-dot"></span>
+                                <span>MQTT</span>
                             </div>
                             <span class="port-count" id="activePorts">0</span>
                             <span class="port-count-label">活跃端口</span>

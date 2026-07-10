@@ -63,6 +63,9 @@ class Server:
 
         def on_connect(client, userdata, flags, rc, properties=None):
             _LOGGER.info("MQTT connected (rc=%s)", rc)
+            s = get_server()
+            if s.ble:
+                s.ble.set_mqtt_publisher(s.mqtt_publish)
 
         def on_disconnect(client, userdata, flags, rc, properties=None):
             _LOGGER.warning("MQTT disconnected (rc=%s)", rc)
@@ -153,6 +156,8 @@ class Server:
                 content_type="application/json",
             )
         data = await self.state.to_dict()
+        mqtt_connected = self.mqtt_client is not None and self.mqtt_client.is_connected()
+        data["mqtt_connected"] = mqtt_connected
         self._status_cache_bytes = json.dumps(data, ensure_ascii=False).encode()
         self._status_cache_valid = True
         return web.Response(
@@ -298,48 +303,50 @@ class Server:
         aligned_start = (int(start_ts) // interval) * interval
 
         use_date = hours > 12
-        all_labels = []
-        for t in range(aligned_start, int(now_ts) + 1, interval):
-            if use_date:
-                all_labels.append(time.strftime("%m-%d %H:%M", time.localtime(t)))
-            else:
-                all_labels.append(time.strftime("%H:%M", time.localtime(t)))
+        epochs = list(range(aligned_start, int(now_ts) + 1, interval))
+        if use_date:
+            all_labels = [time.strftime('%m-%d %H:%M', time.localtime(t)) for t in epochs]
+        else:
+            all_labels = [time.strftime('%H:%M', time.localtime(t)) for t in epochs]
 
         raw_rows = self.history.query_history_multi(1, 4, hours, interval)
 
+        # Build port_data with epoch int as key, store tuple instead of dict
         port_data = {p: {} for p in range(1, 5)}
         for row in raw_rows:
-            port = row["port"]
-            bucket = int(row["bucket"])
-            if use_date:
-                label = time.strftime("%m-%d %H:%M", time.localtime(bucket))
-            else:
-                label = time.strftime("%H:%M", time.localtime(bucket))
-            port_data[port][label] = {
-                "power": row["power"],
-                "voltage": row["voltage"],
-                "current": row["current"],
-            }
+            port_data[row["port"]][int(row["bucket"])] = (
+                row["power"], row["voltage"], row["current"]
+            )
 
-        labels = all_labels
-        power_datasets = []
-        voltage_datasets = []
-        current_datasets = []
+        # Pre-allocate arrays for single-pass construction
+        n_labels = len(all_labels)
+        power_per_port = [[0.0] * n_labels for _ in range(5)]   # [0..3] ports, [4] total
+        voltage_per_port = [[0.0] * n_labels for _ in range(4)]
+        current_per_port = [[0.0] * n_labels for _ in range(4)]
+
+        # Single pass to fill all arrays
+        for i, epoch in enumerate(epochs):
+            total = 0.0
+            for port in range(1, 5):
+                entry = port_data[port].get(epoch)
+                if entry is not None:
+                    p, v, c = entry
+                    power_per_port[port - 1][i] = round(p, 1)
+                    voltage_per_port[port - 1][i] = round(v, 2)
+                    current_per_port[port - 1][i] = round(c, 2)
+                    total += p
+            power_per_port[4][i] = round(total, 1)
+
         port_names = ["C1", "C2", "C3", "A"]
-
-        for port in range(1, 5):
-            pd = port_data[port]
-            power_datasets.append({"label": port_names[port - 1], "data": [round(pd.get(l, {}).get("power", 0), 1) for l in labels]})
-            voltage_datasets.append({"label": port_names[port - 1], "data": [round(pd.get(l, {}).get("voltage", 0), 2) for l in labels]})
-            current_datasets.append({"label": port_names[port - 1], "data": [round(pd.get(l, {}).get("current", 0), 2) for l in labels]})
-
-        total_power = [round(sum(power_datasets[p]["data"][i] for p in range(4)), 1) for i in range(len(labels))]
+        power_datasets = [{"label": port_names[p], "data": power_per_port[p]} for p in range(4)]
+        voltage_datasets = [{"label": port_names[p], "data": voltage_per_port[p]} for p in range(4)]
+        current_datasets = [{"label": port_names[p], "data": current_per_port[p]} for p in range(4)]
 
         result = {
             "ok": True,
-            "labels": labels,
+            "labels": all_labels,
             "datasets": {
-                "power": power_datasets + [{"label": "Total", "data": total_power}],
+                "power": power_datasets + [{"label": "Total", "data": power_per_port[4]}],
                 "voltage": voltage_datasets,
                 "current": current_datasets,
             },

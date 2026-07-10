@@ -161,7 +161,7 @@ class CuktechMQTTCoordinator:
 
     def _notify_callbacks(self) -> None:
         """Notify all registered callbacks."""
-        for cb in self._callbacks:
+        for cb in list(self._callbacks):
             try:
                 cb()
             except Exception as err:
