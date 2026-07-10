@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ble-server-tests:
+    name: BLE Server Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          cd ble_server
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install -e .
+          pip install pytest pytest-asyncio
+
+      - name: Run tests
+        run: |
+          cd ble_server
+          .venv/bin/python -m pytest tests/ -v --tb=short
+
+  ha-integration-tests:
+    name: HA Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pytest pytest-asyncio
+
+      - name: Run tests
+        run: |
+          cd ha_integration
+          python -m pytest tests/ -v --tb=short
