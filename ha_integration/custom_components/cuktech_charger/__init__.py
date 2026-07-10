@@ -99,7 +99,7 @@ class CuktechMQTTCoordinator:
     @property
     def port_data(self) -> dict[str, dict[str, Any]]:
         """Return port data."""
-        return self._port_data
+        return dict(self._port_data)
 
     @property
     def data(self) -> dict[str, Any]:
@@ -142,7 +142,7 @@ class CuktechMQTTCoordinator:
         self._last_status_time = time.time()
 
         # Start HTTP health check as fallback
-        self._health_check_task = async_track_time_interval(
+        self._health_check_unsub = async_track_time_interval(
             self.hass, self._async_health_check, HEALTH_CHECK_INTERVAL
         )
         await self._async_health_check(None)
@@ -154,9 +154,9 @@ class CuktechMQTTCoordinator:
         for unsub in self._unsub:
             unsub()
         self._unsub.clear()
-        if self._health_check_task:
-            self._health_check_task()
-            self._health_check_task = None
+        if self._health_check_unsub:
+            self._health_check_unsub()
+        self._health_check_unsub = None
         _LOGGER.info("CUKTECH Charger MQTT coordinator unloaded")
 
     def _notify_callbacks(self) -> None:
@@ -206,8 +206,8 @@ class CuktechMQTTCoordinator:
             payload = json.loads(msg.payload)
             was_available = self._available
             self._mqtt_connected = payload.get("connected", False)
-            self._last_status_time = time.time()
             if self._mqtt_connected:
+                self._last_status_time = time.time()
                 self._health_failures = 0
             self._update_availability()
             if self._available and not was_available:
@@ -244,23 +244,29 @@ class CuktechMQTTCoordinator:
                         _LOGGER.warning("BLE server returned HTTP status %d (failure #%d)", resp.status, self._health_failures)
                     elif self._health_failures % 10 == 0:
                         _LOGGER.warning("BLE server HTTP check failed %d times", self._health_failures)
-                    self._available = False
+                    self._available = self._mqtt_connected
         except Exception as err:
             self._health_failures += 1
             if self._available:
                 _LOGGER.warning("BLE server HTTP health check failed: %s", err)
             elif self._health_failures % 10 == 0:
                 _LOGGER.warning("BLE server HTTP check failed %d times: %s", self._health_failures, err)
-            self._available = False
+            self._available = self._mqtt_connected
 
     async def async_set_value(self, piid: int, value: Any) -> None:
         """Set a PIID value via MQTT."""
-        await mqtt.async_publish(
-            self.hass, TOPIC_SET, json.dumps({"piid": piid, "value": value})
-        )
+        try:
+            await mqtt.async_publish(
+                self.hass, TOPIC_SET, json.dumps({"piid": piid, "value": value})
+            )
+        except Exception as err:
+            _LOGGER.error("Failed to publish MQTT command: %s", err)
 
     async def async_port_control(self, port: str, action: str) -> None:
         """Control a port (on/off) via MQTT."""
-        await mqtt.async_publish(
-            self.hass, TOPIC_PORT, json.dumps({"port": port, "action": action})
-        )
+        try:
+            await mqtt.async_publish(
+                self.hass, TOPIC_PORT, json.dumps({"port": port, "action": action})
+            )
+        except Exception as err:
+            _LOGGER.error("Failed to publish MQTT command: %s", err)

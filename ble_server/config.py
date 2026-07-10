@@ -100,14 +100,32 @@ def load_config() -> Config:
         ble_key=os.environ.get("CUKTECH_DEVICE_BLE_KEY", ble_cfg.get("ble_key", "")),
     )
 
+    try:
+        mqtt_port = int(os.environ.get("MQTT_PORT", mqtt_cfg.get("port", 1883)))
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"MQTT port must be an integer: {e}")
+
     mqtt = MQTTConfig(
         host=os.environ.get("MQTT_HOST", mqtt_cfg.get("host", "localhost")),
-        port=int(os.environ.get("MQTT_PORT", mqtt_cfg.get("port", 1883))),
+        port=mqtt_port,
         username=os.environ.get("MQTT_USER", mqtt_cfg.get("username", "")),
         password=os.environ.get("MQTT_PASS", mqtt_cfg.get("password", "")),
         keepalive=mqtt_cfg.get("keepalive", 60),
         topic_prefix=mqtt_cfg.get("topic_prefix", "cuktech/charger"),
     )
+
+    try:
+        history_retention = int(os.environ.get("CUKTECH_HISTORY_RETENTION_DAYS", server_cfg.get("history_retention_days", 2)))
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"History retention days must be an integer: {e}")
+    try:
+        reconnect_base_delay = float(server_cfg.get("reconnect_base_delay", 1.0))
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Reconnect base delay must be a number: {e}")
+    try:
+        reconnect_max_delay = float(server_cfg.get("reconnect_max_delay", 300.0))
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Reconnect max delay must be a number: {e}")
 
     server = ServerConfig(
         host=server_cfg.get("host", "0.0.0.0"),
@@ -115,10 +133,10 @@ def load_config() -> Config:
         command_timeout=server_cfg.get("command_timeout", 10.0),
         settings_refresh_interval=server_cfg.get("settings_refresh_interval", 60.0),
         log_level=os.environ.get("CUKTECH_LOG_LEVEL", server_cfg.get("log_level", "info")),
-        history_retention_days=int(os.environ.get("CUKTECH_HISTORY_RETENTION_DAYS", server_cfg.get("history_retention_days", 2))),
+        history_retention_days=history_retention,
         history_db_path=os.environ.get("CUKTECH_HISTORY_DB_PATH", server_cfg.get("history_db_path", "port_history.db")),
-        reconnect_base_delay=float(server_cfg.get("reconnect_base_delay", 1.0)),
-        reconnect_max_delay=float(server_cfg.get("reconnect_max_delay", 300.0)),
+        reconnect_base_delay=reconnect_base_delay,
+        reconnect_max_delay=reconnect_max_delay,
     )
 
     return Config(ble=ble, mqtt=mqtt, server=server)

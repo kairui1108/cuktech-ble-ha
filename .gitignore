@@ -73,3 +73,4 @@ ha_config/.storage/core.config_entries
 # Local scripts
 bump-version.sh
 *.lock
+.log_level

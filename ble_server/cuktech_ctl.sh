@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 # CUKTECH BLE Server - Service control script
-# Usage: ./cuktech_ctl.sh {start|stop|restart|status|log}
+# Usage: ./cuktech_ctl.sh {start|stop|restart|status|log|clear-log|clear-history}
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PID_FILE="/tmp/cuktech_ble_server.pid"
@@ -192,21 +192,46 @@ do_log() {
     fi
 }
 
+do_clear_log() {
+    echo "Clearing service log..."
+    if [ -f "$LOG_FILE" ]; then
+        > "$LOG_FILE"
+        echo "  ✓ Cleared $LOG_FILE"
+    else
+        echo "  No log file found"
+    fi
+}
+
+do_clear_history() {
+    echo "Clearing history database..."
+    local db="$SCRIPT_DIR/port_history.db"
+    if [ -f "$db" ]; then
+        rm -f "$db" "${db}-wal" "${db}-shm"
+        echo "  ✓ Removed $db"
+    else
+        echo "  No database found"
+    fi
+}
+
 case "${1:-help}" in
-    start)   do_start ;;
-    stop)    do_stop ;;
-    restart) do_restart ;;
-    status)  do_status ;;
-    log)     do_log "${2:-50}" ;;
+    start)        do_start ;;
+    stop)         do_stop ;;
+    restart)      do_restart ;;
+    status)       do_status ;;
+    log)          do_log "${2:-50}" ;;
+    clear-log)    do_clear_log ;;
+    clear-history) do_clear_history ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|log [lines]}"
+        echo "Usage: $0 {start|stop|restart|status|log [lines]|clear-log|clear-history}"
         echo ""
         echo "Commands:"
-        echo "  start    - Start the BLE server"
-        echo "  stop     - Stop the BLE server"
-        echo "  restart  - Restart the BLE server"
-        echo "  status   - Check server status"
-        echo "  log [n]  - Show last n lines of log (default: 50)"
+        echo "  start         - Start the BLE server"
+        echo "  stop          - Stop the BLE server"
+        echo "  restart       - Restart the BLE server"
+        echo "  status        - Check server status"
+        echo "  log [n]       - Show last n lines of log (default: 50)"
+        echo "  clear-log     - Clear service log file"
+        echo "  clear-history - Clear history database"
         exit 1
         ;;
 esac

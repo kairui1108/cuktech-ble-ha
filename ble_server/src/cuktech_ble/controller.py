@@ -66,7 +66,7 @@ class CuktechBLEController:
 
         return handler
 
-    async def _wait_notify(self, name, timeout=5.0):
+    async def wait_notify(self, name, timeout=5.0):
         """等待指定通道的通知数据。"""
         queue = self._notify_queues.get(name)
         if not queue:
@@ -82,7 +82,7 @@ class CuktechBLEController:
         内联格式: 00 00 02 XX [data]  (小数据直接发送)
         多帧格式: 00 00 00 XX count_lo count_hi  (大数据分帧发送)
         """
-        data = await self._wait_notify(channel, timeout=3.0)
+        data = await self.wait_notify(channel, timeout=3.0)
         if not data or len(data) < 4:
             return None
 
@@ -108,7 +108,7 @@ class CuktechBLEController:
             # 接收所有数据帧
             received = b''
             for i in range(frame_count):
-                frame = await self._wait_notify(channel, timeout=3.0)
+                frame = await self.wait_notify(channel, timeout=3.0)
                 if not frame:
                     _LOGGER.warning("Frame %d/%d timeout during auth", i+1, frame_count)
                     break
@@ -130,7 +130,19 @@ class CuktechBLEController:
         _LOGGER.info("Connecting to %s...", self.mac)
         self.client = BleakClient(self.mac)
         await self.client.connect()
+        try:
+            await self.client._acquire_mtu()
+        except (AttributeError, Exception):
+            pass
         _LOGGER.info("Connected! MTU=%d", self.client.mtu_size)
+
+        # 清理可能残留的通知队列
+        for q in self._notify_queues.values():
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
         # 提前订阅所有通知通道 (避免 CCCD 订阅延迟导致丢失通知)
         await self.client.start_notify(CHAR_AUTH_CTRL, self._make_notify_handler("auth_ctrl"))
@@ -156,7 +168,7 @@ class CuktechBLEController:
 
         # 查询协议版本
         await self.client.write_gatt_char(CHAR_DEVICE_INFO, bytes([0x00]), response=False)
-        data = await self._wait_notify("dev_info")
+        data = await self.wait_notify("dev_info")
         if data:
             version = data[1] if len(data) > 1 else 0
             sub_ver = data[2] if len(data) > 2 else 0
@@ -164,7 +176,7 @@ class CuktechBLEController:
 
         # 查询芯片信息
         await self.client.write_gatt_char(CHAR_DEVICE_INFO, bytes([0x03]), response=False)
-        data = await self._wait_notify("dev_info")
+        data = await self.wait_notify("dev_info")
         if data and len(data) > 2:
             chip_name = data[2:2 + data[1]].decode("ascii", errors="replace")
             _LOGGER.info("Chip: %s", chip_name)
@@ -191,14 +203,35 @@ class CuktechBLEController:
           4. 验证设备 HMAC, 发送我方 HMAC
           5. 收到 0x21 = 登录成功
         """
+        max_retries = 3
+        for attempt in range(max_retries):
+            result = await self._try_authenticate()
+            if result:
+                return True
+            if attempt < max_retries - 1:
+                _LOGGER.warning("  Auth attempt %d/%d failed, retrying...", attempt + 1, max_retries)
+                await asyncio.sleep(2)
+        return False
+
+    async def _try_authenticate(self):
+        """执行单次认证尝试。"""
         _LOGGER.info("[*] 开始 MiOT BLE 认证...")
 
         # 认证通道已在 connect() 中预订阅
 
         # ---- Phase A: 设备初始化 ----
         _LOGGER.info("  [1/5] 设备初始化 (0xa4)...")
+        # 清空可能残留的通知数据
+        queue = self._notify_queues.get("auth_data")
+        if queue:
+            while not queue.empty():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
         await self.client.write_gatt_char(CHAR_AUTH_CTRL, bytes([0xa4]), response=False)
-        init_resp = await self._wait_notify("auth_data", timeout=3.0)
+        init_resp = await self.wait_notify("auth_data", timeout=3.0)
         if not init_resp:
             _LOGGER.warning("  [!] 未收到初始化响应")
             return False
@@ -211,14 +244,30 @@ class CuktechBLEController:
         await self.client.write_gatt_char(CHAR_AUTH_DATA, bytes(ack), response=False)
 
         # 接收设备密钥交换数据 (本设备发送 240 字节 0xf2 占位)
-        key_data = await self._wait_notify("auth_data", timeout=5.0)
+        key_data = await self.wait_notify("auth_data", timeout=5.0)
         if key_data:
             _LOGGER.debug("  密钥交换数据: %d bytes", len(key_data))
 
+        # 检测: 充电器状态机不同步 — 发送了重复的 init 响应而非 key exchange
+        # 成功时 key_data 应为 244 bytes 且 byte[2]==0x04; 失败时是 6 bytes 的重复 init
+        if key_data and len(key_data) < 20:
+            _LOGGER.warning("  [!] 设备状态不同步 (key_data=%d bytes), 跳过本次认证", len(key_data))
+            return False
+
         # 回传相同长度的占位数据 (使用 0xf2 与 BLE 日志一致)
-        pad_len = len(key_data) - 4 if key_data else 240
+        pad_len = max(0, len(key_data) - 4) if key_data else 240
         placeholder = bytes([0x00, 0x00, 0x05, 0x01]) + bytes([0xf2] * pad_len)
         await self.client.write_gatt_char(CHAR_AUTH_DATA, placeholder, response=False)
+
+        # 等待设备处理占位符，清空可能残留的通知数据
+        await asyncio.sleep(0.2)
+        queue = self._notify_queues.get("auth_data")
+        if queue:
+            while not queue.empty():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
         # ---- Phase B: 登录认证 (CMD_LOGIN) ----
         _LOGGER.info("  [2/5] 发送登录命令 (CMD_LOGIN=0x24)...")
@@ -234,7 +283,7 @@ class CuktechBLEController:
         await self.client.write_gatt_char(CHAR_AUTH_DATA, CMD_SEND_KEY, response=False)
 
         # 等待 RCV_RDY
-        data = await self._wait_notify("auth_data", timeout=3.0)
+        data = await self.wait_notify("auth_data", timeout=3.0)
         if not data or data != bytes([0x00, 0x00, 0x01, 0x01]):
             _LOGGER.warning("  [!] 未收到 RCV_RDY, got: %s", data.hex() if data else 'None')
             return False
@@ -244,7 +293,7 @@ class CuktechBLEController:
             CHAR_AUTH_DATA, bytes([0x01, 0x00]) + rand_key, response=False)
 
         # 等待 RCV_OK
-        data = await self._wait_notify("auth_data", timeout=3.0)
+        data = await self.wait_notify("auth_data", timeout=3.0)
         if not data or data != bytes([0x00, 0x00, 0x01, 0x00]):
             _LOGGER.warning("  [!] 未收到 RCV_OK, got: %s", data.hex() if data else 'None')
             return False
@@ -305,7 +354,7 @@ class CuktechBLEController:
         await self.client.write_gatt_char(CHAR_AUTH_DATA, CMD_SEND_INFO, response=False)
 
         # 等待 RCV_RDY
-        data = await self._wait_notify("auth_data", timeout=3.0)
+        data = await self.wait_notify("auth_data", timeout=3.0)
         if not data or data != bytes([0x00, 0x00, 0x01, 0x01]):
             _LOGGER.warning("  [!] 未收到 RCV_RDY, got: %s", data.hex() if data else 'None')
             return False
@@ -315,12 +364,12 @@ class CuktechBLEController:
         await self.client.write_gatt_char(CHAR_AUTH_DATA, frame, response=False)
 
         # 等待 RCV_OK
-        data = await self._wait_notify("auth_data", timeout=3.0)
+        data = await self.wait_notify("auth_data", timeout=3.0)
         if data:
             _LOGGER.debug("  ACK: %s", data.hex())
 
         # ---- 等待认证结果 ----
-        result = await self._wait_notify("auth_ctrl", timeout=5.0)
+        result = await self.wait_notify("auth_ctrl", timeout=5.0)
         if result:
             frm = result[0]
             if frm == 0x21:
@@ -359,7 +408,7 @@ class CuktechBLEController:
                 _LOGGER.debug("Init push drain timeout (%.1fs), continuing", max_drain_seconds)
                 break
 
-            data = await self._wait_notify("cmd_recv", timeout=0.8)
+            data = await self.wait_notify("cmd_recv", timeout=0.8)
             if not data:
                 break
             push_count += 1
@@ -369,7 +418,7 @@ class CuktechBLEController:
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
                 for i in range(frame_count):
-                    frame = await self._wait_notify("cmd_recv", timeout=3.0)
+                    frame = await self.wait_notify("cmd_recv", timeout=3.0)
                     if not frame:
                         break
                 await self.client.write_gatt_char(
@@ -400,7 +449,7 @@ class CuktechBLEController:
         self._send_it += 1
         return it_bytes[:2] + ct
 
-    def _decrypt(self, data):
+    def decrypt(self, data):
         """AES-CCM 解密 (接收方向: dev_key + dev_iv)。
 
         输入格式: it_lo + it_hi + ciphertext
@@ -444,7 +493,7 @@ class CuktechBLEController:
         # 也清空 cmd_send 队列
         q = self._notify_queues.get("cmd_send")
         if q:
-            while not q.empty():
+            while True:
                 try:
                     q.get_nowait()
                 except asyncio.QueueEmpty:
@@ -470,7 +519,7 @@ class CuktechBLEController:
         await self.client.write_gatt_char(CHAR_CMD_SEND, header, response=False)
 
         # 等待 RCV_RDY
-        data = await self._wait_notify("cmd_send", timeout=3.0)
+        data = await self.wait_notify("cmd_send", timeout=3.0)
         if data != bytes([0x00, 0x00, 0x01, 0x01]):
             _LOGGER.warning("CMD_SEND no RCV_RDY: %s", data.hex() if data else 'None')
             return False
@@ -480,7 +529,7 @@ class CuktechBLEController:
         await self.client.write_gatt_char(CHAR_CMD_SEND, frame, response=False)
 
         # 等待 RCV_OK
-        data = await self._wait_notify("cmd_send", timeout=3.0)
+        data = await self.wait_notify("cmd_send", timeout=3.0)
         if data != bytes([0x00, 0x00, 0x01, 0x00]):
             _LOGGER.warning("CMD_SEND no RCV_OK: %s", data.hex() if data else 'None')
             return False
@@ -494,7 +543,7 @@ class CuktechBLEController:
         if not q:
             return 0
 
-        while not q.empty():
+        while True:
             try:
                 data = q.get_nowait()
             except asyncio.QueueEmpty:
@@ -578,7 +627,7 @@ class CuktechBLEController:
             if remaining <= 0:
                 break
 
-            data = await self._wait_notify("cmd_recv", timeout=min(remaining, 3.0))
+            data = await self.wait_notify("cmd_recv", timeout=min(remaining, 3.0))
             if not data or len(data) < 4:
                 if got_ack:
                     break  # ACK 已收到, 可能无 result (设置相同值时)
@@ -588,7 +637,7 @@ class CuktechBLEController:
                 encrypted_payload = data[4:]
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
-                pt = self._decrypt(encrypted_payload)
+                pt = self.decrypt(encrypted_payload)
                 if not pt or len(pt) < 8:
                     continue
 
@@ -617,7 +666,7 @@ class CuktechBLEController:
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
                 for _ in range(frame_count):
-                    await self._wait_notify("cmd_recv", timeout=3.0)
+                    await self.wait_notify("cmd_recv", timeout=3.0)
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
                 continue
@@ -637,7 +686,7 @@ class CuktechBLEController:
             if remaining <= 0:
                 break
 
-            data = await self._wait_notify("cmd_recv", timeout=min(remaining, 3.0))
+            data = await self.wait_notify("cmd_recv", timeout=min(remaining, 3.0))
             if not data or len(data) < 4:
                 break
 
@@ -645,7 +694,7 @@ class CuktechBLEController:
                 encrypted_payload = data[4:]
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
-                pt = self._decrypt(encrypted_payload)
+                pt = self.decrypt(encrypted_payload)
                 if not pt or len(pt) < 8:
                     continue
 
@@ -670,7 +719,7 @@ class CuktechBLEController:
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
                 for _ in range(frame_count):
-                    await self._wait_notify("cmd_recv", timeout=3.0)
+                    await self.wait_notify("cmd_recv", timeout=3.0)
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
                 continue
@@ -685,6 +734,6 @@ class CuktechBLEController:
             result = await self.send_miot_command(siid, piid)
             if result and 'value' in result:
                 results[(siid, piid)] = result['value']
-            await asyncio.sleep(0.5)  # 给设备更多时间处理
+            await asyncio.sleep(0.1)
         return results
 

@@ -37,6 +37,7 @@ ha_helpers = types.ModuleType("homeassistant.helpers")
 ha_helpers.aiohttp_client = MagicMock()
 ha_helpers.entity_platform = MagicMock()
 ha_helpers.event = MagicMock()
+ha_helpers.entity = MagicMock()
 
 ha_components = types.ModuleType("homeassistant.components")
 ha_components.mqtt = types.ModuleType("homeassistant.components.mqtt")
@@ -102,6 +103,7 @@ sys.modules['homeassistant.helpers'] = ha_helpers
 sys.modules['homeassistant.helpers.aiohttp_client'] = ha_helpers.aiohttp_client
 sys.modules['homeassistant.helpers.entity_platform'] = ha_helpers.entity_platform
 sys.modules['homeassistant.helpers.event'] = ha_helpers.event
+sys.modules['homeassistant.helpers.entity'] = ha_helpers.entity
 sys.modules['homeassistant.components'] = ha_components
 sys.modules['homeassistant.components.mqtt'] = ha_components.mqtt
 sys.modules['homeassistant.components.sensor'] = ha_components.sensor

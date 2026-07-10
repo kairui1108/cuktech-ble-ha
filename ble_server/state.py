@@ -3,6 +3,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Dict
 
+from src.cuktech_ble.protocol import PROTOCOL_NAMES, PD_FIXED_VOLTAGES, PDO_KIND_BY_HIGH_BYTE
+
 PORT_DEFAULT = {"voltage": 0.0, "current": 0.0, "power": 0.0, "active": False, "protocol": "idle"}
 PORT_NAMES = {1: "c1", 2: "c2", 3: "c3", 4: "a"}
 PORT_BITS = {"c1": 0, "c2": 1, "c3": 2, "a": 3}
@@ -12,19 +14,6 @@ PIID_RANGES = {
     5: (1, 4), 6: (0, 5), 8: (0, 1440), 9: (0, 1440), 10: (0, 1440),
     11: (0, 1440), 12: (0, 1440), 13: (0, 1), 15: (0, 1), 16: (0, 15),
     19: (0, 1), 20: (0, 1),
-}
-
-PROTOCOL_NAMES = {
-    0x01: "PD", 0x03: "PD", 0x04: "PD", 0x05: "PD", 0x06: "PD",
-    0x07: "PD Fixed", 0x08: "PD PPS", 0x0a: "PD", 0x0b: "PD",
-    0x30: "PD", 0x60: "USB-A", 0x70: "QC", 0x80: "PD",
-}
-
-PD_FIXED_VOLTAGES = {5.0, 9.0, 12.0, 15.0, 20.0}
-QC_VOLTAGES = {5.0, 9.0, 12.0, 15.0, 20.0}
-PDO_KIND_BY_HIGH_BYTE = {
-    0x07: "PD Fixed",
-    0x08: "PD PPS",
 }
 
 
@@ -44,15 +33,6 @@ class PortState:
             "active": self.active,
             "protocol": self.protocol,
         }
-
-    def __eq__(self, other):
-        if not isinstance(other, PortState):
-            return False
-        return (abs(self.voltage - other.voltage) < 0.01 and
-                abs(self.current - other.current) < 0.01 and
-                abs(self.power - other.power) < 0.1 and
-                self.active == other.active and
-                self.protocol == other.protocol)
 
 
 class ChargerState:
@@ -93,7 +73,7 @@ class ChargerState:
     async def to_dict(self):
         async with self._lock:
             if self._cache_valid:
-                return self._cache
+                return dict(self._cache)
             port_ctl = self.settings.get("16", 0x0F)
             port_enabled = {
                 1: bool(port_ctl & (1 << 0)),

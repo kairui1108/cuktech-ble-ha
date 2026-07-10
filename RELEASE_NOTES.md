@@ -1,5 +1,40 @@
 # Release Notes
 
+## v1.0.2
+
+### BLE Server
+
+- **模块拆分**: ble.py 拆分为 protocol.py（常量）/ controller.py（核心逻辑）/ cli.py（用户界面）
+- **BLEManager 单元测试**: 新增 28 个测试覆盖 init/reconnect/publish/process/multiframe/inline/send/disconnect
+- **协议测试**: 新增 _env_hex_bytes、odd-length hex、MAC 格式测试
+- **BleakClient/HKDF 导入修复**: try/except 导入避免运行时 NameError
+- **CORS 安全**: 白名单 localhost Origin，移除未使用的 PUT/DELETE 方法
+- **MQTT LWT**: 添加 Last Will and Testament，崩溃时自动通知 HA
+- **Falsity zero 修复**: energy_wh 0.0 值不再被错误过滤
+- **pad_len 防护**: 防止负数 pad_len 导致协议失步
+- **multiframe 完整消费**: 大帧数时消费所有帧而非只消费 10 帧
+- **队列竞态修复**: drain queue 使用 while True + try/except 替代 empty() 检查
+- **弃用 API 修复**: 全部 asyncio.get_event_loop() 替换为 get_running_loop()
+- **Windows 控制台修复**: sys.stdout 副作用移到 CLI 入口函数
+- **query 参数校验**: float/int 转换加 try/except 返回 400
+
+### HA Integration
+
+- **Entity 类单元测试**: 新增 30 个测试实例化真实 Entity 类
+- **ConfigFlow 完整测试**: async_step_user 表单/创建/去重/错误/中断
+- **Availability 修复**: HTTP 失败时尊重 MQTT 连接状态
+- **MQTT connected:false 修复**: 不再误标记设备为 available
+- **重复实体移除**: PIID 19/20 从 SENSOR_PIIDS 移除，避免 sensor+switch 重复
+- **MQTT 异常捕获**: async_set_value/port_control 加 try/except
+- **Translation key**: config_flow 错误使用 HA 翻译机制
+- **Entity category**: 诊断/配置实体添加 EntityCategory
+- **HA 基类 Mock**: conftest.py 使用真实 HA 基类支持 @property
+
+### 测试
+
+- **总计 161 个测试**: BLE Server 91 + HA Integration 70，全部通过
+- **覆盖模块**: protocol/controller/ble_manager/ha_server/history/config/state/config_flow/coordinator/entities
+
 ## v1.0.1
 
 ### BLE Server

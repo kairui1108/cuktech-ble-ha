@@ -50,10 +50,12 @@ import sys
 
 _LOGGER = logging.getLogger("cuktech_ble")
 
-# 修复 Windows 控制台中文乱码
-if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+
+def fix_windows_console():
+    """Fix Windows console Chinese character encoding (call from CLI entrypoint only)."""
+    if sys.platform == 'win32':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
 
 try:
     from bleak import BleakClient, BleakScanner
@@ -169,7 +171,7 @@ PIID_NAMES = {
 
 PIID_DISPLAY = {
     5:  {1: 'AI模式', 2: '数码生态', 3: '单口模式', 4: '均衡模式'},
-    6:  {0: '5分钟', 1: '1分钟(旧)', 2: '10分钟', 3: '30分钟', 4: '常亮', 5: '1分钟'},
+    6:  {0: '5分钟', 1: '1分钟', 2: '10分钟', 3: '30分钟', 4: '常亮', 5: '1分钟'},
     13: {0: 'English', 1: '中文'},
     15: {0: '关闭', 1: '开启'},
     19: {0: '关闭', 1: '开启'},

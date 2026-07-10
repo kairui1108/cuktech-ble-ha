@@ -185,7 +185,7 @@ class PortHistory:
             "power": {
                 "avg": round(row["avg_power"], 2) if row["avg_power"] else None,
                 "max": round(row["max_power"], 2) if row["max_power"] else None,
-                "total_wh": round(row["energy_wh"], 2) if row["energy_wh"] else 0,
+                "total_wh": round(row["energy_wh"], 2) if row["energy_wh"] is not None else 0,
             },
             "active_ratio": round(row["active_count"] / row["samples"], 2) if row["samples"] > 0 else 0,
         }

@@ -11,6 +11,7 @@
       }
     },
     "error": {
+      "cannot_connect": "Cannot connect to server",
       "unknown": "Unexpected error"
     },
     "abort": {

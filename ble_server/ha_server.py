@@ -42,7 +42,13 @@ class Server:
             db_path=self.config.server.history_db_path,
             retention_days=self.config.server.history_retention_days,
         )
-        logging.getLogger().setLevel(LOG_LEVELS.get(self.config.server.log_level, logging.INFO))
+        log_file = Path(__file__).parent / ".log_level"
+        log_level = self.config.server.log_level
+        if log_file.exists():
+            saved = log_file.read_text().strip()
+            if saved in LOG_LEVELS:
+                log_level = saved
+        logging.getLogger().setLevel(LOG_LEVELS.get(log_level, logging.INFO))
 
     def mqtt_publish(self, topic, payload, retain=False):
         if self.mqtt_client and self.mqtt_client.is_connected():
@@ -63,6 +69,12 @@ class Server:
 
         self.mqtt_client.on_connect = on_connect
         self.mqtt_client.on_disconnect = on_disconnect
+
+        self.mqtt_client.will_set(
+            self.config.topic_status,
+            json.dumps({"connected": False}),
+            retain=True, qos=1
+        )
 
         try:
             self.mqtt_client.connect(self.config.mqtt.host, self.config.mqtt.port, self.config.mqtt.keepalive)
@@ -107,6 +119,7 @@ class Server:
                     server.loop.call_soon_threadsafe(
                         server.ble.cmd_queue.put_nowait,
                         ("set", (piid_int, value_int), None))
+                    _LOGGER.info("MQTT set command: piid=%d value=%d", piid_int, value_int)
                 elif msg.topic == f"{server.config.mqtt.topic_prefix}/port":
                     port = payload.get("port")
                     action = payload.get("action")
@@ -119,6 +132,7 @@ class Server:
                     server.loop.call_soon_threadsafe(
                         server.ble.cmd_queue.put_nowait,
                         ("port", (port, action), None))
+                    _LOGGER.info("MQTT port command: port=%s action=%s", port, action)
             except (json.JSONDecodeError, ValueError, TypeError) as e:
                 _LOGGER.error("MQTT cmd parse error: %s", e)
             except Exception as e:
@@ -194,10 +208,27 @@ class Server:
             async with self._start_lock:
                 if not self.ble._stop_event.is_set():
                     return web.json_response({"ok": True, "enabled": True, "note": "already running"})
-                asyncio.create_task(self.ble.start())
+                app_ = request.app
+                if "ble_task" in app_:
+                    old = app_["ble_task"]
+                    if old and not old.done():
+                        old.cancel()
+                        try:
+                            await old
+                        except asyncio.CancelledError:
+                            pass
+                app_["ble_task"] = asyncio.create_task(self.ble.start())
         else:
             async with self._start_lock:
-                await self.ble.stop()
+                self.ble._stop_event.set()
+            await self.ble._force_disconnect_bluetooth()
+            app_ = request.app
+            async with self._start_lock:
+                if "ble_task" in app_ and app_["ble_task"] and not app_["ble_task"].done():
+                    try:
+                        await app_["ble_task"]
+                    except asyncio.CancelledError:
+                        pass
             for piid in range(1, 5):
                 await self.state.update_port(piid, PORT_DEFAULT)
             if self.mqtt_client and self.mqtt_client.is_connected():
@@ -229,13 +260,21 @@ class Server:
             return web.json_response({"ok": False, "error": f"invalid level: {level}"}, status=400)
 
         logging.getLogger().setLevel(LOG_LEVELS[level])
+        log_file = Path(__file__).parent / ".log_level"
+        log_file.write_text(level)
         _LOGGER.info("Log level changed to %s", level)
         return web.json_response({"ok": True, "level": level})
 
     async def handle_chart(self, request):
         """Get chart-ready data for all ports with caching and ETag."""
-        hours = min(float(request.query.get("hours", 1)), 720)
-        interval = max(int(request.query.get("interval", 30)), 5)
+        try:
+            hours = min(float(request.query.get("hours", 1)), 720)
+        except (ValueError, TypeError):
+            return web.json_response({"ok": False, "error": "invalid hours parameter"}, status=400)
+        try:
+            interval = max(int(request.query.get("interval", 30)), 5)
+        except (ValueError, TypeError):
+            return web.json_response({"ok": False, "error": "invalid interval parameter"}, status=400)
         cache_key = f"{hours}:{interval}"
 
         # Check cache
@@ -381,9 +420,14 @@ async def cors_middleware(request, handler):
     else:
         response = await handler(request)
     origin = request.headers.get("Origin", "")
-    if origin:
+    s = get_server()
+    allowed_origins = {
+        f"http://localhost:{s.config.server.port}",
+        f"http://127.0.0.1:{s.config.server.port}",
+    }
+    if origin and origin in allowed_origins:
         response.headers["Access-Control-Allow-Origin"] = origin
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return response
 

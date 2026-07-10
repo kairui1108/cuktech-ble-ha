@@ -6,10 +6,10 @@ import os
 import time
 
 try:
-    from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV
+    from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-    from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV
+    from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION
 
 from state import ChargerState, PORT_NAMES, PORT_BITS, PORT_DEFAULT, decode_port, decode_pdo_caps
 
@@ -60,17 +60,23 @@ class BLEManager:
     async def start(self):
         self._stop_event.clear()
         self._reconnect_attempts = 0
+        first_run = True
+        last_error = None
         while not self._stop_event.is_set():
             try:
                 await self._connect_and_run()
                 self._reconnect_attempts = 0
+                first_run = False
+                last_error = None
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                last_error = e
                 _LOGGER.error("BLE loop error: %s", e)
             finally:
-                await self._disconnect(publish_stop=self._stop_event.is_set())
+                await self._disconnect()
             if not self._stop_event.is_set():
+                await self._force_disconnect_bluetooth()
                 delay = self._get_reconnect_delay()
                 self._reconnect_attempts += 1
                 _LOGGER.info("Reconnecting in %.0fs (attempt %d)...", delay, self._reconnect_attempts)
@@ -99,10 +105,20 @@ class BLEManager:
 
         self.ctrl = CuktechBLEController(self.mac, self.token)
         await self.ctrl.connect()
+
+        _LOGGER.info("Connected, waiting for device to settle...")
+        await asyncio.sleep(1)
+
         await self.ctrl.read_device_info()
         _LOGGER.info("Connected, authenticating...")
 
         if not await self.ctrl.authenticate():
+            _LOGGER.warning("Auth failed, waiting 5s for device state to clear...")
+            try:
+                await self.ctrl.client.disconnect()
+            except Exception:
+                pass
+            await asyncio.sleep(5)
             raise ConnectionError("Auth failed")
 
         await self.state.set_connection(True, True)
@@ -113,10 +129,11 @@ class BLEManager:
         await self._read_initial_settings()
         await asyncio.sleep(2)
 
-    async def _disconnect(self, publish_stop=True):
+    async def _disconnect(self):
         if self.ctrl:
+            client = self.ctrl.client if self.ctrl else None
+            was_connected = client and client.is_connected if client else False
             try:
-                client = self.ctrl.client
                 if client and client.is_connected:
                     try:
                         await asyncio.wait_for(client.disconnect(), timeout=3.0)
@@ -125,10 +142,11 @@ class BLEManager:
             except Exception:
                 pass
             self.ctrl = None
+            if was_connected and not self._stop_event.is_set():
+                _LOGGER.error("BLE device disconnected unexpectedly")
         await self.state.set_connection(False, False)
         _invalidate()
-        if publish_stop:
-            self._publish_status({"connected": False}, retain=True)
+        self._publish_status({"connected": False}, retain=True)
 
     async def _force_disconnect_bluetooth(self):
         """使用 bluetoothctl 强制断开蓝牙连接并重置适配器"""
@@ -139,8 +157,8 @@ class BLEManager:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(proc.communicate(), timeout=5)
-        except Exception:
-            pass
+        except Exception as e:
+            _LOGGER.warning("bluetoothctl disconnect failed: %s", e)
         # 重置蓝牙适配器以清理残留状态
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -156,24 +174,42 @@ class BLEManager:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(proc.communicate(), timeout=5)
-            await asyncio.sleep(2)
-        except Exception:
-            pass
+            await asyncio.sleep(3)
+        except Exception as e:
+            _LOGGER.warning("bluetoothctl power cycle failed: %s", e)
 
     async def _connect_and_run(self):
         await self._connect()
         last_refresh = time.time()
+        last_notify = time.time()
+        last_keepalive = time.time()
 
         while not self._stop_event.is_set():
             await self._process_commands()
 
             try:
                 data = await asyncio.wait_for(
-                    self.ctrl._wait_notify("cmd_recv"), timeout=2.0)
+                    self.ctrl.wait_notify("cmd_recv"), timeout=2.0)
+                last_notify = time.time()
             except asyncio.TimeoutError:
-                if time.time() - last_refresh > self.config.server.settings_refresh_interval:
+                now = time.time()
+                if now - last_refresh > self.config.server.settings_refresh_interval:
                     await self._refresh_settings()
-                    last_refresh = time.time()
+                    last_refresh = now
+                if now - last_keepalive > 10:
+                    try:
+                        await self.ctrl.client.read_gatt_char(CHAR_FW_VERSION)
+                        last_keepalive = now
+                    except Exception:
+                        client = self.ctrl.client if self.ctrl else None
+                        if not client or not client.is_connected:
+                            _LOGGER.warning("BLE keepalive: connection lost, triggering reconnect")
+                            raise ConnectionError("BLE disconnected via keepalive")
+                if now - last_notify > 60:
+                    client = self.ctrl.client if self.ctrl else None
+                    if not client or not client.is_connected:
+                        _LOGGER.warning("BLE connection lost, triggering reconnect")
+                        raise ConnectionError("BLE disconnected")
                 continue
             except Exception as e:
                 _LOGGER.warning("BLE notification error: %s", e)
@@ -271,7 +307,7 @@ class BLEManager:
         encrypted_payload = data[4:]
         await self.ctrl.client.write_gatt_char(
             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
-        pt = self.ctrl._decrypt(encrypted_payload)
+        pt = self.ctrl.decrypt(encrypted_payload)
         if not pt or len(pt) < 8:
             return
         b4 = pt[4]
@@ -286,7 +322,7 @@ class BLEManager:
             if port_info:
                 old = self.state.ports.get(piid)
                 await self.state.update_port(piid, port_info)
-                if old != port_info:
+                if old is None or old.to_dict() != port_info:
                     _invalidate()
                     self._publish_port(PORT_NAMES[piid], port_info)
                     if self._history and port_info.get("active", False):
@@ -304,13 +340,18 @@ class BLEManager:
         """
         frame_count = data[4] + 0x100 * data[5]
         if frame_count > 1000:
-            _LOGGER.warning("Multiframe count too large: %d, sending ACK anyway", frame_count)
+            _LOGGER.warning("Multiframe count too large: %d, consuming all frames", frame_count)
             # Still send ACK to keep protocol in sync
             await self.ctrl.client.write_gatt_char(
                 CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
-            # Consume a few frames to avoid buffer overflow
-            for _ in range(min(frame_count, 10)):
-                await self.ctrl._wait_notify("cmd_recv", timeout=1.0)
+            # Consume all remaining frames in a tight loop
+            for i in range(frame_count):
+                try:
+                    await asyncio.wait_for(
+                        self.ctrl.wait_notify("cmd_recv", timeout=3.0), timeout=5.0)
+                except (asyncio.TimeoutError, Exception) as e:
+                    _LOGGER.warning("Multiframe drain stopped at frame %d/%d: %s", i+1, frame_count, e)
+                    break
             await self.ctrl.client.write_gatt_char(
                 CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
             return
@@ -318,7 +359,7 @@ class BLEManager:
             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
         received_count = 0
         for _ in range(frame_count):
-            frame = await self.ctrl._wait_notify("cmd_recv", timeout=3.0)
+            frame = await self.ctrl.wait_notify("cmd_recv", timeout=3.0)
             if frame:
                 received_count += 1
         await self.ctrl.client.write_gatt_char(

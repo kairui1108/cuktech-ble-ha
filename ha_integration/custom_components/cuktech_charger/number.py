@@ -84,9 +84,9 @@ class CuktechCountdown(NumberEntity):
     @property
     def native_value(self) -> float | None:
         """Return the countdown value."""
-        if not self.coordinator.data:
+        if not self.coordinator._settings:
             return None
-        v = self.coordinator.data.get(str(self._piid))
+        v = self.coordinator._settings.get(str(self._piid))
         if v is None:
             return None
         try:

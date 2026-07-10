@@ -74,9 +74,9 @@ class CuktechSelect(SelectEntity):
     @property
     def current_option(self) -> str | None:
         """Return the current option."""
-        if not self.coordinator.data:
+        if not self.coordinator._settings:
             return None
-        v = self.coordinator.data.get(str(self._piid))
+        v = self.coordinator._settings.get(str(self._piid))
         if v is None:
             return None
         return PIID_DISPLAY.get(self._piid, {}).get(v)

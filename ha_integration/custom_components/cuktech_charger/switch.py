@@ -90,9 +90,9 @@ class CuktechSettingSwitch(SwitchEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True if entity is on."""
-        if not self.coordinator.data:
+        if not self.coordinator._settings:
             return None
-        v = self.coordinator.data.get(str(self._piid))
+        v = self.coordinator._settings.get(str(self._piid))
         return bool(v) if v is not None else None
 
     async def async_turn_on(self, **kwargs: Any) -> None:
@@ -152,9 +152,9 @@ class CuktechPortSwitch(SwitchEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True if entity is on."""
-        if not self.coordinator.data:
+        if not self.coordinator._settings:
             return None
-        port_ctl = self.coordinator.data.get("16")
+        port_ctl = self.coordinator._settings.get("16")
         if port_ctl is None:
             return None
         return bool(port_ctl & (1 << self._bit))

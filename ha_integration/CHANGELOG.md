@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.2] - 2026-07-10
+
+### Added
+- Real entity class unit tests (30 tests for Sensor/Switch/BinarySensor/Select/Number)
+- ConfigFlow tests: async_step_user form/create/unique_id/errors/abort
+- Coordinator tests: async_set_value, async_port_control with payload verification
+- MQTT LWT (Last Will and Testament) for crash detection
+
+### Fixed
+- Availability logic: HTTP failure respects MQTT connected state
+- MQTT `connected: false` no longer falsely marks device available
+- Duplicate entities: removed PIID 19/20 from SENSOR_PIIDS (already in SETTING_PIIDS)
+- MQTT publish error handling: async_set_value/port_control wrapped in try/except
+- Config flow error messages now use HA translation keys
+- conftest.py: real HA base classes for proper @property support
+
+### Changed
+- BLE module split: ble.py → protocol.py + controller.py + cli.py
+- CORS restricted to localhost origins only
+- Removed unused PUT/DELETE from CORS allowed methods
+
 ## [1.0.1] - 2026-07-09
 
 ### Added

@@ -7,7 +7,7 @@ import sys
 from .protocol import (
     DEVICE_MAC, DEVICE_TOKEN, SIID_CHARGER, PIID_NAMES, PIID_DISPLAY,
     PORT_BITS, TIMER_PORTS, CHAR_CMD_RECV,
-    mac_str_to_bytes, require_runtime_dependencies,
+    mac_str_to_bytes, require_runtime_dependencies, fix_windows_console,
 )
 from .controller import CuktechBLEController
 
@@ -188,7 +188,7 @@ async def cmd_monitor(mac=DEVICE_MAC):
             last_values = {}
             try:
                 while True:
-                    data = await ctrl._wait_notify("cmd_recv", timeout=3.0)
+                    data = await ctrl.wait_notify("cmd_recv", timeout=3.0)
                     if not data or len(data) < 4:
                         continue
 
@@ -197,7 +197,7 @@ async def cmd_monitor(mac=DEVICE_MAC):
                         await ctrl.client.write_gatt_char(
                             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]),
                             response=False)
-                        pt = ctrl._decrypt(encrypted_payload)
+                        pt = ctrl.decrypt(encrypted_payload)
                         if not pt or len(pt) < 8:
                             continue
 
@@ -229,7 +229,7 @@ async def cmd_monitor(mac=DEVICE_MAC):
                             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]),
                             response=False)
                         for _ in range(frame_count):
-                            await ctrl._wait_notify("cmd_recv", timeout=3.0)
+                            await ctrl.wait_notify("cmd_recv", timeout=3.0)
                         await ctrl.client.write_gatt_char(
                             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]),
                             response=False)
@@ -439,6 +439,7 @@ async def cmd_set_property(mac, prop_name, params):
 # CLI
 # ============================================================
 def main():
+    fix_windows_console()
     parser = argparse.ArgumentParser(
         description="CUKTECH 10 GaN Charger Ultra - BLE 直连控制器"
     )

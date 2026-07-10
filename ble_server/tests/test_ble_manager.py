@@ -195,20 +195,26 @@ class TestHandleMultiframe:
 
     @pytest.mark.asyncio
     async def test_multiframe_large_count_sends_ack(self):
-        """Test multiframe with frame_count > 1000 sends ACK and consumes frames."""
+        """Test multiframe with frame_count > 1000 sends ACK and consumes all frames."""
         mgr = make_manager()
         mgr.ctrl = MagicMock()
         mgr.ctrl.client = MagicMock()
         mgr.ctrl.client.write_gatt_char = AsyncMock()
-        mgr.ctrl._wait_notify = AsyncMock(return_value=bytes(20))
+        call_count = 0
+        async def fake_wait_notify(name, timeout=5.0):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 5:
+                raise asyncio.TimeoutError()
+            return bytes(20)
+        mgr.ctrl.wait_notify = fake_wait_notify
 
         # data[2]=0x00 triggers multiframe branch, frame_count=0x03e9=1001 > 1000
         data = bytes([0, 0, 0x00, 4, 0x03, 0xe9])
 
         await mgr._handle_multiframe(data)
         assert mgr.ctrl.client.write_gatt_char.call_count == 2
-        # Consumes min(1001, 10) = 10 frames
-        assert mgr.ctrl._wait_notify.call_count == 10
+        assert call_count == 6
 
 
 class TestHandleInlineData:
@@ -225,7 +231,7 @@ class TestHandleInlineData:
         mgr.set_mqtt_publisher(publisher)
 
         decrypted = bytes([0, 0, 0, 0, 0x04, 0, 0, 1, 0, 0x0a, 25, 201])
-        mgr.ctrl._decrypt = MagicMock(return_value=decrypted)
+        mgr.ctrl.decrypt = MagicMock(return_value=decrypted)
 
         data = bytes([0, 0, 0x02, 4]) + b'\x00' * 10
         await mgr._handle_inline_data(data)
@@ -245,7 +251,7 @@ class TestHandleInlineData:
         mgr.ctrl = MagicMock()
         mgr.ctrl.client = MagicMock()
         mgr.ctrl.client.write_gatt_char = AsyncMock()
-        mgr.ctrl._decrypt = MagicMock(return_value=bytes(4))
+        mgr.ctrl.decrypt = MagicMock(return_value=bytes(4))
 
         data = bytes([0, 0, 0x02, 4]) + b'\x00' * 10
         await mgr._handle_inline_data(data)
@@ -260,7 +266,7 @@ class TestHandleInlineData:
         mgr.ctrl = MagicMock()
         mgr.ctrl.client = MagicMock()
         mgr.ctrl.client.write_gatt_char = AsyncMock()
-        mgr.ctrl._decrypt = MagicMock(return_value=None)
+        mgr.ctrl.decrypt = MagicMock(return_value=None)
 
         data = bytes([0, 0, 0x02, 4]) + b'\x00' * 10
         await mgr._handle_inline_data(data)
@@ -295,31 +301,23 @@ class TestConnectDisconnect:
 
     @pytest.mark.asyncio
     async def test_disconnect_resets_state(self):
-        """Test _disconnect resets authenticated."""
+        """Test _disconnect resets authenticated and always publishes."""
         mgr = make_manager()
         publisher = MagicMock()
         mgr.set_mqtt_publisher(publisher)
         mgr.state.authenticated = True
         await mgr._disconnect()
         assert mgr.state.authenticated is False
+        publisher.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_disconnect_publish_stop_true(self):
-        """Test _disconnect publishes connected:False by default."""
+    async def test_disconnect_publishes_connected_false(self):
+        """Test _disconnect always publishes connected:False."""
         mgr = make_manager()
         publisher = MagicMock()
         mgr.set_mqtt_publisher(publisher)
         await mgr._disconnect()
         publisher.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_disconnect_publish_stop_false(self):
-        """Test _disconnect(publish_stop=False) does not publish."""
-        mgr = make_manager()
-        publisher = MagicMock()
-        mgr.set_mqtt_publisher(publisher)
-        await mgr._disconnect(publish_stop=False)
-        publisher.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_sets_stop_event(self):

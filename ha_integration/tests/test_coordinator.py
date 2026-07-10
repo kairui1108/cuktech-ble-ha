@@ -216,15 +216,15 @@ class TestCuktechMQTTCoordinator:
         coordinator._on_status_message(msg)
 
     def test_on_status_message_connected_false(self, coordinator):
-        """Test _on_status_message with connected=False sets _mqtt_connected but device stays available."""
+        """Test _on_status_message with connected=False sets _mqtt_connected and device becomes unavailable."""
         msg = MagicMock()
         msg.topic = "cuktech/charger/status"
         msg.payload = json.dumps({"connected": False}).encode()
 
         coordinator._on_status_message(msg)
         assert coordinator._mqtt_connected is False
-        # _last_status_time is updated, so http_recent makes available True
-        assert coordinator.available is True
+        # _last_status_time is NOT updated when connected: false, so device is unavailable
+        assert coordinator.available is False
 
     @pytest.mark.asyncio
     async def test_async_set_value(self, coordinator):

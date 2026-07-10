@@ -56,18 +56,28 @@ cuktech-ble-ha/
 ├── ble_server/                    # BLE 服务端
 │   ├── src/cuktech_ble/
 │   │   ├── __init__.py
-│   │   └── ble.py                 # BLE 协议实现
+│   │   ├── protocol.py              # BLE 协议常量和工具
+│   │   ├── controller.py            # BLE 连接和命令处理
+│   │   └── cli.py                   # CLI 用户界面
 │   ├── ha_server.py               # HTTP API + MQTT 服务
 │   ├── ble_manager.py             # BLE 连接管理
 │   ├── state.py                   # 状态管理
+│   ├── history.py                 # SQLite 历史数据
 │   ├── config.py                  # 配置（支持 YAML）
 │   ├── config.yaml.example        # 配置模板
 │   ├── web/
 │   │   └── index.html             # Web 前端界面
+│   ├── tests/                     # 单元测试 (91 tests)
+│   │   ├── test_protocol.py
+│   │   ├── test_controller.py
+│   │   ├── test_ble_manager.py
+│   │   ├── test_ha_server.py
+│   │   ├── test_history.py
+│   │   ├── test_config.py
+│   │   └── test_state.py
 │   ├── requirements.txt
 │   ├── pyproject.toml
-│   ├── cuktech_ctl.sh             # 服务控制脚本
-│   └── ensure_server.sh           # 自动重启脚本
+│   └── systemd/                   # systemd 服务配置
 │
 ├── ha_integration/                # HA 自定义集成
 │   └── custom_components/cuktech_charger/

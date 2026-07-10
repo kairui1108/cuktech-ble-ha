@@ -44,18 +44,18 @@ class TestSensorEntities:
         assert sensor.native_value is None
 
     def test_setting_sensor_native_value(self, mock_hass, mock_entry):
-        from custom_components.cuktech_charger.sensor import CuktechSettingSensor
+        from custom_components.cuktech_charger.select import CuktechSelect
         coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
         coord._settings = {"5": 1}
-        sensor = CuktechSettingSensor(coord, mock_entry, 5, "scene", "mdi:cog")
-        assert sensor.native_value == "AI模式"
+        select = CuktechSelect(coord, mock_entry, 5, "scene", "mdi:cog", ["AI模式", "数码生态", "单口模式", "均衡模式"])
+        assert select.current_option == "AI模式"
 
     def test_setting_sensor_unknown_value(self, mock_hass, mock_entry):
-        from custom_components.cuktech_charger.sensor import CuktechSettingSensor
+        from custom_components.cuktech_charger.select import CuktechSelect
         coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
         coord._settings = {"5": 99}
-        sensor = CuktechSettingSensor(coord, mock_entry, 5, "scene", "mdi:cog")
-        assert sensor.native_value == "99"
+        select = CuktechSelect(coord, mock_entry, 5, "scene", "mdi:cog", ["AI模式", "数码生态", "单口模式", "均衡模式"])
+        assert select.current_option is None
 
     def test_total_power_sensor(self, mock_hass, mock_entry):
         from custom_components.cuktech_charger.sensor import CuktechTotalPowerSensor
