@@ -694,6 +694,49 @@ class CuktechBLEController:
         else:
             return await self._recv_get_response(siid, piid, timeout=8.0)
 
+    async def send_spec_protobuf(self, pb_data: bytes):
+        """发送 BLE Spec protobuf 消息并返回响应原始数据.
+        
+        Args:
+            pb_data: 预编码的 protobuf 二进制数据
+            
+        Returns:
+            响应数据 bytes，或 None
+        """
+        if not self.authenticated:
+            _LOGGER.warning("Not authenticated")
+            return None
+        await self._drain_pending_pushes()
+        
+        if not await self._send_encrypted(pb_data):
+            return None
+        
+        # 接收响应
+        deadline = asyncio.get_running_loop().time() + 8.0
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return None
+            data = await self.wait_notify("cmd_recv", timeout=min(remaining, 3.0))
+            if not data or len(data) < 4:
+                continue
+            if data[2] == 0x02 and len(data) >= 4:
+                encrypted_payload = data[4:]
+                await self.client.write_gatt_char(
+                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
+                pt = self.decrypt(encrypted_payload)
+                if pt and len(pt) >= 4 and pt[4] == 0x04:
+                    _LOGGER.info("Spec pb response: %s", pt.hex())
+                    return pt
+            elif data[2] == 0x00 and len(data) >= 6:
+                frame_count = data[4] + 0x100 * data[5]
+                await self.client.write_gatt_char(
+                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
+                for _ in range(frame_count):
+                    await self.wait_notify("cmd_recv", timeout=3.0)
+                await self.client.write_gatt_char(
+                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
+
     async def _recv_set_response(self, siid, piid, timeout=8.0):
         """接收 SET 命令的响应: 期望 ACK (B4=0x01) + Result (B4=0x04)。"""
         deadline = asyncio.get_running_loop().time() + timeout

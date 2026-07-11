@@ -224,6 +224,48 @@ class Server:
         self.invalidate_status_cache()
         return web.json_response(result)
 
+    async def handle_blespec_test(self, request):
+        """POST /api/blespec-test — BLE Spec 写入测试."""
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        hex_str = body.get("payload", "")
+        try:
+            payload = bytes.fromhex(hex_str)
+        except ValueError:
+            return web.json_response({"ok": False, "error": "invalid hex"}, status=400)
+        result = await self.ble.ble_spec_test_write(payload)
+        return web.json_response(result)
+
+    async def handle_spec_pb(self, request):
+        """POST /api/spec-pb — BLE Spec protobuf 发送."""
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        hex_str = body.get("payload", "")
+        try:
+            pb_data = bytes.fromhex(hex_str)
+        except ValueError:
+            return web.json_response({"ok": False, "error": "invalid hex"}, status=400)
+        result = await self.ble.ble_spec_send_protobuf(pb_data)
+        return web.json_response(result)
+
+    async def handle_spec_pb_framed(self, request):
+        """POST /api/spec-pb2 — BLE Spec protobuf 通过帧协议发送."""
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        hex_str = body.get("payload", "")
+        try:
+            pb_data = bytes.fromhex(hex_str)
+        except ValueError:
+            return web.json_response({"ok": False, "error": "invalid hex"}, status=400)
+        result = await self.ble.ble_spec_protobuf_framed(pb_data)
+        return web.json_response(result)
+
     async def handle_enable(self, request):
         try:
             body = await request.json()
@@ -503,6 +545,9 @@ app.router.add_post("/api/log-level", lambda r: get_server().handle_log_level(r)
 app.router.add_get("/api/chart", lambda r: get_server().handle_chart(r))
 app.router.add_get("/api/statistics/{port}", lambda r: get_server().handle_statistics(r))
 app.router.add_get("/api/export/{port}", lambda r: get_server().handle_export(r))
+app.router.add_post("/api/blespec-test", lambda r: get_server().handle_blespec_test(r))
+app.router.add_post("/api/spec-pb", lambda r: get_server().handle_spec_pb(r))
+app.router.add_post("/api/spec-pb2", lambda r: get_server().handle_spec_pb_framed(r))
 app.router.add_static("/static", WEB_DIR / "static", show_index=False)
 
 

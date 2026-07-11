@@ -15,6 +15,12 @@ except ImportError:
 
 from state import ChargerState, PORT_NAMES, PORT_BITS, PORT_DEFAULT, decode_port, decode_pdo_caps
 
+# BLE Spec 探索
+try:
+    from cuktech_ble.protocol import CHAR_BLE_SPEC
+except ImportError:
+    CHAR_BLE_SPEC = "00000005-0000-1000-8000-00805f9b34fb"
+
 _LOGGER = logging.getLogger("cuktech_ble")
 
 _status_cache_invalidator = None
@@ -186,6 +192,142 @@ class BLEManager:
 
         await self._read_initial_settings()
         await asyncio.sleep(2)
+
+        # BLE Spec 通道探索：尝试订阅 00000005 特征的通知
+        try:
+            await self._probe_ble_spec_channel()
+        except Exception as e:
+            _LOGGER.debug("BLE Spec probe failed (expected): %s", e)
+
+    async def _probe_ble_spec_channel(self):
+        """探测 BLE Spec 通道 (00000005 + 0000001c + CMD_SEND notify)."""
+        if not self.ctrl or not self.ctrl.client:
+            return
+        client = self.ctrl.client
+        
+        # 存储找到的所有 BLE Spec 通道
+        self._ble_spec_channels = []
+        
+        for service in client.services:
+            for char in service.characteristics:
+                uuid = char.uuid.split('-')[0] if '-' in char.uuid else char.uuid
+                
+                # 通道 1: 00000005 (BLE Spec 通知)
+                if uuid == "00000005":
+                    _LOGGER.info("BLE Spec notify channel: %s (handle %d, props: %s)",
+                                 char.uuid, char.handle, char.properties)
+                    try:
+                        await client.start_notify(char, lambda _, data: _LOGGER.info(
+                            "BLE Spec NOTIFY[05]: %s (%d bytes)", data.hex(), len(data)))
+                        self._ble_spec_channels.append(char)
+                        _LOGGER.info("  -> subscribed to 00000005")
+                    except Exception as e:
+                        _LOGGER.warning("  -> subscribe failed: %s", e)
+                
+                # 通道 2: 0000001c (设备信息 - Write/Notify)
+                if uuid == "0000001c":
+                    _LOGGER.info("BLE Spec device_info channel: %s (handle %d, props: %s)",
+                                 char.uuid, char.handle, char.properties)
+                    try:
+                        await client.start_notify(char, lambda _, data: _LOGGER.info(
+                            "BLE Spec NOTIFY[1c]: %s (%d bytes)", data.hex(), len(data)))
+                        self._ble_spec_channels.append(char)
+                        _LOGGER.info("  -> subscribed to 0000001c")
+                    except Exception as e:
+                        _LOGGER.warning("  -> subscribe failed: %s", e)
+                
+                # 通道 3: 0000001a (CMD_SEND notify) - 不覆盖控制器的订阅
+                if uuid == "0000001a":
+                    _LOGGER.info("  -> skip 0000001a (already subscribed by controller)")
+
+    async def ble_spec_test_write(self, payload: bytes):
+        """测试 BLE Spec 写入: 向 0000001c (device_info) 发请求，监控响应."""
+        if not self.ctrl or not self.ctrl.client:
+            return {"ok": False, "error": "not connected"}
+        client = self.ctrl.client
+        results = []
+        try:
+            # 尝试多个可能的目标特征
+            for service in client.services:
+                for char in service.characteristics:
+                    short = char.uuid.split('-')[0] if '-' in char.uuid else char.uuid
+                    if short in ("0000001c", "00000019", "0000001a"):
+                        try:
+                            _LOGGER.info("BLE Spec test write to %s: %s", short, payload.hex())
+                            await client.write_gatt_char(char, payload, response=False)
+                            results.append(f"{short}=ok")
+                        except Exception as e:
+                            results.append(f"{short}={e}")
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True if results else False, "results": results}
+
+    async def ble_spec_send_protobuf(self, pb_data: bytes):
+        """发送 BLE Spec protobuf 命令并获取响应."""
+        if not self.ctrl or not self.ctrl.client:
+            return {"ok": False, "error": "not connected"}
+        try:
+            _LOGGER.info("Sending spec protobuf: %s (%d bytes)", pb_data.hex(), len(pb_data))
+            resp = await self.ctrl.send_spec_protobuf(pb_data)
+            if resp:
+                return {"ok": True, "response": resp.hex()}
+            return {"ok": False, "error": "no response"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    async def ble_spec_protobuf_framed(self, pb_data: bytes):
+        """通过 0000001c 通道 + 帧协议发送 BLE Spec protobuf."""
+        if not self.ctrl or not self.ctrl.client:
+            return {"ok": False, "error": "not connected"}
+        client = self.ctrl.client
+        try:
+            encrypted = self.ctrl._encrypt(pb_data)
+            
+            # 找到 0000001c 特征
+            target_char = None
+            for service in client.services:
+                for char in service.characteristics:
+                    if "0000001c" in char.uuid:
+                        target_char = char
+                        break
+            if not target_char:
+                return {"ok": False, "error": "0000001c not found"}
+            
+            # 帧协议: 写入头部到 0000001c
+            header = bytes([0x00, 0x00, 0x00, 0x00, 0x01, 0x00])
+            await client.write_gatt_char(target_char, header, response=False)
+            _LOGGER.info("Spec: wrote header to 0000001c")
+            
+            # 等待 RCV_RDY (00000101) via controller queue
+            data = await self.ctrl.wait_notify("cmd_send", timeout=5.0)
+            if not data or data != bytes([0x00, 0x00, 0x01, 0x01]):
+                # 也尝试 cmd_recv 管道
+                data = await self.ctrl.wait_notify("cmd_recv", timeout=2.0)
+                if data and len(data) >= 4 and data[2] == 0x02:
+                    _LOGGER.info("Spec: got inline response on cmd_recv, raw=%s", data.hex())
+                    # 解密并解析
+                    try:
+                        encrypted_payload = data[4:]
+                        pt = self.ctrl.decrypt(encrypted_payload)
+                        _LOGGER.info("Spec: decrypted response: %s", pt.hex() if pt else 'None')
+                    except Exception as e:
+                        _LOGGER.info("Spec: decrypt failed: %s", e)
+                    return {"ok": True, "via_cmd_recv": True}
+                _LOGGER.warning("Spec: no RCV_RDY: %s", data.hex() if data else 'None')
+                return {"ok": False, "error": f"no RCV_RDY"}
+            
+            # 发送数据帧到 0000001c
+            frame = bytes([0x01, 0x00]) + encrypted
+            await client.write_gatt_char(target_char, frame, response=False)
+            _LOGGER.info("Spec: sent encrypted frame (%d bytes)", len(frame))
+            
+            # 等待 RCV_OK
+            data = await self.ctrl.wait_notify("cmd_send", timeout=5.0)
+            _LOGGER.info("Spec: response=%s", data.hex() if data else 'None')
+            
+            return {"ok": True, "sent": len(frame)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     async def _disconnect(self):
         if self.ctrl:
