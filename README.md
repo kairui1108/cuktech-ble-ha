@@ -11,9 +11,9 @@
 
 ## 效果预览
 
-![HA Integration](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_integration.png)
+![HA Integration](./docs/ha_integration.png)
 
-![HA Lovelace](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_lovelace.png)
+![HA Lovelace](./docs/ha_lovelace.png)
 
 ## 功能特性
 

@@ -145,7 +145,7 @@
         ];
 
         let lastSettings = {};
-        let powerChart = null, modalChart = null, currentModalPort = null;
+        let powerChart = null, modalChart = null, currentModalPort = null, latestPorts = {};
         let bleConnected = false;
         const portHistory = {
             1: { voltage: [], current: [], power: [], protocol: [] },
@@ -272,7 +272,8 @@
             document.getElementById('modalPower').textContent = (h.power[h.power.length - 1] || 0).toFixed(1);
             const protocolEl = document.getElementById('modalProtocol');
             if (protocolEl) {
-                const lastProtocol = h.protocol ? h.protocol[h.protocol.length - 1] : 'idle';
+                const portData = latestPorts[currentModalPort];
+                const lastProtocol = portData ? portData.protocol : 'idle';
                 protocolEl.textContent = lastProtocol;
                 protocolEl.style.color = lastProtocol !== 'idle' ? 'var(--accent)' : 'var(--text-dim)';
             }
@@ -291,6 +292,7 @@
 
         function updateUI(data) {
             bleConnected = data.connected && data.authenticated;
+            latestPorts = data.ports || {};
             updateStatusBadge(data.connected, data.authenticated, data.mqtt_connected);
             updateBleButton();
             renderPorts(data.ports);
@@ -427,8 +429,7 @@
                                 ${QUICK_MINUTES.map(m => `<button class="countdown-quick-btn" onclick="setCountdown('${key}', ${m})">${m}分</button>`).join('')}
                             </div>
                             <div class="countdown-actions">
-                                <button class="countdown-set-btn" onclick="setCountdownFromInput('${key}')">设置</button>
-                                <button class="countdown-clear-btn" onclick="setCountdown('${key}', 0)">清除</button>
+                                <button class="countdown-toggle-btn set" id="countdown-btn-${key}" onclick="handleCountdownAction('${key}')">设置</button>
                             </div>
                         </div>`;
                 }
@@ -443,6 +444,16 @@
                 if (statusEl) {
                     statusEl.textContent = currentVal > 0 ? currentVal + '分钟' : '未设置';
                 }
+                const btn = document.getElementById(`countdown-btn-${key}`);
+                if (btn && !btn.disabled) {
+                    if (currentVal > 0) {
+                        btn.textContent = '清除';
+                        btn.className = 'countdown-toggle-btn clear';
+                    } else {
+                        btn.textContent = '设置';
+                        btn.className = 'countdown-toggle-btn set';
+                    }
+                }
             }
         }
 
@@ -452,12 +463,24 @@
             if (countdownPending[port]) return;
             countdownPending[port] = true;
             const id = PORT_KEY_TO_ID[port];
-            const btn = document.querySelector(`#countdownGrid .countdown-item:nth-child(${id}) .countdown-set-btn`);
+            const btn = document.getElementById(`countdown-btn-${port}`);
             const statusEl = document.getElementById(`countdown-status-${port}`);
-            if (btn) { btn.disabled = true; btn.textContent = '设置中...'; }
+            const isClear = minutes === 0;
+            if (btn) { btn.disabled = true; btn.textContent = isClear ? '清除中...' : '设置中...'; }
             const expectedText = minutes > 0 ? minutes + '分钟' : '未设置';
+            const revertBtn = () => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = isClear ? '清除' : '设置';
+                    btn.className = `countdown-toggle-btn ${isClear ? 'clear' : 'set'}`;
+                }
+                if (!isClear) {
+                    const input = document.getElementById(`countdown-${port}`);
+                    if (input) input.value = '';
+                }
+            };
             const piid = COUNTDOWN_PIIDS[id];
-            if (!piid) { countdownPending[port] = false; if (btn) { btn.disabled = false; btn.textContent = '设置'; } return; }
+            if (!piid) { countdownPending[port] = false; revertBtn(); return; }
             try {
                 await fetch(`${API_BASE}/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid, value: minutes }) });
                 fetchStatus();
@@ -466,21 +489,32 @@
                         if (statusEl.textContent === expectedText) {
                             observer.disconnect();
                             countdownPending[port] = false;
-                            if (btn) { btn.disabled = false; btn.textContent = '设置'; }
+                            revertBtn();
                         }
                     });
                     observer.observe(statusEl, { childList: true, characterData: true, subtree: true });
-                    setTimeout(() => { observer.disconnect(); countdownPending[port] = false; if (btn) { btn.disabled = false; btn.textContent = '设置'; } }, 10000);
+                    setTimeout(() => { observer.disconnect(); countdownPending[port] = false; revertBtn(); }, 10000);
                 } else {
-                    setTimeout(() => { countdownPending[port] = false; if (btn) { btn.disabled = false; btn.textContent = '设置'; } }, 3000);
+                    setTimeout(() => { countdownPending[port] = false; revertBtn(); }, 3000);
                 }
-            } catch (e) { console.error('Set countdown error:', e); countdownPending[port] = false; if (btn) { btn.disabled = false; btn.textContent = '设置'; } }
+            } catch (e) { console.error('Set countdown error:', e); countdownPending[port] = false; revertBtn(); }
         }
 
         function setCountdownFromInput(port) {
             const input = document.getElementById(`countdown-${port}`);
             const minutes = parseInt(input.value) || 0;
             setCountdown(port, minutes);
+        }
+
+        function handleCountdownAction(port) {
+            const btn = document.getElementById(`countdown-btn-${port}`);
+            if (btn && btn.classList.contains('clear')) {
+                setCountdown(port, 0);
+            } else {
+                const input = document.getElementById(`countdown-${port}`);
+                if (!input.value || parseInt(input.value) <= 0) return;
+                setCountdownFromInput(port);
+            }
         }
 
         async function bleToggle() {

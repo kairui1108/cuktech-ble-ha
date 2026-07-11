@@ -9,7 +9,7 @@
     <script src="/static/chart-config.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        html, body { height: 100%; overflow: hidden; }
+        html, body { height: 100%; }
         :root {
             --bg: #1c1c1c; --card-bg: #252525; --card-border: #3b3b3b;
             --text: #e1e1e1; --text-dim: #959595;
@@ -20,43 +20,43 @@
             --border-radius: 8px;
         }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif; background: var(--bg); color: var(--text); padding: 16px; }
-        .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--border-radius); padding: 16px; height: calc(100% - 32px); display: flex; flex-direction: column; overflow: hidden; }
-        .card-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+        .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--border-radius); padding: clamp(12px, 2vw, 24px); height: calc(100% - 32px); display: flex; flex-direction: column; overflow-y: auto; }
+        .card-title { font-size: clamp(10px, 1.2vw, 14px); font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: clamp(8px, 1.5vw, 16px); display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
         .card-title::before { content: ''; width: 3px; height: 14px; background: var(--accent); border-radius: 2px; }
-        .port-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; flex: 1; min-height: 0; overflow: hidden; }
-        .port-card { background: rgba(255, 255, 255, 0.03); border-radius: 8px; padding: 14px; border: 1px solid transparent; transition: all 0.3s; cursor: pointer; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+        .port-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: clamp(6px, 1vw, 12px); flex: 1; min-height: 0; }
+        .port-card { background: rgba(255, 255, 255, 0.03); border-radius: clamp(6px, 1vw, 12px); padding: clamp(8px, 2.5vh, 20px) clamp(6px, 1.5vw, 20px); border: 1px solid transparent; transition: all 0.3s; cursor: pointer; display: flex; flex-direction: column; justify-content: center; min-height: max(80px, 18vh); }
         .port-card:hover { border-color: rgba(var(--accent-rgb), 0.3); }
         .port-card.active { border-color: rgba(var(--accent-rgb), 0.3); background: rgba(var(--accent-rgb), 0.05); }
-        .port-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-        .port-name { font-size: 16px; font-weight: 700; }
+        .port-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: clamp(3px, 0.8vh, 10px); }
+        .port-name { font-size: clamp(14px, 2.2vw, 22px); font-weight: 700; }
         .port-name.c1 { color: var(--port-c1); }
         .port-name.c2 { color: var(--port-c2); }
         .port-name.c3 { color: var(--port-c3); }
         .port-name.a { color: var(--port-a); }
-        .port-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+        .port-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(2px, 0.4vw, 8px); }
         .port-stat { text-align: center; }
-        .port-stat-value { font-size: 15px; font-weight: 600; }
-        .port-stat-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
-        .port-toggle { position: relative; width: 36px; height: 20px; }
+        .port-stat-value { font-size: clamp(13px, 2vw, 20px); font-weight: 600; }
+        .port-stat-label { font-size: clamp(8px, 1vw, 11px); color: var(--text-dim); text-transform: uppercase; }
+        .port-toggle { position: relative; width: 40px; height: 22px; }
         .port-toggle input { opacity: 0; width: 0; height: 0; }
         .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255, 255, 255, 0.1); border-radius: 20px; transition: 0.3s; }
-        .toggle-slider:before { content: ""; position: absolute; height: 14px; width: 14px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.3s; }
+        .toggle-slider:before { content: ""; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.3s; }
         .port-toggle input:checked + .toggle-slider { background: var(--accent); box-shadow: 0 0 12px rgba(var(--accent-rgb), 0.4); }
-        .port-toggle input:checked + .toggle-slider:before { transform: translateX(16px); }
-        .port-protocol { text-align: center; margin-top: 6px; font-size: 10px; color: var(--text-dim); }
+        .port-toggle input:checked + .toggle-slider:before { transform: translateX(18px); }
+        .port-protocol { text-align: center; margin-top: clamp(2px, 0.6vh, 8px); font-size: clamp(8px, 1vw, 12px); color: var(--text-dim); }
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.8); z-index: 100; justify-content: center; align-items: center; padding: 20px; }
         .modal-overlay.show { display: flex; }
-        .modal { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--border-radius); padding: 16px; width: 100%; height: 100%; max-width: 100%; max-height: 100%; display: flex; flex-direction: column; overflow: hidden; }
-        .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-shrink: 0; }
-        .modal-title { font-size: 16px; font-weight: 600; }
-        .modal-close { width: 28px; height: 28px; border: none; border-radius: 50%; background: rgba(255, 255, 255, 0.1); color: var(--text); font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        .modal { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--border-radius); padding: clamp(10px, 2vh, 24px); width: 100%; height: 100%; max-width: 100%; max-height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+        .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: clamp(6px, 1.2vh, 16px); flex-shrink: 0; }
+        .modal-title { font-size: clamp(14px, 2vw, 22px); font-weight: 600; }
+        .modal-close { width: clamp(24px, 3vw, 32px); height: clamp(24px, 3vw, 32px); border: none; border-radius: 50%; background: rgba(255, 255, 255, 0.1); color: var(--text); font-size: clamp(14px, 1.8vw, 18px); cursor: pointer; display: flex; align-items: center; justify-content: center; }
         .modal-close:hover { background: rgba(255, 255, 255, 0.2); }
-        .modal-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; flex-shrink: 0; }
-        .power-item { text-align: center; padding: 10px 6px; background: rgba(255, 255, 255, 0.03); border-radius: 8px; }
-        .power-value { font-size: 20px; font-weight: 700; color: var(--accent); line-height: 1; }
+        .modal-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: clamp(4px, 0.8vh, 12px); margin-bottom: clamp(6px, 1.2vh, 16px); flex-shrink: 0; }
+        .power-item { text-align: center; padding: clamp(6px, 1.5vh, 14px) clamp(3px, 0.6vw, 10px); background: rgba(255, 255, 255, 0.03); border-radius: clamp(5px, 1vh, 10px); }
+        .power-value { font-size: clamp(16px, 2.5vw, 28px); font-weight: 700; color: var(--accent); line-height: 1; }
         .power-value.success { color: var(--success); }
         .power-value.warning { color: var(--warning); }
-        .power-label { font-size: 9px; color: var(--text-dim); margin-top: 4px; text-transform: uppercase; }
+        .power-label { font-size: clamp(7px, 0.9vw, 11px); color: var(--text-dim); margin-top: clamp(1px, 0.4vh, 6px); text-transform: uppercase; }
         .modal-chart-container { position: relative; flex: 1; min-height: 0; }
         .modal-chart-container canvas { width: 100% !important; height: 100% !important; }
     </style>
@@ -77,7 +77,7 @@
                 <div class="power-item"><div class="power-value" id="modalVoltage">0.0</div><div class="power-label">电压 V</div></div>
                 <div class="power-item"><div class="power-value success" id="modalCurrent">0.0</div><div class="power-label">电流 A</div></div>
                 <div class="power-item"><div class="power-value warning" id="modalPower">0.0</div><div class="power-label">功率 W</div></div>
-                <div class="power-item"><div class="power-value" id="modalProtocol" style="font-size:12px">idle</div><div class="power-label">协议</div></div>
+                <div class="power-item"><div class="power-value" id="modalProtocol">idle</div><div class="power-label">实时充电协议</div></div>
             </div>
             <div class="modal-chart-container"><canvas id="modalChart"></canvas></div>
         </div>

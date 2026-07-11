@@ -48,6 +48,7 @@ Thumbs.db
 cuktech-ble-server/.venv/
 cuktech-ble-server/__pycache__/
 cuktech-ble-server/src/cuktech_ble/__pycache__/
+ble_server/data/
 
 # Environment variables
 .env

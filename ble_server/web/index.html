@@ -126,18 +126,19 @@
         .countdown-port.c3 { color: var(--port-c3); }
         .countdown-port.a { color: var(--port-a); }
         .countdown-current { font-size: 12px; color: var(--text-dim); }
-        .countdown-input-group { display: flex; gap: 8px; margin-bottom: 10px; }
-        .countdown-input { flex: 1; padding: 8px 12px; border: 1px solid var(--card-border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 14px; text-align: center; min-width: 60px; max-width: 100px; }
+        .countdown-input-group { display: flex; gap: 8px; margin-bottom: 10px; justify-content: center; }
+        .countdown-input { padding: 8px 12px; border: 1px solid var(--card-border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 14px; text-align: center; width: 100px; }
         .countdown-input:focus { outline: none; border-color: var(--accent); }
         .countdown-unit { padding: 8px 12px; border: 1px solid var(--card-border); border-radius: 8px; background: rgba(255, 255, 255, 0.03); color: var(--text-dim); font-size: 12px; display: flex; align-items: center; }
-        .countdown-quick { display: flex; gap: 6px; flex-wrap: wrap; }
+        .countdown-quick { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
         .countdown-quick-btn { padding: 6px 10px; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; background: rgba(255, 255, 255, 0.08); color: var(--text); font-size: 11px; cursor: pointer; transition: all 0.2s; }
         .countdown-quick-btn:hover { background: rgba(var(--accent-rgb), 0.2); border-color: var(--accent); color: var(--accent); }
         .countdown-actions { display: flex; gap: 8px; margin-top: 10px; }
-        .countdown-set-btn { flex: 1; padding: 8px; border: none; border-radius: 8px; background: rgba(var(--accent-rgb), 0.15); color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(var(--accent-rgb), 0.2); }
-        .countdown-set-btn:hover { background: rgba(var(--accent-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.2); }
-        .countdown-clear-btn { padding: 8px 12px; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 8px; background: rgba(255, 255, 255, 0.06); color: var(--text); font-size: 12px; cursor: pointer; transition: all 0.2s; }
-        .countdown-clear-btn:hover { border-color: var(--danger); color: var(--danger); background: rgba(var(--danger-rgb), 0.1); }
+        .countdown-toggle-btn { flex: 1; padding: 8px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .countdown-toggle-btn.set { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); border: 1px solid rgba(var(--accent-rgb), 0.2); }
+        .countdown-toggle-btn.set:hover { background: rgba(var(--accent-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.2); }
+        .countdown-toggle-btn.clear { background: rgba(var(--danger-rgb), 0.12); color: var(--danger); border: 1px solid rgba(var(--danger-rgb), 0.3); }
+        .countdown-toggle-btn.clear:hover { background: rgba(var(--danger-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--danger-rgb), 0.15); }
         @media (max-width: 600px) {
             .charger-layout { grid-template-columns: 1fr; }
             .charger-image { max-height: 150px; }
@@ -215,13 +216,13 @@
         </div>
 
         <div class="card">
-            <div class="card-title">设备设置</div>
-            <div class="settings-grid" id="settingsGrid"></div>
+            <div class="card-title">倒计时设置</div>
+            <div class="countdown-grid" id="countdownGrid"></div>
         </div>
 
         <div class="card">
-            <div class="card-title">倒计时设置</div>
-            <div class="countdown-grid" id="countdownGrid"></div>
+            <div class="card-title">设备设置</div>
+            <div class="settings-grid" id="settingsGrid"></div>
         </div>
 
         <div class="footer">
@@ -273,7 +274,7 @@
                 <div class="power-item"><div class="power-value" id="modalVoltage">0.0</div><div class="power-label">电压 (V)</div></div>
                 <div class="power-item"><div class="power-value success" id="modalCurrent">0.0</div><div class="power-label">电流 (A)</div></div>
                 <div class="power-item"><div class="power-value warning" id="modalPower">0.0</div><div class="power-label">功率 (W)</div></div>
-                <div class="power-item"><div class="power-value" id="modalProtocol" style="font-size:14px">idle</div><div class="power-label">协议</div></div>
+                <div class="power-item"><div class="power-value" id="modalProtocol">idle</div><div class="power-label">实时充电协议</div></div>
             </div>
             <div class="modal-chart-container"><canvas id="modalChart"></canvas></div>
         </div>
