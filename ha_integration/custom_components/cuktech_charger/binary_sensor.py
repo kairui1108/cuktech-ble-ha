@@ -24,6 +24,7 @@ async def async_setup_entry(
         CuktechPortActive(coord, entry, piid, name)
         for piid, name in PORT_NAMES.items()
     ]
+    entities.append(CuktechConnectionBinarySensor(coord, entry))
     async_add_entities(entities)
 
 
@@ -77,3 +78,44 @@ class CuktechPortActive(BinarySensorEntity):
         if pd is None:
             return None
         return pd.get("active", False)
+
+
+class CuktechConnectionBinarySensor(BinarySensorEntity):
+    """Binary sensor showing BLE device connection status."""
+
+    _attr_has_entity_name = True
+    _attr_name = "连接状态"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+
+    def __init__(self, coord: CuktechMQTTCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the binary sensor."""
+        self.coordinator = coord
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_ble_connected"
+        coord.register_callback(self._update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Unregister callback when removed."""
+        self.coordinator.unregister_callback(self._update)
+        await super().async_will_remove_from_hass()
+
+    @callback
+    def _update(self) -> None:
+        """Handle state update."""
+        if self.hass is not None:
+            self.async_write_ha_state()
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device info."""
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **self.coordinator.device_info}
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.available
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if device is connected."""
+        return self.coordinator.ble_connected

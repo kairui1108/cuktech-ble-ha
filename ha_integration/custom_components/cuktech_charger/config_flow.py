@@ -19,7 +19,7 @@ _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
-        vol.Optional(CONF_NAME, default="CUKTECH Charger"): str,
+        vol.Optional(CONF_NAME, default="CUKTECH 10 GaN Charger Ultra"): str,
         vol.Optional(CONF_SERVER_URL, default=DEFAULT_SERVER_URL): str,
     }
 )

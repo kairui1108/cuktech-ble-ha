@@ -83,11 +83,30 @@ class CuktechMQTTCoordinator:
         self._health_failures = 0
         self._device_model: str = DEVICE_INFO["model"]
         self._firmware_version: str = ""
+        self._ble_connected: bool = False
+        self._ble_enabled: bool = False
+        self._ble_pending: bool = False
+        self._ble_lock = asyncio.Lock()
 
     @property
     def available(self) -> bool:
         """Return True if BLE server is reachable (MQTT connected or HTTP OK)."""
         return self._available
+
+    @property
+    def ble_connected(self) -> bool:
+        """Return True if BLE device is actually connected."""
+        return self._ble_connected
+
+    @property
+    def ble_enabled(self) -> bool:
+        """Return True if BLE connection is enabled (user intent)."""
+        return self._ble_enabled
+
+    @property
+    def ble_pending(self) -> bool:
+        """Return True if a BLE connect/disconnect operation is in progress."""
+        return self._ble_pending
 
     def register_callback(self, cb) -> None:
         """Register a callback for state updates."""
@@ -160,6 +179,11 @@ class CuktechMQTTCoordinator:
         )
         await self._async_health_check(None)
 
+        # 首次加载时同步 BLE 开关状态与实际连接状态
+        if self._ble_connected and not self._ble_enabled:
+            self._ble_enabled = True
+            _LOGGER.info("Initial BLE state synced: connected")
+
         _LOGGER.info("CUKTECH Charger MQTT coordinator set up successfully")
 
     async def async_unload(self) -> None:
@@ -219,6 +243,9 @@ class CuktechMQTTCoordinator:
             payload = json.loads(msg.payload)
             was_available = self._available
             self._mqtt_connected = payload.get("connected", False)
+            ble_changed = self._ble_connected != payload.get("connected", False)
+            prev_ble_connected = self._ble_connected
+            self._ble_connected = payload.get("connected", False)
             if self._mqtt_connected:
                 self._last_status_time = time.time()
                 self._health_failures = 0
@@ -234,11 +261,25 @@ class CuktechMQTTCoordinator:
                     self._firmware_version = new_fw
                     info_changed = True
             self._update_availability()
+            # 同步用户意图与 BLE 实际状态（仅跟随 MQTT 状态变化，不强制覆盖）
+            ble_enabled_changed = False
+            if not prev_ble_connected and self._ble_connected and not self._ble_enabled:
+                self._ble_enabled = True
+                ble_enabled_changed = True
+                _LOGGER.info("BLE auto-reconnected, syncing switch state")
+            elif prev_ble_connected and not self._ble_connected and self._ble_enabled:
+                self._ble_enabled = False
+                ble_enabled_changed = True
+                _LOGGER.info("BLE disconnected, syncing switch state")
+            # 如果 BLE 实际状态与用户意图一致，清除 pending
+            if self._ble_pending and self._ble_connected == self._ble_enabled:
+                self._ble_pending = False
+                _LOGGER.debug("BLE state confirmed, cleared pending")
             if self._available and not was_available:
                 _LOGGER.info("BLE server is now available (MQTT)")
             elif not self._available and was_available:
                 _LOGGER.warning("BLE server disconnected (MQTT)")
-            if info_changed:
+            if info_changed or ble_changed or ble_enabled_changed:
                 self.hass.async_create_task(self._async_update_device_registry())
                 self._notify_callbacks()
             _LOGGER.debug("Status message: %s", payload)
@@ -278,19 +319,28 @@ class CuktechMQTTCoordinator:
                     self._update_availability()
                     if self._available and not was_available:
                         _LOGGER.info("BLE server is now available (HTTP)")
-                    # Fallback: also read device info from HTTP if MQTT not connected
+                    # Fallback: also read connection status and device info from HTTP if MQTT not connected
                     if not self._mqtt_connected:
                         try:
                             data = await resp.json()
                             info_changed = False
                             model = data.get("device_model", "")
                             fw = data.get("firmware_version", "")
+                            ble_conn = data.get("connected", False)
                             if model and self._device_model != model:
                                 self._device_model = model
                                 info_changed = True
                             if fw and self._firmware_version != fw:
                                 self._firmware_version = fw
                                 info_changed = True
+                            if self._ble_connected != ble_conn:
+                                self._ble_connected = ble_conn
+                                # 首次加载或 MQTT 断连时，同步开关状态到实际连接状态
+                                if ble_conn and not self._ble_enabled:
+                                    self._ble_enabled = True
+                                elif not ble_conn and self._ble_enabled:
+                                    self._ble_enabled = False
+                                self._notify_callbacks()
                             if info_changed:
                                 self.hass.async_create_task(self._async_update_device_registry())
                                 self._notify_callbacks()
@@ -310,6 +360,40 @@ class CuktechMQTTCoordinator:
             elif self._health_failures % 10 == 0:
                 _LOGGER.warning("BLE server HTTP check failed %d times: %s", self._health_failures, err)
             self._available = self._mqtt_connected
+
+    async def async_enable_ble(self, enable: bool) -> bool:
+        """Enable or disable BLE connection via HTTP API."""
+        async with self._ble_lock:
+            self._ble_enabled = enable
+            self._ble_pending = True
+            self._notify_callbacks()
+
+            # 30 秒超时保护：防止网络异常时 switch 永远灰掉
+            async def _clear_pending_after_delay() -> None:
+                await asyncio.sleep(30)
+                if self._ble_pending:
+                    self._ble_pending = False
+                    self._notify_callbacks()
+                    _LOGGER.warning("BLE operation timed out, clearing pending state")
+
+            timeout_task = self.hass.async_create_task(_clear_pending_after_delay())
+
+            session = async_get_clientsession(self.hass)
+            try:
+                url = f"{self.server_url}/api/enable"
+                async with session.post(url, json={"enabled": enable}, timeout=30) as resp:
+                    if resp.status == 200:
+                        _LOGGER.info("BLE connection %s", "enabled" if enable else "disabled")
+                        return True
+                    _LOGGER.error("Failed to %s BLE: HTTP %d", "enable" if enable else "disable", resp.status)
+            except Exception as err:
+                _LOGGER.error("Failed to %s BLE: %s", "enable" if enable else "disable", err)
+            finally:
+                self._ble_pending = False
+                self._notify_callbacks()
+                if not timeout_task.done():
+                    timeout_task.cancel()
+            return False
 
     async def async_set_value(self, piid: int, value: Any) -> None:
         """Set a PIID value via MQTT."""

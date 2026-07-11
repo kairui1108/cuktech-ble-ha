@@ -33,7 +33,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up CUKTECH Charger switches from a config entry."""
     coord = hass.data[DOMAIN][entry.entry_id]
-    entities = []
+    entities = [CuktechConnectionSwitch(coord, entry)]
 
     for piid, cfg in SETTING_PIIDS.items():
         entities.append(CuktechSettingSwitch(coord, entry, piid, cfg["name"], cfg["icon"]))
@@ -42,6 +42,60 @@ async def async_setup_entry(
         entities.append(CuktechPortSwitch(coord, entry, port, cfg["name"], cfg["icon"], cfg["bit"]))
 
     async_add_entities(entities)
+
+
+class CuktechConnectionSwitch(SwitchEntity):
+    """Switch to control BLE connection (enable/disable)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "连接控制"
+    _attr_icon = "mdi:bluetooth-connect"
+
+    def __init__(self, coord: CuktechMQTTCoordinator, entry: ConfigEntry) -> None:
+        """Initialize the switch."""
+        self.coordinator = coord
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_ble_control"
+        coord.register_callback(self._update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Unregister callback when removed."""
+        self.coordinator.unregister_callback(self._update)
+        await super().async_will_remove_from_hass()
+
+    @callback
+    def _update(self) -> None:
+        """Handle state update."""
+        if self.hass is not None:
+            self.async_write_ha_state()
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device info."""
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **self.coordinator.device_info}
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.available and not self.coordinator.ble_pending
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes for frontend display."""
+        return {"pending": self.coordinator.ble_pending}
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if BLE connection is enabled."""
+        return self.coordinator.ble_enabled
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable BLE connection."""
+        await self.coordinator.async_enable_ble(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable BLE connection."""
+        await self.coordinator.async_enable_ble(False)
 
 
 class CuktechSettingSwitch(SwitchEntity):

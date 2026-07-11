@@ -152,6 +152,10 @@ class BLEManager:
         _LOGGER.info("Connected, waiting for device to settle...")
         await asyncio.sleep(1)
 
+        # 验证 GATT 读取能力（power cycle 后 BlueZ D-Bus 可能未完全就绪）
+        # 静默等待适配器完全初始化，不做激进的 GATT 检查
+        await asyncio.sleep(3)
+
         await self.ctrl.read_device_info()
         _LOGGER.info("Connected, authenticating...")
         # 存储设备信息到 state
@@ -166,7 +170,7 @@ class BLEManager:
             except Exception:
                 pass
             # 等待设备处理断连，避免旧连接未完全释放时新连接冲突
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             raise AuthConnectionError("Auth failed")
 
         await self.state.set_connection(True, True)
@@ -186,20 +190,21 @@ class BLEManager:
         if self.ctrl:
             client = self.ctrl.client if self.ctrl else None
             was_connected = bool(client and client.is_connected)
-            # 如果已触发 stop，跳过 GATT cleanup（_force_disconnect_bluetooth 会处理）
-            if not self._stop_event.is_set():
-                try:
+            # 始终进行 GATT cleanup，确保设备收到干净的 BLE LL disconnect
+            # （无论是否 stop，设备端都需要感知断开以清除 auth session）
+            try:
+                if client and client.is_connected:
                     await self.ctrl.stop_all_notifications()
-                except Exception:
-                    pass
-                try:
-                    if client and client.is_connected:
-                        try:
-                            await asyncio.wait_for(client.disconnect(), timeout=3.0)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+            except Exception:
+                pass
+            try:
+                if client and client.is_connected:
+                    try:
+                        await asyncio.wait_for(client.disconnect(), timeout=3.0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             self.ctrl = None
             if was_connected and not self._stop_event.is_set():
                 _LOGGER.error("BLE device disconnected unexpectedly")
@@ -222,6 +227,9 @@ class BLEManager:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(proc.communicate(), timeout=5)
+            # 等待 BLE Link Layer disconnect 完成
+            await asyncio.sleep(3)
+            _LOGGER.info("BLE disconnect confirmed")
         except Exception as e:
             _LOGGER.warning("bluetoothctl disconnect failed: %s", e)
         # 重置蓝牙适配器以清理残留状态
@@ -239,12 +247,11 @@ class BLEManager:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(proc.communicate(), timeout=5)
-            # 等待适配器就绪，最多10秒
+            # 等待适配器就绪，最多15秒
             hci = self._find_ble_adapter()
-            for _ in range(10):
+            for _ in range(15):
                 await asyncio.sleep(1)
                 try:
-                    # 优先用 bluetoothctl 检查适配器状态
                     proc = await asyncio.create_subprocess_exec(
                         "bluetoothctl", "show", hci,
                         stdout=asyncio.subprocess.PIPE,
@@ -252,10 +259,9 @@ class BLEManager:
                     )
                     stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
                     if b"Powered: yes" in stdout:
-                        _LOGGER.info("BT adapter ready")
+                        _LOGGER.info("BT adapter ready after power cycle")
                         break
                 except Exception:
-                    # fallback: 用 sysfs 检查
                     try:
                         power_file = f"/sys/class/bluetooth/{hci}/power"
                         if os.path.exists(power_file) and open(power_file).read().strip() == "1":
@@ -264,7 +270,7 @@ class BLEManager:
                     except Exception:
                         pass
             else:
-                _LOGGER.warning("BT adapter not ready after 10s, proceeding anyway")
+                _LOGGER.warning("BT adapter not ready after 15s, proceeding anyway")
         except Exception as e:
             _LOGGER.warning("bluetoothctl power cycle failed: %s", e)
 
@@ -277,9 +283,14 @@ class BLEManager:
         while not self._stop_event.is_set():
             await self._process_commands()
 
+            if not self.ctrl:
+                break
+
             try:
                 data = await asyncio.wait_for(
                     self.ctrl.wait_notify("cmd_recv"), timeout=2.0)
+                if not self.ctrl:
+                    break
                 last_notify = time.time()
             except asyncio.TimeoutError:
                 now = time.time()
@@ -402,6 +413,8 @@ class BLEManager:
                 cmd_future.set_result({"ok": False, "error": str(e)})
 
     async def _handle_inline_data(self, data):
+        if not self.ctrl:
+            return
         encrypted_payload = data[4:]
         await self.ctrl.client.write_gatt_char(
             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
@@ -440,6 +453,8 @@ class BLEManager:
         The ACK (RCV_RDY + RCV_OK) is required to keep the BLE channel in sync.
         Actual data processing happens via inline notifications.
         """
+        if not self.ctrl:
+            return
         frame_count = data[4] + 0x100 * data[5]
         if frame_count > 1000:
             _LOGGER.warning("Multiframe count too large: %d, consuming all frames", frame_count)

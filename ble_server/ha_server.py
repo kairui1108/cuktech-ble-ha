@@ -227,13 +227,14 @@ class Server:
         else:
             async with self._start_lock:
                 self.ble._stop_event.set()
-                await self.ble._force_disconnect_bluetooth()
                 app_ = request.app
                 if "ble_task" in app_ and app_["ble_task"] and not app_["ble_task"].done():
                     try:
-                        await app_["ble_task"]
-                    except asyncio.CancelledError:
+                        await asyncio.wait_for(app_["ble_task"], timeout=10)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
                         pass
+                # _disconnect() (在 start() 的 finally 中) 已进行完整的 Bleak 清理，
+                # 不需要额外调用 _force_disconnect_bluetooth()（仅用于错误恢复/关机）
             for piid in range(1, 5):
                 await self.state.update_port(piid, PORT_DEFAULT)
             if self.mqtt_client and self.mqtt_client.is_connected():

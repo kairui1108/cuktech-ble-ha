@@ -155,10 +155,14 @@ class CuktechBLEController:
                     break
 
         # 提前订阅所有通知通道 (避免 CCCD 订阅延迟导致丢失通知)
-        await self.client.start_notify(CHAR_AUTH_CTRL, self._make_notify_handler("auth_ctrl"))
-        await self.client.start_notify(CHAR_AUTH_DATA, self._make_notify_handler("auth_data"))
-        await self.client.start_notify(CHAR_CMD_SEND, self._make_notify_handler("cmd_send"))
-        await self.client.start_notify(CHAR_CMD_RECV, self._make_notify_handler("cmd_recv"))
+        for char, name in [
+            (CHAR_AUTH_CTRL, "auth_ctrl"), (CHAR_AUTH_DATA, "auth_data"),
+            (CHAR_CMD_SEND, "cmd_send"), (CHAR_CMD_RECV, "cmd_recv"),
+        ]:
+            try:
+                await self.client.start_notify(char, self._make_notify_handler(name))
+            except Exception as e:
+                _LOGGER.warning("Failed to subscribe %s: %s", name, e)
         _LOGGER.info("All notification channels subscribed")
 
         return True
@@ -223,8 +227,8 @@ class CuktechBLEController:
         data = await self.wait_notify("dev_info")
         if data and len(data) > 2:
             chip_name = data[2:2 + data[1]].decode("ascii", errors="replace")
-            self.device_model = chip_name
-            _LOGGER.info("Chip (model): %s", chip_name)
+            self.device_model = f"njcuk.fitting.ad1204_{chip_name}"
+            _LOGGER.info("Chip (model): %s -> %s", chip_name, self.device_model)
 
         # 读取固件版本
         try:

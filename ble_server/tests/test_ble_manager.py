@@ -415,6 +415,8 @@ class TestAuthFailureRetry:
         mock_ctrl.authenticate = AsyncMock(return_value=False)
         mock_ctrl.client = MagicMock()
         mock_ctrl.client.disconnect = AsyncMock()
+        mock_ctrl.client.get_services = AsyncMock(return_value=["svc1"])
+        mock_ctrl.client.read_gatt_char = AsyncMock(return_value=b"test")
         mock_ctrl.read_device_info = AsyncMock()
         mock_ctrl.connect = AsyncMock()
 
