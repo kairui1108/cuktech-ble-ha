@@ -9,11 +9,7 @@
 
 ## 效果预览
 
-### 集成页面
-
 ![HA Integration](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_integration.png)
-
-### Lovelace 仪表盘
 
 ![HA Lovelace](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_lovelace.png)
 
@@ -44,20 +40,34 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
-| 名称 | 集成显示名称 | CUKTECH Charger |
+| 名称 | 集成显示名称 | CUKTECH 10 GaN Charger Ultra |
 | 服务器地址 | BLE Server HTTP 地址 | `http://localhost:8199` |
+
+服务器地址变更时支持重新配置（Reauth）。
 
 ## 功能特性
 
 - **实时功率监控**：通过 MQTT 推送各端口电压、电流、功率数据
 - **协议检测**：自动识别 PD / PD Fixed / PD PPS / QC / USB-A 充电协议
+- **BLE 连接控制**：开关实体控制 BLE 连接/断开，二进制传感器显示连接状态
 - **端口控制**：远程开关 C1/C2/C3/A 端口
-- **场景模式**：AI 智能 / Apple 2.4A / 单口优先 / 均衡充电
-- **倒计时设置**：为每个端口设置充电倒计时
+- **场景模式**：AI 智能 / 数码生态 / 单口优先 / 均衡充电
+- **倒计时设置**：为每个端口设置充电倒计时（0-1440 分钟）
 - **设备设置**：息屏时间、语言、USB-A 常通电等
-- **实体可用性**：MQTT 状态 + HTTP 健康检查双重检测，服务器离线时实体自动变为不可用
+- **设备信息同步**：型号、固件版本从 BLE 服务器实时同步到 HA
+- **实体可用性**：MQTT 状态 + HTTP 健康检查双重检测
 
 ## 实体列表
+
+### 二进制传感器（Binary Sensor）
+
+| 实体 | 说明 |
+|------|------|
+| `binary_sensor.cuktech_charger_c1_active` | C1 活跃状态 |
+| `binary_sensor.cuktech_charger_c2_active` | C2 活跃状态 |
+| `binary_sensor.cuktech_charger_c3_active` | C3 活跃状态 |
+| `binary_sensor.cuktech_a_active` | A 活跃状态 |
+| `binary_sensor.cuktech_charger_ble_connected` | BLE 连接状态 |
 
 ### 传感器（Sensor）
 
@@ -80,41 +90,24 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 | `sensor.cuktech_a_power` | A 功率 | W |
 | `sensor.cuktech_a_protocol` | A 协议 | - |
 | `sensor.cuktech_charger_total_power` | 总功率 | W |
-| `sensor.cuktech_charger_c1_countdown` | C1 倒计时 | min |
-| `sensor.cuktech_charger_c2_countdown` | C2 倒计时 | min |
-| `sensor.cuktech_charger_c3_countdown` | C3 倒计时 | min |
-| `sensor.cuktech_a_countdown` | A 倒计时 | min |
-| `sensor.cuktech_idle_screenoff` | 空闲息屏 | - |
-| `sensor.cuktech_screen_dir_lock` | 屏幕方向锁 | - |
 
 ### 开关（Switch）
 
 | 实体 | 说明 |
 |------|------|
+| `switch.cuktech_charger_ble_control` | BLE 连接控制 |
 | `switch.cuktech_charger_c1_port` | C1 端口开关 |
 | `switch.cuktech_charger_c2_port` | C2 端口开关 |
 | `switch.cuktech_charger_c3_port` | C3 端口开关 |
 | `switch.cuktech_a_port` | A 端口开关 |
-| `switch.cuktech_usb_a_always_on` | USB-A 常通电 |
-| `switch.cuktech_idle_screenoff` | 空闲息屏 |
-| `switch.cuktech_screen_dir_lock` | 屏幕方向锁 |
 
 ### 选择器（Select）
 
 | 实体 | 说明 | 选项 |
 |------|------|------|
-| `select.cuktech_scene_mode` | 场景模式 | AI智能 / Apple 2.4A / 单口优先 / 均衡充电 |
-| `select.cuktech_screen_save_time` | 息屏时间 | 5分钟 / 4分钟 / 3分钟 / 2分钟 / 1分钟 |
+| `select.cuktech_scene_mode` | 场景模式 | AI智能 / 数码生态 / 单口优先 / 均衡充电 |
+| `select.cuktech_screen_save_time` | 息屏时间 | 5分钟 / 1分钟 / 10分钟 / 30分钟 / 常亮 |
 | `select.cuktech_language` | 语言 | English / 中文 |
-
-### 二进制传感器（Binary Sensor）
-
-| 实体 | 说明 |
-|------|------|
-| `binary_sensor.cuktech_charger_charger_c1_active` | C1 活跃状态 |
-| `binary_sensor.cuktech_charger_charger_c2_active` | C2 活跃状态 |
-| `binary_sensor.cuktech_charger_charger_c3_active` | C3 活跃状态 |
-| `binary_sensor.cuktech_a_active` | A 活跃状态 |
 
 ### 数字（Number）
 
@@ -136,74 +129,29 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 | QC | Quick Charge |
 | USB-A | USB-A 充电（DCP） |
 
-## 自动化示例
-
-### 充电完成通知
-
-```yaml
-automation:
-  - alias: "CUKTECH 充电完成通知"
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.cuktech_charger_charger_c1_active
-        to: "off"
-    condition:
-      - condition: template
-        value_template: "{{ trigger.from_state.state == 'on' }}"
-    action:
-      - service: notify.notify
-        data:
-          message: "CUKTECH C1 端口充电已完成"
-```
-
-### 总功率过高告警
-
-```yaml
-automation:
-  - alias: "CUKTECH 总功率告警"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.cuktech_charger_total_power
-        above: 100
-    action:
-      - service: notify.notify
-        data:
-          message: "CUKTECH 充电器总功率超过 100W：{{ states('sensor.cuktech_charger_total_power') }}W"
-```
-
-### 电价时段自动切换场景
-
-```yaml
-automation:
-  - alias: "谷电时段切换均衡充电"
-    trigger:
-      - platform: time
-        at: "23:00:00"
-    action:
-      - service: select.select_option
-        target:
-          entity_id: select.cuktech_scene_mode
-        data:
-          option: "均衡充电"
-```
-
 ## 故障排除
 
 ### 实体显示不可用
 
 - 检查 BLE Server 是否运行：`curl http://<服务器IP>:8199/api/status`
 - 检查 MQTT Broker 是否可达
-- 检查 HA 日志中的连接错误
+- 通过 HA 实体查看 BLE 连接状态
 
 ### 数据不更新
 
 - 确认 BLE Server 已连接充电器（Web UI 显示"已连接"）
 - 检查 MQTT 订阅：使用 MQTT Explorer 查看 `cuktech/charger/` topic
 
-### 端口控制无响应
+### BLE 连接不稳定
 
-- 确认 BLE 连接正常
-- 检查充电器是否支持该端口控制（部分型号端口数量不同）
+- 使用 BLE Server 的 `check_env.sh` 检查蓝牙适配器状态
+- 确认用户在 `bluetooth` 组中：`sudo usermod -aG bluetooth $USER`
+- BLE Server 日志级别调至 debug 分析认证流程
+
+## 已知限制
+
+- **单设备**：当前架构仅支持同时连接一个充电器，多设备支持将在后续版本更新
+- **充电协议检测**：基于端口电压和 PDO 数据推断，仅供参考，可能与实际协议不完全一致
 
 ## 致谢
 

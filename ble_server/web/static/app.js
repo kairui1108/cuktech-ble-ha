@@ -307,6 +307,9 @@
             document.getElementById('totalPower').textContent = totalPower.toFixed(1);
             document.getElementById('activePorts').textContent = activeCount;
             document.getElementById('maxVoltage').textContent = maxV.toFixed(1);
+            if (data.firmware_version) {
+                document.getElementById('firmwareVersion').textContent = '固件版本：' + data.firmware_version;
+            }
             fetchChartData();
             if (currentModalPort) updateModalChart();
         }

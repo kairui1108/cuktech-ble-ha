@@ -159,7 +159,10 @@
                 </div>
                 <div class="charger-controls">
                     <div class="control-box">
-                        <div class="control-label">连接状态</div>
+                        <div class="control-label" style="display: flex; justify-content: space-between; align-items: baseline;">
+                            <span>连接状态</span>
+                            <span id="firmwareVersion" style="font-weight: 400; font-size: 10px;"></span>
+                        </div>
                         <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
                             <div id="statusBadge" class="status-badge disconnected" title="BLE 设备连接状态">
                                 <span class="status-dot"></span>

@@ -2,8 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.1+-green.svg)](https://www.home-assistant.io/)  
-
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.1+-green.svg)](https://www.home-assistant.io/)
 
 [![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=kairui1108&repository=cuktech-ble-ha-integration&category=integration)
 [![Add integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=cuktech_charger)
@@ -12,24 +11,42 @@
 
 ## 效果预览
 
-### 集成页面
+![HA Integration](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_integration.png)
 
-![HA Integration](docs/ha_integration.png)
-
-### Lovelace 仪表盘
-
-![HA Lovelace](docs/ha_lovelace.png)
+![HA Lovelace](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_lovelace.png)
 
 ## 功能特性
 
+### BLE Server
 - **实时功率监控**：通过 MQTT 推送电压、电流、功率数据
 - **功率曲线图**：Web UI 实时显示各端口及总功率曲线
 - **端口控制**：远程开关 C1/C2/C3/A 端口
 - **倒计时设置**：为每个端口设置充电倒计时（支持自定义分钟数）
 - **设置管理**：场景模式、息屏时间、语言等设置
-- **自动重连**：BLE 断开后自动重连
-- **Web 管理界面**：独立 Web UI，支持实时监控和控制
-- **YAML 配置**：支持 config.yaml 配置文件，也支持环境变量
+- **BLE 自动重连**：断开后自动重连，指数退避策略
+- **MQTT LWT**：崩溃时自动通知 HA 设备离线
+- **SQLite 历史数据**：端口数据持久化存储，支持统计和导出
+
+### HA Integration
+- **BLE 连接控制**：开关实体控制 BLE 连接/断开，二进制传感器显示连接状态
+- **端口传感器**：电压、电流、功率、协议类型
+- **端口控制**：开关控制 C1/C2/C3/A 端口
+- **设置管理**：场景模式、息屏时间、语言等选择器
+- **倒计时设置**：数字实体控制各端口充电倒计时
+- **设备信息同步**：型号、固件版本从 BLE 服务器实时同步
+
+### Web 管理界面
+- 实时功率曲线图（各端口 + 总功率）
+- 端口开关控制
+- BLE 连接/断开控制
+- 设备设置管理
+- 倒计时设置（支持自定义和快捷选择）
+- 日志级别管理
+
+### 已知限制
+
+- **单设备**：当前架构仅支持同时连接一个充电器，多设备支持将在后续版本更新
+- **协议检测**：充电协议（PD/QC/USB-A 等）基于端口电压和 PDO 数据推断，仅供参考，可能与实际协议不完全一致
 
 ## 架构说明
 
@@ -57,51 +74,46 @@
 cuktech-ble-ha/
 ├── ble_server/                    # BLE 服务端
 │   ├── src/cuktech_ble/
-│   │   ├── __init__.py
-│   │   ├── protocol.py              # BLE 协议常量和工具
-│   │   ├── controller.py            # BLE 连接和命令处理
-│   │   └── cli.py                   # CLI 用户界面
+│   │   ├── protocol.py            # BLE 协议常量和工具
+│   │   ├── controller.py          # BLE 连接和命令处理
+│   │   └── cli.py                 # CLI 用户界面
 │   ├── ha_server.py               # HTTP API + MQTT 服务
 │   ├── ble_manager.py             # BLE 连接管理
 │   ├── state.py                   # 状态管理
 │   ├── history.py                 # SQLite 历史数据
 │   ├── config.py                  # 配置（支持 YAML）
 │   ├── config.yaml.example        # 配置模板
+│   ├── check_env.sh               # 环境检查脚本
+│   ├── cuktech_ctl.sh             # 服务控制脚本
 │   ├── web/
 │   │   └── index.html             # Web 前端界面
-│   ├── tests/                     # 单元测试 (91 tests)
-│   │   ├── test_protocol.py
-│   │   ├── test_controller.py
-│   │   ├── test_ble_manager.py
-│   │   ├── test_ha_server.py
-│   │   ├── test_history.py
-│   │   ├── test_config.py
-│   │   └── test_state.py
-│   ├── requirements.txt
-│   ├── pyproject.toml
+│   ├── tests/                     # 单元测试 (101 tests)
 │   └── systemd/                   # systemd 服务配置
 │
 ├── ha_integration/                # HA 自定义集成
 │   └── custom_components/cuktech_charger/
-│       ├── __init__.py
-│       ├── binary_sensor.py
-│       ├── config_flow.py
-│       ├── const.py
+│       ├── __init__.py            # Coordinator
+│       ├── binary_sensor.py       # 端口状态 + BLE 连接状态
+│       ├── config_flow.py         # 配置流程（支持 reauth）
+│       ├── const.py               # 常量定义
 │       ├── manifest.json
-│       ├── number.py
-│       ├── select.py
-│       ├── sensor.py
-│       ├── strings.json
-│       └── switch.py
+│       ├── number.py              # 倒计时数字实体
+│       ├── select.py              # 选择器实体
+│       ├── sensor.py              # 传感器实体
+│       ├── switch.py              # 开关实体 + BLE 连接控制
+│       ├── strings.json           # 英文翻译
+│       ├── translations/          # 多语言翻译
+│       ├── brand/                 # HACS 品牌图标
+│       └── icon.png
 │
-├── ha_config/                     # HA 配置示例
-│   ├── cuktech_api.sh             # HTTP API 桥接脚本
-│   ├── cuktech_ctl.sh             # 状态查询脚本
-│   ├── cuktech_buttons.yaml       # 按钮模板
-│   └── shell_command.yaml         # Shell 命令定义
+├── docs/                          # 文档
+│   ├── integration-readme.md
+│   └── integration-readme-en.md
 │
 ├── LICENSE
-└── README.md
+├── README.md
+├── RELEASE_NOTES.md
+└── bump-version.sh
 ```
 
 ## 安装步骤
@@ -120,11 +132,19 @@ python -m xiaomi_cloud_tokens_extractor
 - `Token` - 设备 Token（12 字节 hex）
 - `BLE Key` - BLE 认证密钥（16 字节 hex）
 
-### 2. 部署 BLE Server
+### 2. 检查环境
 
 ```bash
-git clone https://github.com/kairui1108/cuktech-ble-ha.git
-cd cuktech-ble-ha/ble_server
+cd ble_server
+./check_env.sh
+```
+
+确认 Python、蓝牙适配器、BLE 支持等全部通过。
+
+### 3. 部署 BLE Server
+
+```bash
+cd ble_server
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -158,7 +178,7 @@ export MQTT_PASS="your_password"
 ./cuktech_ctl.sh start
 ```
 
-### 3. 安装 HA 集成
+### 4. 安装 HA 集成
 
 **方式 A：HACS 安装（推荐）**
 
@@ -170,29 +190,23 @@ export MQTT_PASS="your_password"
 
 ```bash
 cp -r ha_integration/custom_components/cuktech_charger /config/custom_components/
-cp ha_config/cuktech_api.sh /config/
-cp ha_config/cuktech_ctl.sh /config/
-cp ha_config/shell_command.yaml /config/
-```
-
-在 `configuration.yaml` 中添加：
-
-```yaml
-shell_command: !include shell_command.yaml
 ```
 
 重启 Home Assistant。
 
-## Web 管理界面
+## 实体说明
 
-BLE Server 内置 Web 界面，访问 `http://<BLE_SERVER_IP>:8199/`
-
-**功能：**
-- 实时功率曲线图（各端口 + 总功率）
-- 端口开关控制
-- BLE 连接/断开控制
-- 设备设置管理
-- 倒计时设置（支持自定义和快捷选择）
+| 实体类型 | 实体名 | 功能 |
+|----------|--------|------|
+| switch | 连接控制 | BLE 连接/断开 |
+| binary_sensor | 连接状态 | BLE 连接状态 |
+| sensor | 端口电压/电流/功率 | 实时监控 |
+| sensor | 端口协议 | PD/QC/USB-A |
+| sensor | 总功率 | 所有端口功率之和 |
+| switch | 端口控制 | 开关 C1/C2/C3/A |
+| select | 场景模式 | AI/数码/单口/均衡 |
+| select | 息屏时间 | 5分钟/1分钟/10分钟等 |
+| number | 倒计时 | 各端口充电倒计时 |
 
 ## API 接口
 
@@ -200,65 +214,51 @@ BLE Server 内置 Web 界面，访问 `http://<BLE_SERVER_IP>:8199/`
 |------|------|------|
 | `/api/status` | GET | 获取充电器状态 |
 | `/api/enable` | POST | 启用/禁用 BLE 连接 |
-| `/api/set` | POST | 设置 PIID 值（带校验） |
+| `/api/set` | POST | 设置 PIID 值 |
 | `/api/port` | POST | 控制端口开关 |
-
-### PIID 参考
-
-| PIID | 属性 | 值范围 |
-|------|------|--------|
-| 5 | 场景模式 | 1-4 (AI/数码/单口/均衡) |
-| 6 | 息屏时间 | 0-5 |
-| 9-12 | C1/C2/C3/A 倒计时 | 0-1440 分钟 |
-| 13 | 语言 | 0-1 (EN/CN) |
-| 15 | USB-A 常通电 | 0-1 |
-| 16 | 端口控制 | 0-15 (位掩码) |
-| 19 | 空闲息屏 | 0-1 |
-| 20 | 屏幕方向锁 | 0-1 |
-
-### 示例
-
-```bash
-# 获取状态
-curl http://localhost:8199/api/status
-
-# 设置场景模式为 AI
-curl -X POST http://localhost:8199/api/set -d '{"piid": 5, "value": 1}'
-
-# 设置 C1 倒计时 30 分钟
-curl -X POST http://localhost:8199/api/set -d '{"piid": 9, "value": 30}'
-
-# 关闭 C1 端口
-curl -X POST http://localhost:8199/api/port -d '{"port": "c1", "action": "off"}'
-```
+| `/api/chart` | GET | 获取图表数据 |
+| `/api/history/{port}` | GET | 查询历史数据 |
+| `/api/statistics/{port}` | GET | 统计分析 |
+| `/api/export/{port}` | GET | CSV 导出 |
+| `/api/log-level` | GET/POST | 日志级别管理 |
 
 ## MQTT 主题
 
 | 主题 | 说明 |
 |------|------|
-| `cuktech/charger/port/{c1\|c2\|c3\|a}` | 端口数据 |
-| `cuktech/charger/settings` | 设置数据 |
-| `cuktech/charger/status` | 连接状态 |
-| `cuktech/charger/set` | 设置命令 |
-| `cuktech/charger/port` | 端口控制命令 |
+| `cuktech/charger/port/{c1\|c2\|c3\|a}` | 端口数据（推送） |
+| `cuktech/charger/settings` | 设置数据（retain） |
+| `cuktech/charger/status` | 连接状态（retain + LWT） |
+| `cuktech/charger/set` | 设置命令（订阅） |
+| `cuktech/charger/port` | 端口控制命令（订阅） |
 
 ## 依赖
 
+### BLE Server
 - Python 3.10+
 - bleak >= 0.21
 - paho-mqtt >= 2.0
 - aiohttp >= 3.9
 - cryptography >= 41
 - pyyaml >= 6.0
+
+### HA Integration
 - Home Assistant 2024.1+
+- MQTT（集成依赖）
+
+## 测试
+
+```bash
+# BLE Server (101 tests)
+cd ble_server && .venv/bin/python -m pytest tests/
+
+# HA Integration (70 tests)
+cd ha_integration && python -m pytest tests/
+```
 
 ## 许可证
 
 MIT License - 详见 [LICENSE](LICENSE) 文件
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
 
 ## 致谢
 

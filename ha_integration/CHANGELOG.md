@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.3] - 2026-07-11
+
+### Added
+- CuktechConnectionSwitch: BLE enable/disable control via HTTP API
+- CuktechConnectionBinarySensor: BLE connection status display
+- async_enable_ble with asyncio.Lock, 30s timeout, optimistic state
+- ble_enabled synced with ble_connected from MQTT status
+- Switch available property includes ble_pending check
+- ConfigFlow default name updated to full product name
+
+### Fixed
+- BLE connection stability: power cycle LL disconnect wait, GATT settle time
+- NoneType errors: null checks for self.ctrl in main loop and handlers
+- handle_enable(false): await ble_task before power cycle to prevent race
+- controller: start_notify wrapped in try/except for partial failure
+
 ## [1.0.2] - 2026-07-10
 
 ### Added

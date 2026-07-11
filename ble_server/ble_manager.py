@@ -42,6 +42,7 @@ class BLEManager:
         self._mqtt_publish = None
         self._reconnect_attempts = 0
         self._decrypt_failures = 0
+        self._auth_fail_count = 0
         self._base_reconnect_delay = config.server.reconnect_base_delay
         self._max_reconnect_delay = config.server.reconnect_max_delay
         self._history = None
@@ -415,14 +416,25 @@ class BLEManager:
     async def _handle_inline_data(self, data):
         if not self.ctrl:
             return
-        encrypted_payload = data[4:]
         await self.ctrl.client.write_gatt_char(
             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
+        await self._try_process_inline_frame(data)
+
+    async def _try_process_inline_frame(self, raw_data):
+        """Try to decrypt and process a raw BLE frame as inline port data.
+        
+        Shared between _handle_inline_data and _handle_multiframe.
+        Silently returns if data doesn't match inline format.
+        """
+        if not self.ctrl:
+            return
+        encrypted_payload = raw_data[4:]
         pt = self.ctrl.decrypt(encrypted_payload)
         if not pt or len(pt) < 8:
             self._decrypt_failures += 1
             if self._decrypt_failures >= 10:
-                _LOGGER.warning("Decrypt failed %d times consecutively, session may be stale", self._decrypt_failures)
+                _LOGGER.warning("Decrypt failed %d times consecutively, session stale, triggering reconnect", self._decrypt_failures)
+                raise ConnectionError("Session stale due to consecutive decrypt failures")
             return
         self._decrypt_failures = 0
         b4 = pt[4]
@@ -447,25 +459,25 @@ class BLEManager:
                             lambda t: _LOGGER.error("History write failed: %s", t.exception()) if t.exception() else None)
 
     async def _handle_multiframe(self, data):
-        """Handle multi-frame BLE data. Data is ACKed but not processed further.
-
+        """Handle multi-frame BLE data. ACK protocol + attempt inline processing.
+        
         Multi-frame is used for settings batch pushes and large responses.
         The ACK (RCV_RDY + RCV_OK) is required to keep the BLE channel in sync.
-        Actual data processing happens via inline notifications.
+        Individual frames are also attempted as inline data for robustness.
         """
         if not self.ctrl:
             return
         frame_count = data[4] + 0x100 * data[5]
         if frame_count > 1000:
             _LOGGER.warning("Multiframe count too large: %d, consuming all frames", frame_count)
-            # Still send ACK to keep protocol in sync
             await self.ctrl.client.write_gatt_char(
                 CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
-            # Consume all remaining frames in a tight loop
             for i in range(frame_count):
                 try:
-                    await asyncio.wait_for(
+                    frame = await asyncio.wait_for(
                         self.ctrl.wait_notify("cmd_recv", timeout=3.0), timeout=5.0)
+                    if frame:
+                        await self._try_process_inline_frame(frame)
                 except (asyncio.TimeoutError, Exception) as e:
                     _LOGGER.warning("Multiframe drain stopped at frame %d/%d: %s", i+1, frame_count, e)
                     break
@@ -479,6 +491,7 @@ class BLEManager:
             frame = await self.ctrl.wait_notify("cmd_recv", timeout=3.0)
             if frame:
                 received_count += 1
+                await self._try_process_inline_frame(frame)
         await self.ctrl.client.write_gatt_char(
             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
         if received_count != frame_count:

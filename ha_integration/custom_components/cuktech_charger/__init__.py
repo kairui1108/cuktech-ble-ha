@@ -242,10 +242,11 @@ class CuktechMQTTCoordinator:
         try:
             payload = json.loads(msg.payload)
             was_available = self._available
-            self._mqtt_connected = payload.get("connected", False)
-            ble_changed = self._ble_connected != payload.get("connected", False)
+            connected = payload.get("connected", False)
             prev_ble_connected = self._ble_connected
-            self._ble_connected = payload.get("connected", False)
+            ble_changed = prev_ble_connected != connected
+            self._mqtt_connected = connected
+            self._ble_connected = connected
             if self._mqtt_connected:
                 self._last_status_time = time.time()
                 self._health_failures = 0

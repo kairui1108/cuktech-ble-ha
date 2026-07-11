@@ -62,10 +62,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
             else:
                 server_url = user_input.get(CONF_SERVER_URL, DEFAULT_SERVER_URL)
+                conf_name = user_input.get(CONF_NAME, "CUKTECH Charger")
                 unique_id = hashlib.md5(server_url.encode()).hexdigest()[:16]
                 await self.async_set_unique_id(f"cuktech_{unique_id}")
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(title=info["title"], data=user_input)
+                return self.async_create_entry(title=conf_name, data=user_input)
 
         return self.async_show_form(
             step_id="user",

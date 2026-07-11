@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cuktech-ble-server"
-version = "1.0.2"
+version = "1.0.3"
 description = "CUKTECH 10 GaN Charger BLE Server for Home Assistant"
 requires-python = ">=3.10"
 dependencies = [

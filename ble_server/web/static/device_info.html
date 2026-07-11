@@ -170,7 +170,10 @@
         </div>
         <div class="charger-controls">
             <div class="control-box">
-                <div class="control-label">连接状态</div>
+                <div class="control-label" style="display: flex; justify-content: space-between; align-items: baseline;">
+                    <span>连接状态</span>
+                    <span id="firmwareVersion" style="font-weight: 400; font-size: 10px;"></span>
+                </div>
                 <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
                     <div id="statusBadge" class="status-badge disconnected">
                         <span class="status-dot"></span>
@@ -253,6 +256,9 @@
                 document.getElementById('totalPower').textContent = totalPower.toFixed(1);
                 document.getElementById('activePorts').textContent = activeCount;
                 document.getElementById('maxVoltage').textContent = maxV.toFixed(1);
+                if (data.firmware_version) {
+                    document.getElementById('firmwareVersion').textContent = '固件版本：' + data.firmware_version;
+                }
             } catch (e) {
                 console.error('Fetch error:', e);
             }
@@ -260,14 +266,17 @@
 
         async function bleToggle() {
             const btn = document.getElementById('bleToggle');
+            if (btn.disabled) return;
             btn.disabled = true;
             try {
+                const enable = btn.textContent === '连接设备';
                 await fetch(`${API_BASE}/api/enable`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled: !bleConnected })
+                    body: JSON.stringify({ enabled: enable })
                 });
-                setTimeout(fetchStatus, 1000);
+                await new Promise(r => setTimeout(r, 500));
+                await fetchStatus();
             } catch (e) {
                 console.error('BLE toggle error:', e);
             } finally {

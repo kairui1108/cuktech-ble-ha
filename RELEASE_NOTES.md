@@ -1,5 +1,36 @@
 # Release Notes
 
+## v1.0.3
+
+### BLE Server
+
+- **BLE 连接稳定性**: 
+  - `_force_disconnect_bluetooth`: disconnect 后 sleep(3) 等待 LL 断开确认
+  - `_connect`: 移除激进 GATT 检查，改为固定 sleep(3) 等待适配器初始化
+  - `_disconnect`: 始终执行 GATT cleanup（stop_notify + client.disconnect），确保设备收到断连通知
+  - `handle_enable(false)`: 先 await ble_task 完成再 power cycle，避免竞态
+  - `_force_disconnect_bluetooth`: 适配器就绪等待从 10s 增至 15s
+  - Auth 失败后等待从 2s 增至 3s
+- **NoneType 错误修复**: 
+  - 主循环 + `_handle_inline_data` + `_handle_multiframe` 添加 `if not self.ctrl` 守卫
+  - `controller.connect()`: start_notify 包裹 try/except，单个失败不影响其他通道
+- **设备信息**: device_model 前缀 `njcuk.fitting.ad1204_`，通过 BLE 读取并同步到 HA
+
+### HA Integration
+
+- **BLE 连接控制实体**:
+  - `CuktechConnectionSwitch`: 开关控制 BLE 连接/断开
+  - `CuktechConnectionBinarySensor`: 显示当前 BLE 连接状态
+  - `async_enable_ble`: asyncio.Lock + 30s 超时 + 乐观更新 + 失败回退
+  - `ble_enabled` 与 `ble_connected` 自动同步
+- **switch available**: 添加 `ble_pending` 检查，操作中禁用开关
+- **ConfigFlow**: 默认设备名更新为完整产品名
+- **controller.py**: start_notify 包裹 try/except，单个失败不影响其他通道
+
+### 测试
+
+- **总计 171 个测试**: BLE Server 101 + HA Integration 70，全部通过
+
 ## v1.0.2
 
 ### BLE Server — 连接稳定性修复
