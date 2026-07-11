@@ -187,6 +187,13 @@
             icon: mdi:screen-rotation-lock
             tap_action:
               action: toggle
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_lian_jie_kong_zhi
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+            name: BLE连接
         column_span: 2
       - type: grid
         cards:
