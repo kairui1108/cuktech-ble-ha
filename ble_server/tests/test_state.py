@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from state import decode_port, decode_pdo_caps, ChargerState, PortState, PORT_NAMES, PROTOCOL_NAMES
+from state import decode_port, decode_pdo_caps, ChargerState, PortState, PORT_NAMES
 
 
 class TestDecodePort:
@@ -33,7 +33,8 @@ class TestDecodePort:
         assert result["current"] == 2.5
         assert result["power"] == 50.2
         assert result["active"] is True
-        assert result["protocol"] == "PD"
+        # V2: 0x0A + 20.1V close to 20V PD Fixed
+        assert "PD" in result["protocol"]
 
     def test_active_qc_port(self):
         """Test decoding an active QC port."""
@@ -53,7 +54,7 @@ class TestDecodePort:
         assert result is not None
         assert result["voltage"] == 5.0
         assert result["current"] == 1.0
-        assert result["protocol"] == "USB-A"
+        assert result["protocol"] == "5V"
 
     def test_short_data(self):
         """Test decoding with insufficient data."""

@@ -179,7 +179,7 @@ PIID_DISPLAY = {
 }
 
 # Settings PIIDs that can be read via GET command
-READABLE_SETTINGS_PIIDS = [5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20]
+READABLE_SETTINGS_PIIDS = [5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21]
 
 TIMER_PORTS = {'c1': 9, 'c2': 10, 'c3': 11, 'a': 12}
 

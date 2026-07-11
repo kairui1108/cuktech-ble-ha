@@ -340,6 +340,8 @@ class BLEManager:
                         pdo_caps["c1c2"] = decode_pdo_caps(result["value"], "c1", "c2")
                     elif piid == 18:
                         pdo_caps["c3a"] = decode_pdo_caps(result["value"], "c3", "a")
+                    elif piid == 21:
+                        await self.state.update_protocol_extend(result["value"])
             except Exception as e:
                 fail_count += 1
                 _LOGGER.debug("Failed to read PIID %d: %s", piid, e)
@@ -370,6 +372,8 @@ class BLEManager:
                     await self._handle_set_command(cmd_data, cmd_future)
                 elif cmd_type == "port":
                     await self._handle_port_command(cmd_data, cmd_future)
+                elif cmd_type == "protocol":
+                    await self._handle_protocol_extend_command(cmd_data, cmd_future)
             except Exception as e:
                 _LOGGER.error("Command error: %s", e)
                 if cmd_future and not cmd_future.done():
@@ -404,12 +408,55 @@ class BLEManager:
             if new_val != cur_val:
                 await self.ctrl.send_miot_command(2, 16, value=new_val)
                 await self.state.update_settings({"16": new_val})
+                # 端口关闭时清零端口数据
+                if action == "off" and port != "all":
+                    piid = {"c1": 1, "c2": 2, "c3": 3, "a": 4}.get(port)
+                    if piid:
+                        await self.state.update_port(piid, PORT_DEFAULT)
+                        _invalidate()
+                        self._publish_port(PORT_NAMES[piid], PORT_DEFAULT)
             _invalidate()
             self._publish_settings(retain=True)
             if cmd_future and not cmd_future.done():
                 cmd_future.set_result({"ok": True, "value": new_val})
         except Exception as e:
             _LOGGER.error("Port command error: %s", e)
+            if cmd_future and not cmd_future.done():
+                cmd_future.set_result({"ok": False, "error": str(e)})
+
+    async def _handle_protocol_extend_command(self, cmd_data, cmd_future):
+        """处理协议开关命令 (PIID 21, 对齐米家 setProtocolExtend).
+        
+        cmd_data: {"port": "c1", "protocol": "pd"}  toggle 指定协议
+                  {"switches": {port: {pd: bool,...}}}  批量设置
+                  {"value": int}  直接写原始值
+        """
+        try:
+            if "value" in cmd_data:
+                new_val = cmd_data["value"]
+            elif "switches" in cmd_data:
+                new_val = ChargerState.encode_protocol_extend(cmd_data["switches"])
+            elif "port" in cmd_data and "protocol" in cmd_data:
+                cur = self.state.protocol_switches
+                port = cmd_data["port"]
+                proto = cmd_data["protocol"]
+                if port in cur and proto in cur[port]:
+                    cur[port][proto] = not cur[port][proto]
+                new_val = ChargerState.encode_protocol_extend(cur)
+            else:
+                raise ValueError("Invalid protocol_extend command")
+
+            await self.ctrl.send_miot_command(2, 21, value=new_val)
+            await self.state.update_protocol_extend(new_val)
+            _invalidate()
+            self._publish_settings(retain=True)
+            if cmd_future and not cmd_future.done():
+                cmd_future.set_result({
+                    "ok": True, "value": new_val,
+                    "switches": self.state.protocol_switches
+                })
+        except Exception as e:
+            _LOGGER.error("Protocol extend error: %s", e)
             if cmd_future and not cmd_future.done():
                 cmd_future.set_result({"ok": False, "error": str(e)})
 

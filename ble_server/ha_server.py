@@ -137,6 +137,12 @@ class Server:
                         server.ble.cmd_queue.put_nowait,
                         ("port", (port, action), None))
                     _LOGGER.info("MQTT port command: port=%s action=%s", port, action)
+                elif msg.topic == f"{server.config.mqtt.topic_prefix}/protocol":
+                    data = {k: v for k, v in payload.items() if k in ("port", "protocol", "switches", "value")}
+                    server.loop.call_soon_threadsafe(
+                        server.ble.cmd_queue.put_nowait,
+                        ("protocol", data, None))
+                    _LOGGER.info("MQTT protocol command: %s", data)
             except (json.JSONDecodeError, ValueError, TypeError) as e:
                 _LOGGER.error("MQTT cmd parse error: %s", e)
             except Exception as e:
@@ -145,6 +151,7 @@ class Server:
         self.mqtt_client.on_message = on_mqtt_message
         self.mqtt_client.subscribe(f"{self.config.mqtt.topic_prefix}/set")
         self.mqtt_client.subscribe(f"{self.config.mqtt.topic_prefix}/port")
+        self.mqtt_client.subscribe(f"{self.config.mqtt.topic_prefix}/protocol")
         _LOGGER.info("MQTT subscriptions ready")
 
     def invalidate_status_cache(self):
@@ -201,6 +208,19 @@ class Server:
         if port not in PORT_BITS and port != "all":
             return web.json_response({"ok": False, "error": f"unknown port: {port}"}, status=400)
         result = await self.ble.send_command("port", (port, action))
+        self.invalidate_status_cache()
+        return web.json_response(result)
+
+    async def handle_protocol(self, request):
+        """POST /api/protocol — 协议开关控制 (PIID 21)."""
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        data = {k: v for k, v in body.items() if k in ("port", "protocol", "switches", "value")}
+        if not data:
+            return web.json_response({"ok": False, "error": "need port+protocol, switches, or value"}, status=400)
+        result = await self.ble.send_command("protocol", data)
         self.invalidate_status_cache()
         return web.json_response(result)
 
@@ -476,6 +496,7 @@ app.router.add_get("/", lambda r: get_server().handle_index(r))
 app.router.add_get("/api/status", lambda r: get_server().handle_status(r))
 app.router.add_post("/api/set", lambda r: get_server().handle_set(r))
 app.router.add_post("/api/port", lambda r: get_server().handle_port(r))
+app.router.add_post("/api/protocol", lambda r: get_server().handle_protocol(r))
 app.router.add_post("/api/enable", lambda r: get_server().handle_enable(r))
 app.router.add_get("/api/log-level", lambda r: get_server().handle_log_level(r))
 app.router.add_post("/api/log-level", lambda r: get_server().handle_log_level(r))

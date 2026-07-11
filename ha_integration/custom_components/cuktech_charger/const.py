@@ -9,6 +9,7 @@ TOPIC_PORT = f"{TOPIC_PREFIX}/port"
 TOPIC_SETTINGS = f"{TOPIC_PREFIX}/settings"
 TOPIC_STATUS = f"{TOPIC_PREFIX}/status"
 TOPIC_SET = f"{TOPIC_PREFIX}/set"
+TOPIC_PROTOCOL = f"{TOPIC_PREFIX}/protocol"
 TOPIC_PROBE = f"{TOPIC_PREFIX}/__probe__"
 
 # Port mapping
@@ -41,7 +42,7 @@ PIID_NAMES = {
 PIID_DISPLAY = {
     5: {1: "AI模式", 2: "数码生态", 3: "单口模式", 4: "均衡模式"},
     6: {0: "5分钟", 1: "1分钟", 2: "10分钟", 3: "30分钟", 4: "常亮", 5: "1分钟(设备固件: value=5 也表示1分钟)"},
-    7: {0: "默认", 1: "QC2.0", 2: "QC3.0", 3: "QC4.0", 4: "FCP", 5: "SCP", 6: "AFC", 7: "PE", 8: "PD", 9: "SFCP", 10: "UFCS"},
+    7: None,  # PIID 7 = bit flags (SCP/MiPPS/UFCS), 不需要显示映射
     13: {0: "English", 1: "中文"},
     15: {0: "关闭", 1: "开启"},
     19: {0: "关闭", 1: "开启"},

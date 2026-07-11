@@ -15,7 +15,7 @@ from .const import DOMAIN, PORT_NAMES
 
 _LOGGER = logging.getLogger(__name__)
 
-PROTOCOL_OPTIONS = ["idle", "PD", "PD Fixed", "PD PPS", "USB-A", "QC", "Unknown"]
+PROTOCOL_OPTIONS = ["idle", "5V", "QC", "AFC", "FCP", "SCP", "PD", "PPS", "UFCS", "Unknown"]
 
 
 async def async_setup_entry(

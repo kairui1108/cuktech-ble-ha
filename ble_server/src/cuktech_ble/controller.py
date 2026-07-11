@@ -667,11 +667,17 @@ class CuktechBLEController:
 
         if value is not None:
             # SET property: opcode=0x00
-            val_byte = value & 0xFF
-            plaintext = bytes([0x0c, 0x20, seq, 0x00,
-                               0x00, 0x01, siid & 0xFF, piid & 0xFF,
-                               0x00, 0x01, 0x10, val_byte])
-            _LOGGER.debug("SET siid=%d piid=%d value=%d", siid, piid, value)
+            if value <= 0xFF:
+                plaintext = bytes([0x0c, 0x20, seq, 0x00,
+                                   0x00, 0x01, siid & 0xFF, piid & 0xFF,
+                                   0x00, 0x01, 0x10, value & 0xFF])
+            else:
+                # 32-bit value → LE 4 bytes, type 0x10
+                b = value.to_bytes(4, 'little')
+                plaintext = bytes([0x0c, 0x20, seq, 0x00,
+                                   0x00, 0x01, siid & 0xFF, piid & 0xFF,
+                                   0x00, 0x04, 0x10, b[0], b[1], b[2], b[3]])
+            _LOGGER.debug("SET siid=%d piid=%d value=%d (0x%X)", siid, piid, value, value)
         else:
             # GET property: opcode=0x02
             plaintext = bytes([0x0c, 0x20, seq, 0x00,
@@ -775,10 +781,14 @@ class CuktechBLEController:
                 pt_piid = pt[7] if len(pt) > 7 else -1
 
                 if b4 == 0x03 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
-                    # GET Response
+                    # GET Response - support 1-byte and 4-byte values
                     result_value = None
                     if len(pt) >= 14:
-                        result_value = self._extract_typed_u8(pt, 12, 13)
+                        val_len = pt[11] if len(pt) > 11 else 1
+                        if val_len >= 4 and len(pt) >= 17:
+                            result_value = int.from_bytes(pt[13:17], 'little')
+                        else:
+                            result_value = pt[13] if len(pt) > 13 else None
                     _LOGGER.debug("GET response: value=%s", result_value)
                     return {'piid': piid, 'value': result_value, 'raw': pt}
                 else:
