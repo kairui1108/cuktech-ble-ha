@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
-from .const import DOMAIN, DEVICE_INFO
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ class CuktechCountdown(NumberEntity):
     @property
     def device_info(self) -> dict[str, Any]:
         """Return device info."""
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **DEVICE_INFO}
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **self.coordinator.device_info}
 
     @property
     def available(self) -> bool:
@@ -85,9 +85,9 @@ class CuktechCountdown(NumberEntity):
     @property
     def native_value(self) -> float | None:
         """Return the countdown value."""
-        if not self.coordinator._settings:
+        if not self.coordinator.data:
             return None
-        v = self.coordinator._settings.get(str(self._piid))
+        v = self.coordinator.data.get(str(self._piid))
         if v is None:
             return None
         try:

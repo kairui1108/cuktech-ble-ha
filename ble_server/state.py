@@ -47,6 +47,8 @@ class ChargerState:
         self.ports: Dict[int, PortState] = {i: PortState() for i in range(1, 5)}
         self.settings: Dict[str, int] = {}
         self.pdo_caps: Dict[str, dict] = {}
+        self.device_model: str = ""
+        self.firmware_version: str = ""
         self._lock = asyncio.Lock()
         self._cache: dict = {}
         self._cache_valid = False
@@ -75,6 +77,13 @@ class ChargerState:
             self.pdo_caps = pdo_caps
             self._invalidate_cache()
 
+    async def update_device_info(self, model: str, firmware: str):
+        """Update device model and firmware version from BLE."""
+        async with self._lock:
+            self.device_model = model
+            self.firmware_version = firmware
+            self._invalidate_cache()
+
     async def to_dict(self):
         async with self._lock:
             if self._cache_valid:
@@ -91,6 +100,8 @@ class ChargerState:
                 "authenticated": self.authenticated,
                 "ports": {k: {**v.to_dict(), "enabled": port_enabled.get(k, False)} for k, v in self.ports.items()},
                 "settings": dict(self.settings),
+                "device_model": self.device_model,
+                "firmware_version": self.firmware_version,
             }
             self._cache_valid = True
             return self._cache

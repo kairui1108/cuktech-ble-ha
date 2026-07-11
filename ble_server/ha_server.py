@@ -66,6 +66,7 @@ class Server:
             s = get_server()
             if s.ble:
                 s.ble.set_mqtt_publisher(s.mqtt_publish)
+            s.setup_mqtt_subscriptions()
 
         def on_disconnect(client, userdata, flags, rc, properties=None):
             _LOGGER.warning("MQTT disconnected (rc=%s)", rc)
@@ -226,9 +227,8 @@ class Server:
         else:
             async with self._start_lock:
                 self.ble._stop_event.set()
-            await self.ble._force_disconnect_bluetooth()
-            app_ = request.app
-            async with self._start_lock:
+                await self.ble._force_disconnect_bluetooth()
+                app_ = request.app
                 if "ble_task" in app_ and app_["ble_task"] and not app_["ble_task"].done():
                     try:
                         await app_["ble_task"]

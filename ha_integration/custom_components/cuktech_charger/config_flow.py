@@ -13,21 +13,21 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import DOMAIN, CONF_SERVER_URL
+from .const import DOMAIN, CONF_SERVER_URL, DEFAULT_SERVER_URL
 
 _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_NAME, default="CUKTECH Charger"): str,
-        vol.Optional(CONF_SERVER_URL, default="http://localhost:8199"): str,
+        vol.Optional(CONF_SERVER_URL, default=DEFAULT_SERVER_URL): str,
     }
 )
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, str]:
     """Validate the user input allows us to connect."""
-    server_url = data.get(CONF_SERVER_URL, "http://localhost:8199")
+    server_url = data.get(CONF_SERVER_URL, DEFAULT_SERVER_URL)
     session = async_get_clientsession(hass)
     try:
         url = f"{server_url}/api/status"
@@ -61,7 +61,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
-                server_url = user_input.get(CONF_SERVER_URL, "http://localhost:8199")
+                server_url = user_input.get(CONF_SERVER_URL, DEFAULT_SERVER_URL)
                 unique_id = hashlib.md5(server_url.encode()).hexdigest()[:16]
                 await self.async_set_unique_id(f"cuktech_{unique_id}")
                 self._abort_if_unique_id_configured()
@@ -70,5 +70,42 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_DATA_SCHEMA,
+            errors=errors,
+        )
+
+    async def async_step_reauth(
+        self, entry_data: dict[str, Any]
+    ) -> FlowResult:
+        """Handle re-authentication when the server URL changes."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle re-authentication confirmation."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            try:
+                await validate_input(self.hass, user_input)
+            except ValueError as err:
+                errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+            else:
+                entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+                if entry:
+                    self.hass.config_entries.async_update_entry(
+                        entry, data={**entry.data, **user_input}
+                    )
+                    await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema(
+                {vol.Required(CONF_SERVER_URL): str}
+            ),
             errors=errors,
         )

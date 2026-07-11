@@ -11,11 +11,11 @@ Home Assistant integration for CUKTECH chargers via MQTT, providing real-time mo
 
 ### Integration Page
 
-![HA Integration](ha_integration.png)
+![HA Integration](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_integration.png)
 
 ### Lovelace Dashboard
 
-![HA Lovelace](ha_lovelace.png)
+![HA Lovelace](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_lovelace.png)
 
 ## Prerequisites
 

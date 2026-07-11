@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "custom_components"))
 
 from custom_components.cuktech_charger import CuktechMQTTCoordinator
-from custom_components.cuktech_charger.const import DEVICE_INFO, PORT_MAP, PIID_DISPLAY, SELECT_PIIDS, SELECT_OPTION_MAP
+from custom_components.cuktech_charger.const import PORT_MAP, PIID_DISPLAY, SELECT_PIIDS, SELECT_OPTION_MAP
 
 
 class TestSensorEntities:

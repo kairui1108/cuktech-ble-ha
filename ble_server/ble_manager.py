@@ -121,6 +121,19 @@ class BLEManager:
         await self._disconnect()
         await self._force_disconnect_bluetooth()
 
+    def _find_ble_adapter(self):
+        """自动检测支持 BLE 的蓝牙适配器名称（如 hci0, hci1）"""
+        import glob
+        hci_devs = sorted(glob.glob("/sys/class/bluetooth/hci*"))
+        for hci_dir in hci_devs:
+            hci_name = os.path.basename(hci_dir)
+            # 跳过虚拟适配器
+            if ":" in hci_name:
+                continue
+            if os.path.isdir(os.path.join(hci_dir, "device")):
+                return hci_name
+        return "hci0"
+
     async def _connect(self):
         _LOGGER.info("Scanning for charger...")
         from bleak import BleakScanner
@@ -141,6 +154,8 @@ class BLEManager:
 
         await self.ctrl.read_device_info()
         _LOGGER.info("Connected, authenticating...")
+        # 存储设备信息到 state
+        await self.state.update_device_info(self.ctrl.device_model, self.ctrl.firmware_version)
 
         if not await self.ctrl.authenticate():
             _LOGGER.warning("Auth failed, disconnecting BLE...")
@@ -157,7 +172,12 @@ class BLEManager:
         await self.state.set_connection(True, True)
         _invalidate()
         _LOGGER.info("Authenticated!")
-        self._publish_status({"connected": True, "authenticated": True}, retain=True)
+        self._publish_status({
+            "connected": True,
+            "authenticated": True,
+            "device_model": self.ctrl.device_model,
+            "firmware_version": self.ctrl.firmware_version,
+        }, retain=True)
 
         await self._read_initial_settings()
         await asyncio.sleep(2)
@@ -185,7 +205,11 @@ class BLEManager:
                 _LOGGER.error("BLE device disconnected unexpectedly")
         await self.state.set_connection(False, False)
         _invalidate()
-        self._publish_status({"connected": False}, retain=True)
+        self._publish_status({
+            "connected": False,
+            "device_model": self.state.device_model,
+            "firmware_version": self.state.firmware_version,
+        }, retain=True)
         # bluetoothctl disconnect MAC 由 _force_disconnect_bluetooth() 统一处理
         # 此处不再重复调用，避免设备收到多次断连通知导致状态混乱
 
@@ -216,20 +240,29 @@ class BLEManager:
             )
             await asyncio.wait_for(proc.communicate(), timeout=5)
             # 等待适配器就绪，最多10秒
+            hci = self._find_ble_adapter()
             for _ in range(10):
                 await asyncio.sleep(1)
                 try:
+                    # 优先用 bluetoothctl 检查适配器状态
                     proc = await asyncio.create_subprocess_exec(
-                        "hciconfig", "hci0",
+                        "bluetoothctl", "show", hci,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
                     stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
-                    if b"UP" in stdout:
+                    if b"Powered: yes" in stdout:
                         _LOGGER.info("BT adapter ready")
                         break
                 except Exception:
-                    pass
+                    # fallback: 用 sysfs 检查
+                    try:
+                        power_file = f"/sys/class/bluetooth/{hci}/power"
+                        if os.path.exists(power_file) and open(power_file).read().strip() == "1":
+                            _LOGGER.info("BT adapter ready (via sysfs)")
+                            break
+                    except Exception:
+                        pass
             else:
                 _LOGGER.warning("BT adapter not ready after 10s, proceeding anyway")
         except Exception as e:

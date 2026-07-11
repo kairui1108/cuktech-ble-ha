@@ -67,7 +67,8 @@ for piid, cfg in SELECT_PIIDS.items():
 
 # Device info
 DEVICE_INFO = {
-    "name": "CUKTECH Charger",
+    "name": "酷态科10号超级电能充Ultra 充电器",
     "manufacturer": "CUKTECH",
-    "model": "10 GaN Charger Ultra",
+    "model": "njcuk.fitting.ad1204",
+    "sw_version": "",
 }

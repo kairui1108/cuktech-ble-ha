@@ -20,6 +20,7 @@ from .const import (
     DOMAIN,
     CONF_SERVER_URL,
     DEFAULT_SERVER_URL,
+    DEVICE_INFO,
     TOPIC_PORT,
     TOPIC_PREFIX,
     TOPIC_PROBE,
@@ -76,9 +77,12 @@ class CuktechMQTTCoordinator:
         self._unsub: list = []
         self._available = False
         self._mqtt_connected = False
+        self._health_check_unsub = None
         self._last_status_time: float = 0
         self._health_check_task = None
         self._health_failures = 0
+        self._device_model: str = DEVICE_INFO["model"]
+        self._firmware_version: str = ""
 
     @property
     def available(self) -> bool:
@@ -105,6 +109,15 @@ class CuktechMQTTCoordinator:
     def data(self) -> dict[str, Any]:
         """Return settings data (copy)."""
         return dict(self._settings)
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device info with dynamic firmware version."""
+        return {
+            **DEVICE_INFO,
+            "model": self._device_model or DEVICE_INFO["model"],
+            "sw_version": self._firmware_version,
+        }
 
     async def async_setup(self) -> None:
         """Set up MQTT subscriptions."""
@@ -209,16 +222,43 @@ class CuktechMQTTCoordinator:
             if self._mqtt_connected:
                 self._last_status_time = time.time()
                 self._health_failures = 0
+            # Update device info from BLE server
+            info_changed = False
+            if "device_model" in payload and payload["device_model"]:
+                if self._device_model != payload["device_model"]:
+                    self._device_model = payload["device_model"]
+                    info_changed = True
+            if "firmware_version" in payload:
+                new_fw = payload.get("firmware_version", "")
+                if self._firmware_version != new_fw:
+                    self._firmware_version = new_fw
+                    info_changed = True
             self._update_availability()
             if self._available and not was_available:
                 _LOGGER.info("BLE server is now available (MQTT)")
             elif not self._available and was_available:
                 _LOGGER.warning("BLE server disconnected (MQTT)")
+            if info_changed:
+                self.hass.async_create_task(self._async_update_device_registry())
+                self._notify_callbacks()
             _LOGGER.debug("Status message: %s", payload)
         except json.JSONDecodeError as err:
             _LOGGER.debug("Status JSON parse error: %s", err)
         except Exception as err:
             _LOGGER.exception("Status message error: %s", err)
+
+    async def _async_update_device_registry(self) -> None:
+        """Update device registry with latest device info (firmware, model)."""
+        from homeassistant.helpers import device_registry as dr
+
+        dev_reg = dr.async_get(self.hass)
+        device = dev_reg.async_get_device(identifiers={(DOMAIN, self.entry.entry_id)})
+        if device is not None:
+            dev_reg.async_update_device(
+                device.id,
+                sw_version=self._firmware_version or None,
+                model=self._device_model or None,
+            )
 
     def _update_availability(self) -> None:
         """Update availability based on MQTT status and HTTP health."""
@@ -238,6 +278,24 @@ class CuktechMQTTCoordinator:
                     self._update_availability()
                     if self._available and not was_available:
                         _LOGGER.info("BLE server is now available (HTTP)")
+                    # Fallback: also read device info from HTTP if MQTT not connected
+                    if not self._mqtt_connected:
+                        try:
+                            data = await resp.json()
+                            info_changed = False
+                            model = data.get("device_model", "")
+                            fw = data.get("firmware_version", "")
+                            if model and self._device_model != model:
+                                self._device_model = model
+                                info_changed = True
+                            if fw and self._firmware_version != fw:
+                                self._firmware_version = fw
+                                info_changed = True
+                            if info_changed:
+                                self.hass.async_create_task(self._async_update_device_registry())
+                                self._notify_callbacks()
+                        except Exception:
+                            pass
                 else:
                     self._health_failures += 1
                     if self._available:

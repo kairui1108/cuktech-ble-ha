@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "CUKTECH 充电器",
+        "description": "设置您的 CUKTECH 充电器。此集成通过 MQTT 接收来自 CUKTECH BLE 服务器的实时数据。",
+        "data": {
+          "name": "设备名称",
+          "server_url": "BLE 服务器地址"
+        }
+      },
+      "reauth": {
+        "title": "重新认证",
+        "description": "BLE 服务器连接信息已更改，请重新输入。",
+        "data": {
+          "server_url": "BLE 服务器地址"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接到服务器",
+      "unknown": "未知错误"
+    },
+    "abort": {
+      "already_configured": "设备已配置"
+    }
+  }
+}

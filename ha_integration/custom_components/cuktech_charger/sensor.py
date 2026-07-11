@@ -6,12 +6,12 @@ from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfPower
+from homeassistant.const import UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfPower
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
-from .const import DOMAIN, DEVICE_INFO, PORT_NAMES
+from .const import DOMAIN, PORT_NAMES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,7 +39,6 @@ class CuktechPortSensor(SensorEntity):
 
     _attr_has_entity_name = True
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     UNITS = {
         "voltage": UnitOfElectricPotential.VOLT,
@@ -80,7 +79,7 @@ class CuktechPortSensor(SensorEntity):
     @property
     def device_info(self) -> dict[str, Any]:
         """Return device info."""
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **DEVICE_INFO}
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **self.coordinator.device_info}
 
     @property
     def available(self) -> bool:
@@ -134,7 +133,7 @@ class CuktechTotalPowerSensor(SensorEntity):
     @property
     def device_info(self) -> dict[str, Any]:
         """Return device info."""
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **DEVICE_INFO}
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **self.coordinator.device_info}
 
     @property
     def available(self) -> bool:
@@ -158,7 +157,6 @@ class CuktechPortProtocolSensor(SensorEntity):
     _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = PROTOCOL_OPTIONS
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(
         self,
@@ -191,7 +189,7 @@ class CuktechPortProtocolSensor(SensorEntity):
     @property
     def device_info(self) -> dict[str, Any]:
         """Return device info."""
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **DEVICE_INFO}
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **self.coordinator.device_info}
 
     @property
     def available(self) -> bool:

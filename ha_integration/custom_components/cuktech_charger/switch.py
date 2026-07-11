@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
-from .const import DOMAIN, DEVICE_INFO
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class CuktechSettingSwitch(SwitchEntity):
     @property
     def device_info(self) -> dict[str, Any]:
         """Return device info."""
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **DEVICE_INFO}
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **self.coordinator.device_info}
 
     @property
     def available(self) -> bool:
@@ -91,9 +91,9 @@ class CuktechSettingSwitch(SwitchEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True if entity is on."""
-        if not self.coordinator._settings:
+        if not self.coordinator.data:
             return None
-        v = self.coordinator._settings.get(str(self._piid))
+        v = self.coordinator.data.get(str(self._piid))
         return bool(v) if v is not None else None
 
     async def async_turn_on(self, **kwargs: Any) -> None:
@@ -144,7 +144,7 @@ class CuktechPortSwitch(SwitchEntity):
     @property
     def device_info(self) -> dict[str, Any]:
         """Return device info."""
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **DEVICE_INFO}
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **self.coordinator.device_info}
 
     @property
     def available(self) -> bool:
@@ -154,9 +154,9 @@ class CuktechPortSwitch(SwitchEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True if entity is on."""
-        if not self.coordinator._settings:
+        if not self.coordinator.data:
             return None
-        port_ctl = self.coordinator._settings.get("16")
+        port_ctl = self.coordinator.data.get("16")
         if port_ctl is None:
             return None
         return bool(port_ctl & (1 << self._bit))

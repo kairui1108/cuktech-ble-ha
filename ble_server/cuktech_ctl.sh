@@ -76,11 +76,8 @@ except: pass
 " 2>/dev/null
 }
 
-do_cleanup() {
-    echo "Cleaning up old processes and BLE connections..."
-    mqtt_cleanup
-    local PORT
-    PORT=$("$PYTHON" -c "
+read_server_port() {
+    "$PYTHON" -c "
 import yaml
 from pathlib import Path
 cfg_path = Path('$SCRIPT_DIR/config.yaml')
@@ -90,7 +87,14 @@ if cfg_path.exists():
     print(cfg.get('server', {}).get('port', 8199))
 else:
     print(8199)
-" 2>/dev/null || echo 8199)
+" 2>/dev/null || echo 8199
+}
+
+do_cleanup() {
+    echo "Cleaning up old processes and BLE connections..."
+    mqtt_cleanup
+    local PORT
+    PORT=$(read_server_port)
     lsof -i :"$PORT" -t 2>/dev/null | xargs -r kill -9 2>/dev/null || true
     pkill -f "$SCRIPT_DIR/ha_server.py" 2>/dev/null || true
     sleep 2
@@ -173,7 +177,9 @@ do_status() {
         echo "Server running (PID: $pid)"
         if command -v curl &>/dev/null; then
             local status
-            status=$(curl -s --max-time 3 http://localhost:8199/api/status 2>/dev/null)
+            local PORT
+            PORT=$(read_server_port)
+            status=$(curl -s --max-time 3 "http://localhost:${PORT}/api/status" 2>/dev/null)
             if [ $? -eq 0 ]; then
                 echo "API Response: $status"
             else

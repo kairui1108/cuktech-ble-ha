@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
-from .const import DOMAIN, DEVICE_INFO, PORT_NAMES
+from .const import DOMAIN, PORT_NAMES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class CuktechPortActive(BinarySensorEntity):
     @property
     def device_info(self) -> dict[str, Any]:
         """Return device info."""
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **DEVICE_INFO}
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **self.coordinator.device_info}
 
     @property
     def available(self) -> bool:
