@@ -4,6 +4,7 @@ import logging
 import sys
 import os
 import time
+import struct
 
 try:
     from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION, AuthConnectionError
@@ -408,35 +409,18 @@ class BLEManager:
             if not self.ctrl:
                 break
 
-            # 同时监听 MiOT (cmd_recv) 和 BLE Spec (blespec) 通知
+            # 同时监听 MiOT (cmd_recv) 通知
             try:
-                done, pending = await asyncio.wait(
-                    [
-                        asyncio.create_task(self.ctrl.wait_notify("cmd_recv")),
-                        asyncio.create_task(self.ctrl.wait_notify("blespec")),
-                    ],
-                    timeout=2.0,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                # 取消未完成的任务
-                for task in pending:
-                    task.cancel()
-                
+                data = await asyncio.wait_for(
+                    self.ctrl.wait_notify("cmd_recv"), timeout=2.0)
                 if not self.ctrl:
                     break
                 last_notify = time.time()
-                
-                # 处理 BLE Spec 通知 (32-bit 端口数据格式)
-                for task in done:
-                    try:
-                        data = task.result()
-                        if data and len(data) >= 4 and isinstance(data, bytes):
-                            await self._handle_inline_data(data)
-                            # 如果数据长度 >= 4 且格式像 BLE Spec 32-bit 值, 尝试解析
-                            if len(data) >= 4 and data[2] == 0x02:
-                                self._try_parse_blespec(data)
-                    except Exception:
-                        pass
+                if data[2] == 0x02 and len(data) >= 4:
+                    await self._handle_inline_data(data)
+                elif data[2] == 0x00 and len(data) >= 6:
+                    await self._handle_multiframe(data)
+                continue
             except asyncio.TimeoutError:
                 now = time.time()
                 if now - last_refresh > self.config.server.settings_refresh_interval:
@@ -462,14 +446,6 @@ class BLEManager:
             except Exception as e:
                 _LOGGER.warning("BLE notification error: %s", e)
                 raise
-
-            if not data or len(data) < 4:
-                continue
-
-            if data[2] == 0x02 and len(data) >= 4:
-                await self._handle_inline_data(data)
-            elif data[2] == 0x00 and len(data) >= 6:
-                await self._handle_multiframe(data)
 
     async def _fetch_settings(self, update_existing=False):
         settings = dict(self.state.settings) if update_existing else {}
@@ -590,7 +566,15 @@ class BLEManager:
             else:
                 raise ValueError("Invalid protocol_extend command")
 
-            await self.ctrl.send_miot_command(2, 21, value=new_val)
+            # BLE Spec TLV 格式发送 PIID21 (替代 MiOT 4-byte SET)
+            # 帧: [0x2000|prop_size:2B LE][msg_id:2B LE][count:1B][siid:1B][piid:2B LE][len:2B LE][value:4B LE]
+            prop = struct.pack('<B', 2) + struct.pack('<H', 21) + struct.pack('<H', 4) + struct.pack('<I', new_val)
+            tlv = struct.pack('<H', len(prop) | 0x2000) + struct.pack('<H', 0) + struct.pack('<B', 1) + prop
+            _LOGGER.info("Protocol extend via BLE Spec TLV: value=0x%X tlv=%s", new_val, tlv.hex())
+            resp = await self.ctrl.send_spec_flatbuffer_command(tlv)
+            if resp:
+                _LOGGER.info("Protocol extend response: %s", resp.hex())
+            
             await self.state.update_protocol_extend(new_val)
             _invalidate()
             self._publish_settings(retain=True)
