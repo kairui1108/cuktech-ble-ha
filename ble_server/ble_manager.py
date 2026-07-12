@@ -417,6 +417,8 @@ class BLEManager:
                     break
                 last_notify = time.time()
                 if data[2] == 0x02 and len(data) >= 4:
+                    _LOGGER.info("inline frame: %s ctrl=%s client=%s", data[:12].hex(), 
+                                 self.ctrl is not None, self.ctrl and self.ctrl.client is not None)
                     await self._handle_inline_data(data)
                 elif data[2] == 0x00 and len(data) >= 6:
                     await self._handle_multiframe(data)
@@ -589,22 +591,30 @@ class BLEManager:
                 cmd_future.set_result({"ok": False, "error": str(e)})
 
     async def _handle_inline_data(self, data):
-        if not self.ctrl:
+        if not self.ctrl or not self.ctrl.client:
+            _LOGGER.warning("inline data ignored: no ctrl")
             return
-        await self.ctrl.client.write_gatt_char(
-            CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
+        try:
+            await self.ctrl.client.write_gatt_char(
+                CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
+        except Exception as e:
+            _LOGGER.warning("inline ACK failed: %s", e)
         await self._try_process_inline_frame(data)
 
     async def _try_process_inline_frame(self, raw_data):
         """Try to decrypt and process a raw BLE frame as inline port data.
-        
+
         Shared between _handle_inline_data and _handle_multiframe.
         Silently returns if data doesn't match inline format.
         """
         if not self.ctrl:
             return
         encrypted_payload = raw_data[4:]
-        pt = self.ctrl.decrypt(encrypted_payload)
+        try:
+            pt = self.ctrl.decrypt(encrypted_payload)
+        except Exception as e:
+            self._decrypt_failures += 1
+            return
         if not pt or len(pt) < 8:
             self._decrypt_failures += 1
             if self._decrypt_failures >= 10:
@@ -616,11 +626,10 @@ class BLEManager:
         piid = pt[7] if len(pt) > 7 else -1
         
         # BLE Spec 0f 20 frames: 仅记录日志，不做端口更新
-        # (subscribeMessages 在 TinyPluginHost 中是 NO-OP,
-        #  BLE Spec 自发的 32-bit 端口推送在 MiOT 模式下不可用)
         if pt[0:2] == b'\x0f\x20':
             _LOGGER.debug("BLESpec frame: piid=%d", piid)
             return
+        
         
         if b4 == 0x04 and piid in PORT_NAMES:
             pdo_data = None
