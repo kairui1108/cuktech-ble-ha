@@ -228,11 +228,19 @@ def decode_port_v2(
         protocol = "idle"
         confidence = 1.0
         method = "no_load"
+        proto_num = 0
     else:
         proto_num = estimate_protocol_number(piid, raw)
         protocol = get_mijia_protocol_name(proto_num)
         confidence = 0.90 if proto_num > 0 else 0.30
         method = f"proto_{proto_num}"
+
+    # 构造 BLE Spec 32-bit 格式值 (对齐米家 parsePortInfo)
+    # [voltage_raw:8][current_raw:8][protocol_num:8][status:8]
+    voltage_raw = min(int(round(raw.voltage, 1) * 10), 255)
+    current_raw = min(int(round(raw.current, 1) * 10), 255)
+    status = 1 if is_active else 0
+    blespec32 = (voltage_raw << 24) | (current_raw << 16) | (proto_num << 8) | status
 
     return {
         "voltage": round(raw.voltage, 1),
@@ -244,6 +252,7 @@ def decode_port_v2(
         "_detection_method": method,
         "_raw_code": f"0x{raw.code:02X}",
         "_proto_num": proto_num if is_active else None,
+        "_blespec32": blespec32,  # BLE Spec 32-bit 格式值
     }
 
 

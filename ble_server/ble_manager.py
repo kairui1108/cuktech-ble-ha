@@ -8,6 +8,7 @@ import time
 try:
     from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION, AuthConnectionError
     from cuktech_ble.protocol import READABLE_SETTINGS_PIIDS
+    from state_protocol_v2 import get_mijia_protocol_name
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
     from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION, AuthConnectionError
@@ -629,6 +630,14 @@ class BLEManager:
         self._decrypt_failures = 0
         b4 = pt[4]
         piid = pt[7] if len(pt) > 7 else -1
+        
+        # BLE Spec 0f 20 frames: 仅记录日志，不做端口更新
+        # (subscribeMessages 在 TinyPluginHost 中是 NO-OP,
+        #  BLE Spec 自发的 32-bit 端口推送在 MiOT 模式下不可用)
+        if pt[0:2] == b'\x0f\x20':
+            _LOGGER.debug("BLESpec frame: piid=%d", piid)
+            return
+        
         if b4 == 0x04 and piid in PORT_NAMES:
             pdo_data = None
             if piid in (1, 2):
