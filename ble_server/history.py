@@ -23,7 +23,7 @@ class PortHistory:
         self.db_path = db_path
         self.retention_days = retention_days
         self._conn: Optional[sqlite3.Connection] = None
-        self._write_lock = threading.Lock()
+        self._db_lock = threading.Lock()  # 保护所有读写操作
         self._last_cleanup = 0
 
     def connect(self):
@@ -70,7 +70,7 @@ class PortHistory:
         """Record port data to database (synchronous, called from async via executor)."""
         if not self._conn:
             return
-        with self._write_lock:
+        with self._db_lock:
             try:
                 self._conn.execute(
                     """INSERT INTO port_history (timestamp, port, voltage, current, power, active, protocol)
@@ -112,32 +112,32 @@ class PortHistory:
 
         cutoff = time.time() - (hours * 3600)
 
-        # WAL mode allows concurrent reads without locking
-        if interval:
-            rows = self._conn.execute(
-                """SELECT
-                    (CAST(timestamp / ? AS INTEGER) * ?) as bucket,
-                    AVG(voltage) as voltage,
-                    AVG(current) as current,
-                    AVG(power) as power,
-                    MAX(active) as active,
-                    COUNT(*) as samples
-                FROM port_history
-                WHERE port = ? AND timestamp >= ?
-                GROUP BY bucket
-                ORDER BY bucket""",
-                (interval, interval, port, cutoff)
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                """SELECT timestamp, voltage, current, power, active, protocol
-                FROM port_history
-                WHERE port = ? AND timestamp >= ?
-                ORDER BY timestamp""",
-                (port, cutoff)
-            ).fetchall()
+        with self._db_lock:
+            if interval:
+                rows = self._conn.execute(
+                    """SELECT
+                        (CAST(timestamp / ? AS INTEGER) * ?) as bucket,
+                        AVG(voltage) as voltage,
+                        AVG(current) as current,
+                        AVG(power) as power,
+                        MAX(active) as active,
+                        COUNT(*) as samples
+                    FROM port_history
+                    WHERE port = ? AND timestamp >= ?
+                    GROUP BY bucket
+                    ORDER BY bucket""",
+                    (interval, interval, port, cutoff)
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT timestamp, voltage, current, power, active, protocol
+                    FROM port_history
+                    WHERE port = ? AND timestamp >= ?
+                    ORDER BY timestamp""",
+                    (port, cutoff)
+                ).fetchall()
 
-        return [dict(row) for row in rows]
+            return [dict(row) for row in rows]
 
     def get_statistics(self, port: int, hours: int = 24) -> dict:
         """Get statistical summary for a port."""
@@ -145,24 +145,25 @@ class PortHistory:
             return {}
 
         cutoff = time.time() - (hours * 3600)
-        row = self._conn.execute(
-            """SELECT
-                COUNT(*) as samples,
-                MIN(timestamp) as first_seen,
-                MAX(timestamp) as last_seen,
-                AVG(voltage) as avg_voltage,
-                MAX(voltage) as max_voltage,
-                MIN(voltage) as min_voltage,
-                AVG(current) as avg_current,
-                MAX(current) as max_current,
-                AVG(power) as avg_power,
-                MAX(power) as max_power,
-                SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) as active_count,
-                AVG(power) * (MAX(timestamp) - MIN(timestamp)) / 3600 as energy_wh
-            FROM port_history
-            WHERE port = ? AND timestamp >= ?""",
-            (port, cutoff)
-        ).fetchone()
+        with self._db_lock:
+            row = self._conn.execute(
+                """SELECT
+                    COUNT(*) as samples,
+                    MIN(timestamp) as first_seen,
+                    MAX(timestamp) as last_seen,
+                    AVG(voltage) as avg_voltage,
+                    MAX(voltage) as max_voltage,
+                    MIN(voltage) as min_voltage,
+                    AVG(current) as avg_current,
+                    MAX(current) as max_current,
+                    AVG(power) as avg_power,
+                    MAX(power) as max_power,
+                    SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) as active_count,
+                    AVG(power) * (MAX(timestamp) - MIN(timestamp)) / 3600 as energy_wh
+                FROM port_history
+                WHERE port = ? AND timestamp >= ?""",
+                (port, cutoff)
+            ).fetchone()
 
         if not row or row["samples"] == 0:
             return {"port": port, "hours": hours, "samples": 0}
@@ -196,13 +197,14 @@ class PortHistory:
             return ""
 
         cutoff = time.time() - (hours * 3600)
-        rows = self._conn.execute(
-            """SELECT timestamp, voltage, current, power, active, protocol
-            FROM port_history
-            WHERE port = ? AND timestamp >= ?
-            ORDER BY timestamp""",
-            (port, cutoff)
-        ).fetchall()
+        with self._db_lock:
+            rows = self._conn.execute(
+                """SELECT timestamp, voltage, current, power, active, protocol
+                FROM port_history
+                WHERE port = ? AND timestamp >= ?
+                ORDER BY timestamp""",
+                (port, cutoff)
+            ).fetchall()
 
         output = io.StringIO()
         writer = csv.writer(output)
@@ -227,18 +229,19 @@ class PortHistory:
             return []
 
         cutoff = time.time() - (hours * 3600)
-        rows = self._conn.execute(
-            """SELECT port,
-                (CAST(timestamp / ? AS INTEGER) * ?) as bucket,
-                AVG(voltage) as voltage,
-                AVG(current) as current,
-                AVG(power) as power,
-                COUNT(*) as samples
-            FROM port_history
-            WHERE port >= ? AND port <= ? AND timestamp >= ?
-            GROUP BY port, bucket
-            ORDER BY port, bucket""",
-            (interval, interval, start_port, end_port, cutoff)
+        with self._db_lock:
+            rows = self._conn.execute(
+                """SELECT port,
+                    (CAST(timestamp / ? AS INTEGER) * ?) as bucket,
+                    AVG(voltage) as voltage,
+                    AVG(current) as current,
+                    AVG(power) as power,
+                    COUNT(*) as samples
+                FROM port_history
+                WHERE port >= ? AND port <= ? AND timestamp >= ?
+                GROUP BY port, bucket
+                ORDER BY port, bucket""",
+                (interval, interval, start_port, end_port, cutoff)
         ).fetchall()
 
         return [dict(row) for row in rows]

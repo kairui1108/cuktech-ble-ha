@@ -1,7 +1,7 @@
 """CUKTECH BLE Controller - Core BLE connection and command handling."""
 import asyncio
 import hashlib
-import io
+import hmac
 import logging
 import secrets
 import struct
@@ -411,7 +411,7 @@ class CuktechBLEController:
         hmac_dev.update(salt_inv)
         expected_dev_hmac = hmac_dev.finalize()
 
-        if expected_dev_hmac != dev_hmac_info:
+        if not hmac.compare_digest(expected_dev_hmac, dev_hmac_info):
             _LOGGER.error("  [!] 设备 HMAC 验证失败!")
             return False
         _LOGGER.info("  [+] 设备 HMAC 验证通过!")
@@ -486,11 +486,14 @@ class CuktechBLEController:
             push_count += 1
 
             if data[2] == 0x00 and len(data) >= 6:
-                frame_count = data[4] + 0x100 * data[5]
+                frame_count = min(data[4] + 0x100 * data[5], 100)
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
+                deadline = time.monotonic() + 10.0
                 for i in range(frame_count):
-                    frame = await self.wait_notify("cmd_recv", timeout=3.0)
+                    if time.monotonic() >= deadline:
+                        break
+                    frame = await self.wait_notify("cmd_recv", timeout=min(deadline - time.monotonic(), 3.0))
                     if not frame:
                         break
                 await self.client.write_gatt_char(
@@ -627,13 +630,20 @@ class CuktechBLEController:
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
                 drained += 1
             elif data and len(data) >= 6 and data[2] == 0x00:
-                # 多帧: 处理所有帧
+                # 多帧: 限制总帧数和总超时
                 frame_count = data[4] + 0x100 * data[5]
+                if frame_count > 100:
+                    _LOGGER.warning("Drain: %d frames exceeds limit, capping at 100", frame_count)
+                    frame_count = 100
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
+                deadline = time.monotonic() + 10.0  # 总超时 10s
                 for _ in range(frame_count):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
                     try:
-                        frame = await asyncio.wait_for(q.get(), timeout=2.0)
+                        frame = await asyncio.wait_for(q.get(), timeout=min(remaining, 2.0))
                     except asyncio.TimeoutError:
                         break
                 await self.client.write_gatt_char(
@@ -667,11 +677,17 @@ class CuktechBLEController:
 
         if value is not None:
             # SET property: opcode=0x00
-            val_byte = value & 0xFF
-            plaintext = bytes([0x0c, 0x20, seq, 0x00,
-                               0x00, 0x01, siid & 0xFF, piid & 0xFF,
-                               0x00, 0x01, 0x10, val_byte])
-            _LOGGER.debug("SET siid=%d piid=%d value=%d", siid, piid, value)
+            if value <= 0xFF:
+                plaintext = bytes([0x0c, 0x20, seq, 0x00,
+                                   0x00, 0x01, siid & 0xFF, piid & 0xFF,
+                                   0x00, 0x01, 0x10, value & 0xFF])
+            else:
+                # 32-bit value → LE 4 bytes, type 0x10
+                b = value.to_bytes(4, 'little')
+                plaintext = bytes([0x0c, 0x20, seq, 0x00,
+                                   0x00, 0x01, siid & 0xFF, piid & 0xFF,
+                                   0x00, 0x04, 0x10, b[0], b[1], b[2], b[3]])
+            _LOGGER.debug("SET siid=%d piid=%d value=%d (0x%X)", siid, piid, value, value)
         else:
             # GET property: opcode=0x02
             plaintext = bytes([0x0c, 0x20, seq, 0x00,
@@ -692,56 +708,30 @@ class CuktechBLEController:
         """接收 SET 命令的响应: 期望 ACK (B4=0x01) + Result (B4=0x04)。"""
         deadline = asyncio.get_running_loop().time() + timeout
         got_ack = False
-        result_value = None
 
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
-
             data = await self.wait_notify("cmd_recv", timeout=min(remaining, 3.0))
             if not data or len(data) < 4:
                 if got_ack:
-                    break  # ACK 已收到, 可能无 result (设置相同值时)
+                    break
                 continue
 
-            if data[2] == 0x02 and len(data) >= 4:
-                encrypted_payload = data[4:]
-                await self.client.write_gatt_char(
-                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
-                pt = self.decrypt(encrypted_payload)
-                if not pt or len(pt) < 8:
-                    continue
-
-                b4 = pt[4]
-                pt_siid = pt[6] if len(pt) > 6 else -1
-                pt_piid = pt[7] if len(pt) > 7 else -1
-
-                if b4 == 0x01 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
-                    # SET ACK
-                    got_ack = True
-                    deadline = asyncio.get_running_loop().time() + 1.0
-                    continue
-                elif b4 == 0x04 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
-                    # SET Result - 解析值
-                    if len(pt) >= 12:
-                        result_value = self._extract_typed_u8(pt, 10, 11)
-                    _LOGGER.debug("SET confirmed: value=%s", result_value)
-                    return {'piid': piid, 'value': result_value, 'raw': pt}
-                else:
-                    # 推送通知 (跳过, 不重置 deadline 避免无限延期)
-                    continue
-
-            elif data[2] == 0x00 and len(data) >= 6:
-                # 多帧 (不太可能, 但处理以防万一)
-                frame_count = data[4] + 0x100 * data[5]
-                await self.client.write_gatt_char(
-                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
-                for _ in range(frame_count):
-                    await self.wait_notify("cmd_recv", timeout=3.0)
-                await self.client.write_gatt_char(
-                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
+            pt, _ = await self._try_decode_inline(data)
+            if pt is None:
                 continue
+
+            b4 = pt[4]; pt_siid = pt[6] if len(pt) > 6 else -1; pt_piid = pt[7] if len(pt) > 7 else -1
+
+            if b4 == 0x01 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
+                got_ack = True
+                deadline = asyncio.get_running_loop().time() + 1.0
+                continue
+            elif b4 == 0x04 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
+                val = self._extract_typed_u8(pt, 10, 11) if len(pt) >= 12 else None
+                return {'piid': piid, 'value': val, 'raw': pt}
 
         if got_ack:
             _LOGGER.debug("SET acknowledged (ACK only)")
@@ -757,54 +747,60 @@ class CuktechBLEController:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
-
             data = await self.wait_notify("cmd_recv", timeout=min(remaining, 3.0))
             if not data or len(data) < 4:
                 break
 
-            if data[2] == 0x02 and len(data) >= 4:
-                encrypted_payload = data[4:]
-                await self.client.write_gatt_char(
-                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
-                pt = self.decrypt(encrypted_payload)
-                if not pt or len(pt) < 8:
-                    continue
-
-                b4 = pt[4]
-                pt_siid = pt[6] if len(pt) > 6 else -1
-                pt_piid = pt[7] if len(pt) > 7 else -1
-
-                if b4 == 0x03 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
-                    # GET Response
-                    result_value = None
-                    if len(pt) >= 14:
-                        result_value = self._extract_typed_u8(pt, 12, 13)
-                    _LOGGER.debug("GET response: value=%s", result_value)
-                    return {'piid': piid, 'value': result_value, 'raw': pt}
-                else:
-                    # 推送通知 (跳过, 不重置 deadline 避免无限延期)
-                    continue
-
-            elif data[2] == 0x00 and len(data) >= 6:
-                frame_count = data[4] + 0x100 * data[5]
-                await self.client.write_gatt_char(
-                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
-                for _ in range(frame_count):
-                    await self.wait_notify("cmd_recv", timeout=3.0)
-                await self.client.write_gatt_char(
-                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
+            pt, _ = await self._try_decode_inline(data)
+            if pt is None:
                 continue
+
+            b4 = pt[4]; pt_siid = pt[6] if len(pt) > 6 else -1; pt_piid = pt[7] if len(pt) > 7 else -1
+
+            if b4 == 0x03 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
+                result_value = None
+                if len(pt) >= 14:
+                    val_len = pt[11] if len(pt) > 11 else 1
+                    if val_len >= 4 and len(pt) >= 17:
+                        result_value = int.from_bytes(pt[13:17], 'little')
+                    else:
+                        result_value = pt[13] if len(pt) > 13 else None
+                return {'piid': piid, 'value': result_value, 'raw': pt}
 
         _LOGGER.debug("GET no response")
         return None
 
+    async def _try_decode_inline(self, data):
+        """解密并解析内联帧，返回 (plaintext,None) 或 (None,None) 或 ACK多帧后 (None,True)。"""
+        if data[2] == 0x02 and len(data) >= 4:
+            encrypted_payload = data[4:]
+            await self.client.write_gatt_char(
+                CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
+            pt = self.decrypt(encrypted_payload)
+            return (pt, None) if pt and len(pt) >= 8 else (None, None)
+        elif data[2] == 0x00 and len(data) >= 6:
+            frame_count = data[4] + 0x100 * data[5]
+            await self.client.write_gatt_char(
+                CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
+            for _ in range(frame_count):
+                await self.wait_notify("cmd_recv", timeout=3.0)
+            await self.client.write_gatt_char(
+                CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
+            return None, True
+        return None, None
+
     async def get_properties(self, props):
         """批量获取属性。props = [(siid, piid), ...]"""
         results = {}
+        failed = 0
         for siid, piid in props:
             result = await self.send_miot_command(siid, piid)
             if result and 'value' in result:
                 results[(siid, piid)] = result['value']
+            else:
+                failed += 1
             await asyncio.sleep(0.1)
+        if failed > 0:
+            _LOGGER.warning("get_properties: %d/%d properties failed", failed, len(props))
         return results
 

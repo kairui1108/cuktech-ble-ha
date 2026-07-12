@@ -53,6 +53,15 @@ class BLEManager:
     def set_history(self, history):
         self._history = history
 
+    @property
+    def is_running(self) -> bool:
+        """是否正在运行 (不处于停止状态)。"""
+        return not self._stop_event.is_set()
+
+    async def request_stop(self):
+        """请求停止 BLE 循环 (设置 _stop_event，不直接断开)。"""
+        self._stop_event.set()
+
     def _get_reconnect_delay(self):
         """Calculate exponential backoff delay."""
         delay = min(
@@ -265,9 +274,11 @@ class BLEManager:
                 except Exception:
                     try:
                         power_file = f"/sys/class/bluetooth/{hci}/power"
-                        if os.path.exists(power_file) and open(power_file).read().strip() == "1":
-                            _LOGGER.info("BT adapter ready (via sysfs)")
-                            break
+                        if os.path.exists(power_file):
+                            with open(power_file) as f:
+                                if f.read().strip() == "1":
+                                    _LOGGER.info("BT adapter ready (via sysfs)")
+                                    break
                     except Exception:
                         pass
             else:
@@ -340,12 +351,14 @@ class BLEManager:
                         pdo_caps["c1c2"] = decode_pdo_caps(result["value"], "c1", "c2")
                     elif piid == 18:
                         pdo_caps["c3a"] = decode_pdo_caps(result["value"], "c3", "a")
+                    elif piid == 21:
+                        await self.state.update_protocol_extend(result["value"])
             except Exception as e:
                 fail_count += 1
                 _LOGGER.debug("Failed to read PIID %d: %s", piid, e)
             await asyncio.sleep(0.1)
-        if fail_count == 14:
-            _LOGGER.warning("All PIID reads failed, BLE channel may be broken")
+        if fail_count >= len(READABLE_SETTINGS_PIIDS):
+            _LOGGER.warning("All %d PIID reads failed, BLE channel may be broken", fail_count)
         await self.state.update_settings(settings)
         await self.state.update_pdo_caps(pdo_caps)
         _invalidate()
@@ -370,6 +383,7 @@ class BLEManager:
                     await self._handle_set_command(cmd_data, cmd_future)
                 elif cmd_type == "port":
                     await self._handle_port_command(cmd_data, cmd_future)
+
             except Exception as e:
                 _LOGGER.error("Command error: %s", e)
                 if cmd_future and not cmd_future.done():
@@ -404,6 +418,13 @@ class BLEManager:
             if new_val != cur_val:
                 await self.ctrl.send_miot_command(2, 16, value=new_val)
                 await self.state.update_settings({"16": new_val})
+                # 端口关闭时清零端口数据
+                if action == "off" and port != "all":
+                    piid = {"c1": 1, "c2": 2, "c3": 3, "a": 4}.get(port)
+                    if piid:
+                        await self.state.update_port(piid, PORT_DEFAULT)
+                        _invalidate()
+                        self._publish_port(PORT_NAMES[piid], PORT_DEFAULT)
             _invalidate()
             self._publish_settings(retain=True)
             if cmd_future and not cmd_future.done():
@@ -445,7 +466,8 @@ class BLEManager:
                 pdo_data = self.state.pdo_caps.get("c1c2", {}).get(PORT_NAMES[piid])
             elif piid in (3, 4):
                 pdo_data = self.state.pdo_caps.get("c3a", {}).get(PORT_NAMES[piid])
-            port_info = decode_port(piid, pt, pdo_data)
+            port_info = decode_port(piid, pt, pdo_data,
+                                    protocol_switches=self.state.protocol_switches)
             if port_info:
                 old = self.state.ports.get(piid)
                 await self.state.update_port(piid, port_info)

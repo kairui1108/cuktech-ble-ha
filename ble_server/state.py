@@ -1,9 +1,15 @@
 """CUKTECH BLE Server - State management."""
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Dict
 
-from src.cuktech_ble.protocol import PROTOCOL_NAMES, PD_FIXED_VOLTAGES, PDO_KIND_BY_HIGH_BYTE
+from src.cuktech_ble.protocol import PDO_KIND_BY_HIGH_BYTE
+
+_LOGGER = logging.getLogger(__name__)
+
+# 协议检测引擎 (V2)
+from state_protocol_v2 import decode_port as _decode_port_v2
 
 PORT_DEFAULT = {"voltage": 0.0, "current": 0.0, "power": 0.0, "active": False, "protocol": "idle"}
 PORT_NAMES = {1: "c1", 2: "c2", 3: "c3", 4: "a"}
@@ -14,11 +20,26 @@ PORT_BITS = {"c1": 0, "c2": 1, "c3": 2, "a": 3}
 # PIID 7: protocol control (write-only, not included)
 # PIID 14: screen direction (write-only, not included)
 # PIID 17-18: PDO capabilities (read-only, fetched separately)
-VALID_PIIDS = {5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 19, 20}
+# PIID 21: protocol extend control (read/write)
+VALID_PIIDS = {5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 19, 20, 21}
 PIID_RANGES = {
     5: (1, 4), 6: (0, 5), 8: (0, 1440), 9: (0, 1440), 10: (0, 1440),
     11: (0, 1440), 12: (0, 1440), 13: (0, 1), 15: (0, 1), 16: (0, 15),
     19: (0, 1), 20: (0, 1),
+    21: (0, 0xFFFFFFFF),  # 协议扩展控制 32-bit
+}
+
+# 米家协议开关位定义 (PIID 21)
+# c1Flags: bit0=PD, bit1=PPS, bit2=UFCS, bit3=保留(固定1)
+# c2Flags: 同上
+# c3Flags: bit0=UFCS, bit1=SCP
+# aFlags:  bit0=UFCS, bit1=SCP
+# 编码: aFlags<<24 | c3Flags<<16 | c2Flags<<8 | c1Flags
+PROTOCOL_SWITCH_BITS = {
+    "c1": {"pd": 0, "pps": 1, "ufcs": 2, "_reserved": 3},
+    "c2": {"pd": 8, "pps": 9, "ufcs": 10, "_reserved": 11},
+    "c3": {"ufcs": 16, "scp": 17},
+    "a":  {"ufcs": 24, "scp": 25},
 }
 
 
@@ -52,13 +73,74 @@ class ChargerState:
         self._lock = asyncio.Lock()
         self._cache: dict = {}
         self._cache_valid = False
+        # PIID 21 协议扩展控制值
+        self._protocol_extend: int = 0
+
+    @property
+    def protocol_extend(self) -> int:
+        """PIID 21 原始值."""
+        return self._protocol_extend
+
+    @property
+    def protocol_switches(self) -> dict:
+        """解析后的协议开关状态（对齐米家 parseProtocolExtend）."""
+        v = self._protocol_extend
+        return {
+            "c1": {
+                "pd": bool(v & (1 << 0)),
+                "pps": bool(v & (1 << 1)),
+                "ufcs": bool(v & (1 << 2)),
+            },
+            "c2": {
+                "pd": bool(v & (1 << 8)),
+                "pps": bool(v & (1 << 9)),
+                "ufcs": bool(v & (1 << 10)),
+            },
+            "c3": {
+                "scp": bool(v & (1 << 17)),
+                "ufcs": bool(v & (1 << 16)),
+            },
+            "a": {
+                "scp": bool(v & (1 << 25)),
+                "ufcs": bool(v & (1 << 24)),
+            },
+        }
+
+    @staticmethod
+    def encode_protocol_extend(switches: dict) -> int:
+        """根据开关状态编码 PIID 21 值（对齐米家 setProtocolExtend）."""
+        def _c1c2_flags(ps):
+            if not ps:
+                return 0
+            v = 0x08  # 保留位固定为 1
+            if ps.get("pd"):   v |= 0x01
+            if ps.get("pps"):  v |= 0x02
+            if ps.get("ufcs"): v |= 0x04
+            return v
+
+        c1 = _c1c2_flags(switches.get("c1"))
+        c2 = _c1c2_flags(switches.get("c2"))
+
+        def _c3a_flags(ps):
+            if not ps:
+                return 0
+            v = 0
+            if ps.get("ufcs"): v |= 0x01
+            if ps.get("scp"):  v |= 0x02
+            return v
+
+        c3 = _c3a_flags(switches.get("c3"))
+        a = _c3a_flags(switches.get("a"))
+        return (a << 24) | (c3 << 16) | (c2 << 8) | c1
 
     def _invalidate_cache(self):
         self._cache_valid = False
 
     async def update_port(self, piid: int, data: dict):
         async with self._lock:
-            self.ports[piid] = PortState(**data)
+            # 过滤掉 V2 内部调试字段（以 _ 开头），只保留 PortState 需要的字段
+            clean_data = {k: v for k, v in data.items() if not k.startswith('_')}
+            self.ports[piid] = PortState(**clean_data)
             self._invalidate_cache()
 
     async def update_settings(self, settings: dict):
@@ -75,6 +157,13 @@ class ChargerState:
     async def update_pdo_caps(self, pdo_caps: dict):
         async with self._lock:
             self.pdo_caps = pdo_caps
+            self._invalidate_cache()
+
+    async def update_protocol_extend(self, value: int):
+        """Update PIID 21 protocol extend value."""
+        async with self._lock:
+            self._protocol_extend = value
+            self.settings["21"] = value
             self._invalidate_cache()
 
     async def update_device_info(self, model: str, firmware: str):
@@ -100,6 +189,8 @@ class ChargerState:
                 "authenticated": self.authenticated,
                 "ports": {k: {**v.to_dict(), "enabled": port_enabled.get(k, False)} for k, v in self.ports.items()},
                 "settings": dict(self.settings),
+                "protocol_extend": self._protocol_extend,
+                "protocol_switches": self.protocol_switches,
                 "device_model": self.device_model,
                 "firmware_version": self.firmware_version,
             }
@@ -107,51 +198,20 @@ class ChargerState:
             return self._cache
 
 
-def decode_port(piid, pt, pdo_data=None):
-    if len(pt) < 12:
-        return None
-    b = pt[-4:]
-    in_use = b[0]
-    protocol_code = b[1]
-    current = b[2] / 10.0
-    voltage = b[3] / 10.0
-    active = bool(in_use) or (voltage > 0) or (current > 0)
-    if in_use:
-        protocol = PROTOCOL_NAMES.get(protocol_code, f"Unknown (0x{protocol_code:02X})")
-        # 如果 PDO 能力字有类型信息，使用它
-        if pdo_data and protocol_code in (0x0a, 0x07):
-            pdo_kind = pdo_data.get("kind")
-            if pdo_kind:
-                protocol = pdo_kind
-            # 否则用电压范围区分 PD Fixed 和 PPS
-            elif protocol in ("PD Fixed", "PD") and active:
-                # 检查电压是否是标准 PD Fixed 电压
-                is_standard_voltage = any(abs(voltage - v) < 0.5 for v in PD_FIXED_VOLTAGES)
-                if not is_standard_voltage and voltage > 3.0:
-                    protocol = "PD PPS"
-                elif protocol == "PD":
-                    protocol = "PD Fixed"
-        # USB-A/QC 电压范围检测
-        elif protocol_code == 0x60 and active:
-            # 0x60 包括 DCP 和 QC，用电压区分
-            if voltage > 5.5:  # 超过 5V 基本是 QC
-                protocol = "QC"
-        # C3 端口族代码 (0x80) 区分 PD 和 QC
-        elif protocol_code == 0x80 and active:
-            # 0x80 覆盖 5-15V PD/PPS，但根据电压判断
-            if voltage < 9.5:  # 低于 9.5V 可能是 QC
-                protocol = "QC"
-            else:  # 9.5V 以上是 PD
-                protocol = "PD"
-    else:
-        protocol = "idle"
-    return {
-        "voltage": round(voltage, 1),
-        "current": round(current, 1),
-        "power": round(voltage * current, 1),
-        "active": active,
-        "protocol": protocol,
-    }
+def decode_port(piid, pt, pdo_data=None, protocol_switches=None):
+    """解码端口数据，使用 V2 协议检测引擎.
+
+    Args:
+        piid: 端口 ID (1-4)
+        pt: 解密后的 MiOT 属性负载 (bytes)
+        pdo_data: PDO 能力信息 (可选, PIID 17/18)
+        protocol_switches: PIID 21 当前协议开关状态 (可选)
+
+    Returns:
+        端口数据字典: {voltage, current, power, active, protocol, ...}
+        或 None (数据无效)
+    """
+    return _decode_port_v2(piid, pt, pdo_data, protocol_switches=protocol_switches)
 
 
 def decode_pdo_caps(value, high_port, low_port):

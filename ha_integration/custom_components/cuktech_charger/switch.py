@@ -11,7 +11,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
 from .const import DOMAIN
-
 _LOGGER = logging.getLogger(__name__)
 
 SETTING_PIIDS = {
