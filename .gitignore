@@ -84,3 +84,4 @@ bump-version.sh
 sync.sh
 *.lock
 .log_level
+baksmali.jar
