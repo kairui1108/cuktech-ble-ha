@@ -138,7 +138,7 @@ class Server:
                         ("port", (port, action), None))
                     _LOGGER.info("MQTT port command: port=%s action=%s", port, action)
                 elif msg.topic == f"{server.config.mqtt.topic_prefix}/protocol":
-                    data = {k: v for k, v in payload.items() if k in ("port", "protocol", "switches", "value")}
+                    data = {k: v for k, v in payload.items() if k in ("port", "protocol", "switches", "value", "action")}
                     server.loop.call_soon_threadsafe(
                         server.ble.cmd_queue.put_nowait,
                         ("protocol", data, None))
@@ -217,7 +217,7 @@ class Server:
             body = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
-        data = {k: v for k, v in body.items() if k in ("port", "protocol", "switches", "value")}
+        data = {k: v for k, v in body.items() if k in ("port", "protocol", "switches", "value", "action")}
         if not data:
             return web.json_response({"ok": False, "error": "need port+protocol, switches, or value"}, status=400)
         result = await self.ble.send_command("protocol", data)
@@ -280,7 +280,20 @@ class Server:
         result = await self.ble.ble_spec_send_flatbuffer(fb_data)
         return web.json_response(result)
 
+    async def handle_spec_write(self, request):
+        """POST /api/spec-write — BLE Spec TLV 帧写入 (对齐 SDK IBleChannelWriter)."""
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        tlv_hex = body.get("tlv", "")
+        if not tlv_hex:
+            return web.json_response({"ok": False, "error": "missing tlv hex"}, status=400)
+        result = await self.ble.ble_spec_write(tlv_hex)
+        return web.json_response(result)
+
     async def handle_enable(self, request):
+        """POST /api/enable — 启用/禁用 BLE 连接。"""
         try:
             body = await request.json()
         except json.JSONDecodeError:
@@ -563,6 +576,7 @@ app.router.add_post("/api/blespec-test", lambda r: get_server().handle_blespec_t
 app.router.add_post("/api/spec-pb", lambda r: get_server().handle_spec_pb(r))
 app.router.add_post("/api/spec-pb2", lambda r: get_server().handle_spec_pb_framed(r))
 app.router.add_post("/api/spec-fb", lambda r: get_server().handle_spec_fb(r))
+app.router.add_post("/api/spec-write", lambda r: get_server().handle_spec_write(r))
 app.router.add_static("/static", WEB_DIR / "static", show_index=False)
 
 

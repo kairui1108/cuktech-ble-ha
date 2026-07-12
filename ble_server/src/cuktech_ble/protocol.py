@@ -198,6 +198,7 @@ PD_FIXED_VOLTAGES = {5.0, 9.0, 12.0, 15.0, 20.0}
 PDO_KIND_BY_HIGH_BYTE = {
     0x07: "PD Fixed",
     0x08: "PD PPS",
+    0x09: "PD PPS",   # 协议号 9 也是 PPS
 }
 
 

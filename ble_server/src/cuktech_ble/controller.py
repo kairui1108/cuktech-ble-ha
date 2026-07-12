@@ -63,6 +63,7 @@ class CuktechBLEController:
         self.firmware_version: str = ""
         self._miot_seq = 1
         self._session_keys = None
+        self.init_push_frames = []  # 存储认证后初始推送的原始帧
 
     def _make_notify_handler(self, name):
         """创建通知回调函数 (基于队列，避免竞态条件)。"""
@@ -674,12 +675,17 @@ class CuktechBLEController:
                                    0x00, 0x01, siid & 0xFF, piid & 0xFF,
                                    0x00, 0x01, 0x10, value & 0xFF])
             else:
-                # 32-bit value → LE 4 bytes, type 0x10
+                # 32-bit value → LE 4 bytes
+                # MiOT SET 4-byte 格式 (对齐 Mi Home 17-byte):
+                #   [0c20][seq][00][00/02][01][siid][piid 2B][prop_idx 2B:0000]
+                #   [len][type:10][value 4B]
                 b = value.to_bytes(4, 'little')
                 plaintext = bytes([0x0c, 0x20, seq, 0x00,
-                                   0x00, 0x01, siid & 0xFF, piid & 0xFF,
-                                   0x00, 0x04, 0x10, b[0], b[1], b[2], b[3]])
-            _LOGGER.debug("SET siid=%d piid=%d value=%d (0x%X)", siid, piid, value, value)
+                                   0x00, 0x01, siid & 0xFF,
+                                   piid & 0xFF, (piid >> 8) & 0xFF,
+                                   0x00, 0x00,  # property_index
+                                   0x04, 0x10, b[0], b[1], b[2], b[3]])
+            _LOGGER.debug("SET siid=%d piid=%d value=%d (0x%X) len=%d", siid, piid, value, value, len(plaintext))
         else:
             # GET property: opcode=0x02
             plaintext = bytes([0x0c, 0x20, seq, 0x00,
@@ -695,6 +701,14 @@ class CuktechBLEController:
             return await self._recv_set_response(siid, piid, timeout=8.0)
         else:
             return await self._recv_get_response(siid, piid, timeout=8.0)
+
+    async def send_spec_write(self, tlv_data: bytes) -> Optional[bytes]:
+        """通过 MiOT 加密通道发送原始 TLV/FlatBuffers 数据并获取响应.
+
+        兼容 /api/spec-write 接口; 实际使用已验证的 _send_encrypted 通道
+        (BLE Spec 0000001c 通道在此设备上未复现米家行为)。
+        """
+        return await self.send_spec_flatbuffer_command(tlv_data)
 
     async def send_spec_flatbuffer_command(self, fb_data: bytes) -> Optional[bytes]:
         """通过 MiOT 加密通道发送 BLE Spec FlatBuffers 命令.

@@ -147,6 +147,7 @@
         let lastSettings = {};
         let powerChart = null, modalChart = null, currentModalPort = null, latestPorts = {};
         let bleConnected = false;
+        let protocolSwitches = {};
         const portHistory = {
             1: { voltage: [], current: [], power: [], protocol: [] },
             2: { voltage: [], current: [], power: [], protocol: [] },
@@ -250,14 +251,79 @@
 
         function openModal(portId) {
             currentModalPort = portId;
+            const portKey = PORT_KEY_MAP[portId];
             document.getElementById('modalTitle').textContent = `${PORT_MAP[portId]} 端口详情`;
-            document.getElementById('modalTitle').style.color = `var(--port-${PORT_KEY_MAP[portId]})`;
+            document.getElementById('modalTitle').style.color = `var(--port-${portKey})`;
             initModalChart();
             updateModalChart();
+            renderProtoSwitches(portKey);
             document.getElementById('portModal').classList.add('show');
         }
 
         function closeModal() { document.getElementById('portModal').classList.remove('show'); currentModalPort = null; }
+
+        const PROTOCOL_DEFS = {
+            c1: [{ key: 'pd', name: 'PD' }, { key: 'pps', name: 'PPS' }, { key: 'ufcs', name: 'UFCS' }],
+            c2: [{ key: 'pd', name: 'PD' }, { key: 'pps', name: 'PPS' }, { key: 'ufcs', name: 'UFCS' }],
+            c3: [{ key: 'ufcs', name: 'UFCS' }, { key: 'scp', name: 'SCP' }],
+            a:  [{ key: 'ufcs', name: 'UFCS' }, { key: 'scp', name: 'SCP' }]
+        };
+        const PROTOCOL_PENDING = {};
+
+        function renderProtoSwitches(portKey) {
+            const grid = document.getElementById('modalProtoSwitches');
+            if (!grid) return;
+            const defs = PROTOCOL_DEFS[portKey] || [];
+            const sw = protocolSwitches[portKey] || {};
+            let html = '';
+            defs.forEach(p => {
+                const on = sw[p.key] || false;
+                html += `
+                    <div class="proto-switch-item">
+                        <span class="proto-switch-label">${p.name}</span>
+                        <label class="proto-switch-toggle" id="proto-toggle-${portKey}-${p.key}">
+                            <input type="checkbox" ${on ? 'checked' : ''}
+                                   onchange="toggleProtocol('${portKey}', '${p.key}', this.checked)">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>`;
+            });
+            grid.innerHTML = html;
+        }
+
+        async function toggleProtocol(port, proto, on) {
+            const toggle = document.getElementById(`proto-toggle-${port}-${proto}`);
+            if (toggle) toggle.classList.add('pending');
+            try {
+                const res = await fetch(`${API_BASE}/api/protocol`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ port, protocol: proto, action: on ? 'on' : 'off' })
+                });
+                const result = await res.json();
+                if (result.ok) {
+                    // Update local state immediately for responsive UI
+                    if (!protocolSwitches[port]) protocolSwitches[port] = {};
+                    protocolSwitches[port][proto] = on;
+                    // Re-render to sync with potentially updated server state
+                    setTimeout(() => fetchStatus(), 500);
+                } else {
+                    // Revert on failure
+                    if (toggle) {
+                        const input = toggle.querySelector('input');
+                        if (input) input.checked = !on;
+                    }
+                }
+            } catch (e) {
+                console.error('Protocol toggle error:', e);
+                if (toggle) {
+                    const input = toggle.querySelector('input');
+                    if (input) input.checked = !on;
+                }
+            } finally {
+                if (toggle) toggle.classList.remove('pending');
+            }
+        }
 
         function updateModalChart() {
             if (!currentModalPort || !modalChart) return;
@@ -293,6 +359,7 @@
         function updateUI(data) {
             bleConnected = data.connected && data.authenticated;
             latestPorts = data.ports || {};
+            protocolSwitches = data.protocol_switches || {};
             updateStatusBadge(data.connected, data.authenticated, data.mqtt_connected);
             updateBleButton();
             renderPorts(data.ports);

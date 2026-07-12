@@ -139,6 +139,22 @@
         .countdown-toggle-btn.set:hover { background: rgba(var(--accent-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.2); }
         .countdown-toggle-btn.clear { background: rgba(var(--danger-rgb), 0.12); color: var(--danger); border: 1px solid rgba(var(--danger-rgb), 0.3); }
         .countdown-toggle-btn.clear:hover { background: rgba(var(--danger-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--danger-rgb), 0.15); }
+        .proto-switch-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--card-border); }
+        .proto-switch-title { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+        .proto-switch-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .proto-switch-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: rgba(255, 255, 255, 0.03); border-radius: 10px; border: 1px solid transparent; transition: all 0.2s; }
+        .proto-switch-item:hover { border-color: rgba(var(--accent-rgb), 0.2); background: rgba(255, 255, 255, 0.05); }
+        .proto-switch-item.disabled { opacity: 0.4; pointer-events: none; }
+        .proto-switch-label { font-size: 13px; font-weight: 500; }
+        .proto-switch-toggle { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+        .proto-switch-toggle input { opacity: 0; width: 0; height: 0; }
+        .proto-switch-toggle .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255, 255, 255, 0.12); border-radius: 22px; transition: 0.3s; }
+        .proto-switch-toggle .toggle-slider:before { content: ""; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.3s; }
+        .proto-switch-toggle input:checked + .toggle-slider { background: var(--accent); box-shadow: 0 0 12px rgba(var(--accent-rgb), 0.4); }
+        .proto-switch-toggle input:checked + .toggle-slider:before { transform: translateX(18px); }
+        .proto-switch-toggle.pending { pointer-events: none; }
+        .proto-switch-toggle.pending .toggle-slider { animation: protoPending 0.8s infinite alternate; }
+        @keyframes protoPending { from { opacity: 0.6; } to { opacity: 1; } }
         @media (max-width: 600px) {
             .charger-layout { grid-template-columns: 1fr; }
             .charger-image { max-height: 150px; }
@@ -277,6 +293,14 @@
                 <div class="power-item"><div class="power-value" id="modalProtocol">idle</div><div class="power-label">实时充电协议</div></div>
             </div>
             <div class="modal-chart-container"><canvas id="modalChart"></canvas></div>
+            <div class="proto-switch-section">
+                <div class="proto-switch-title">协议开关 <span style="font-size:10px;text-transform:none;letter-spacing:0;margin-left:4px;">(C1已可用，C2/C3/A请用米家App操作)</span></div>
+                <div class="proto-switch-grid" id="modalProtoSwitches"></div>
+                <div style="margin-top:12px;padding:10px 14px;background:rgba(var(--warning-rgb),0.08);border:1px solid rgba(var(--warning-rgb),0.2);border-radius:8px;font-size:11px;color:var(--warning);line-height:1.6">
+                    ⚠ <b>已知问题：</b>C1 协议开关可能间接影响 C2 端口协议（需手动通过米家 App 恢复）。C2/C3/A 的 PD/PPS 开关暂不可用，请使用米家 App 操作。<br>
+                    详见 <a href="https://github.com/kairui1108/cuktech-ble-server/blob/main/docs/develop-notes.md" target="_blank" style="color:var(--accent)">开发文档</a>
+                </div>
+            </div>
         </div>
     </div>
 

@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.jar
 
 # Virtual Environment
 .venv/
@@ -49,6 +50,13 @@ cuktech-ble-server/.venv/
 cuktech-ble-server/__pycache__/
 cuktech-ble-server/src/cuktech_ble/__pycache__/
 ble_server/data/
+docs/frida
+docs/hci_log
+docs/frida
+docs/dex
+docs/smali_out
+docs/plugin_analysis
+
 
 # Environment variables
 .env

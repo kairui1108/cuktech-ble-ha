@@ -37,14 +37,22 @@ class TestDecodePort:
         assert "PD" in result["protocol"]
 
     def test_active_qc_port(self):
-        """Test decoding an active QC port."""
-        # Last 4 bytes: in_use=1, protocol=0x70 (QC), current=15 (1.5A), voltage=90 (9.0V)
+        """Test decoding an active QC port (C3 supports QC)."""
+        # C3 port, code=0x70 (QC), current=15 (1.5A), voltage=90 (9.0V)
         pt = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x70, 15, 90])
-        result = decode_port(2, pt)
+        result = decode_port(3, pt)
         assert result is not None
         assert result["voltage"] == 9.0
         assert result["current"] == 1.5
         assert result["protocol"] == "QC"
+
+    def test_c1c2_code_70_pd_voltage(self):
+        """C1/C2 code=0x70 at PD standard voltage should be detected as PD."""
+        # C2 port, code=0x70, 9.0V → matches PD fixed voltage → PD
+        pt = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x70, 15, 90])
+        result = decode_port(2, pt)
+        assert result is not None
+        assert result["protocol"] == "PD"
 
     def test_active_usba_port(self):
         """Test decoding an active USB-A port."""

@@ -75,10 +75,12 @@ class ChargerState:
         self._cache_valid = False
         # PIID 21 协议扩展控制值
         self._protocol_extend: int = 0
+        # 用户期望的协议开关状态 (不受设备跨口联动污染, 用于编码 SET)
+        self._desired_switches: dict = {}
 
     @property
     def protocol_extend(self) -> int:
-        """PIID 21 原始值."""
+        """PIID 21 原始值 (设备回读)."""
         return self._protocol_extend
 
     @property
@@ -106,16 +108,44 @@ class ChargerState:
             },
         }
 
+    @property
+    def desired_switches(self) -> dict:
+        """用户期望的协议开关状态 (首次从设备同步, 后续由用户操作更新).
+
+        与 protocol_switches 的区别:
+          - protocol_switches: 设备回读的真实状态 (会被跨口联动清零)
+          - desired_switches: 用户期望的状态 (用于编码 SET, 不受设备副作用污染)
+        """
+        if not self._desired_switches:
+            # 首次初始化: 从设备当前状态同步
+            self._desired_switches = dict(self.protocol_switches)
+        return self._desired_switches
+
+    def update_desired_switch(self, port: str, proto: str, on: bool):
+        """更新用户期望的协议开关."""
+        switches = self.desired_switches  # 触发首次同步
+        if port not in switches:
+            switches[port] = {}
+        switches[port][proto] = on
+
     @staticmethod
     def encode_protocol_extend(switches: dict) -> int:
-        """根据开关状态编码 PIID 21 值（对齐米家 setProtocolExtend）."""
+        """根据开关状态编码 PIID 21 值（对齐米家 setProtocolExtend）.
+
+        硬件约束:
+          - PPS 依赖 PD: PD 关闭 → PPS 不可用 (PD 3.0 特性)
+          - UFCS 依赖 PD: PD 关闭 → UFCS 不可用 (该端口无独立 Bypass 通路)
+          - C3/A 口: UFCS 依赖 PD?
+        """
         def _c1c2_flags(ps):
             if not ps:
                 return 0
             v = 0x08  # 保留位固定为 1
-            if ps.get("pd"):   v |= 0x01
-            if ps.get("pps"):  v |= 0x02
-            if ps.get("ufcs"): v |= 0x04
+            if ps.get("pd"):
+                v |= 0x01
+                if ps.get("pps"):  v |= 0x02
+                if ps.get("ufcs"): v |= 0x04
+            # PD 关闭 → 强制清零 PPS / UFCS
             return v
 
         c1 = _c1c2_flags(switches.get("c1"))
@@ -198,19 +228,20 @@ class ChargerState:
             return self._cache
 
 
-def decode_port(piid, pt, pdo_data=None):
+def decode_port(piid, pt, pdo_data=None, protocol_switches=None):
     """解码端口数据，使用 V2 协议检测引擎.
 
     Args:
         piid: 端口 ID (1-4)
         pt: 解密后的 MiOT 属性负载 (bytes)
-        pdo_data: PDO 能力信息 (可选)
+        pdo_data: PDO 能力信息 (可选, PIID 17/18)
+        protocol_switches: PIID 21 当前协议开关状态 (可选)
 
     Returns:
         端口数据字典: {voltage, current, power, active, protocol, ...}
         或 None (数据无效)
     """
-    return _decode_port_v2(piid, pt, pdo_data)
+    return _decode_port_v2(piid, pt, pdo_data, protocol_switches=protocol_switches)
 
 
 def decode_pdo_caps(value, high_port, low_port):

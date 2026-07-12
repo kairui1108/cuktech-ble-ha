@@ -14,6 +14,7 @@ except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
     from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION, AuthConnectionError
     from cuktech_ble.protocol import READABLE_SETTINGS_PIIDS
+    from state_protocol_v2 import get_mijia_protocol_name
 
 from state import ChargerState, PORT_NAMES, PORT_BITS, PORT_DEFAULT, decode_port, decode_pdo_caps
 
@@ -192,6 +193,27 @@ class BLEManager:
             "firmware_version": self.ctrl.firmware_version,
         }, retain=True)
 
+        # 处理认证后设备推送的初始端口数据 (含空闲端口的协议号)
+        # 先从 blespec (00000005) 和 cmd_recv 队列读取
+        all_frames = list(self.ctrl.init_push_frames)
+        
+        # 也读取 blespec 队列中的残留数据
+        blespec_q = self.ctrl._notify_queues.get("blespec")
+        if blespec_q:
+            while True:
+                try:
+                    frame = blespec_q.get_nowait()
+                    all_frames.append(frame)
+                    _LOGGER.info("Blespec queue frame: %s", frame.hex() if isinstance(frame, bytes) else str(frame)[:40])
+                except asyncio.QueueEmpty:
+                    break
+        
+        _LOGGER.info("Processing %d init push frames for port data (cmd_recv=%d blespec=%d)",
+                     len(all_frames), len(self.ctrl.init_push_frames),
+                     len(all_frames) - len(self.ctrl.init_push_frames))
+        for frame in all_frames:
+            await self._try_process_inline_frame(frame)
+        
         await self._read_initial_settings()
         await asyncio.sleep(2)
 
@@ -218,7 +240,7 @@ class BLEManager:
             for service in client.services:
                 for char in service.characteristics:
                     short = char.uuid.split('-')[0] if '-' in char.uuid else char.uuid
-                    if short in ("0000001c", "00000019", "0000001a"):
+                    if short in ("0000001c", "00000019", "0000001a", "00000005"):
                         try:
                             _LOGGER.info("BLE Spec test write to %s: %s", short, payload.hex())
                             await client.write_gatt_char(char, payload, response=False)
@@ -303,6 +325,20 @@ class BLEManager:
         try:
             _LOGGER.info("Spec FB: sending %d bytes via MiOT encrypt: %s", len(fb_data), fb_data.hex())
             resp = await self.ctrl.send_spec_flatbuffer_command(fb_data)
+            if resp:
+                return {"ok": True, "response": resp.hex(), "len": len(resp)}
+            return {"ok": False, "error": "no response"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    async def ble_spec_write(self, tlv_hex: str):
+        """通过 BLE Spec 通道写入 TLV 帧 (对齐 SDK IBleChannelWriter)."""
+        if not self.ctrl or not self.ctrl.client:
+            return {"ok": False, "error": "not connected"}
+        try:
+            tlv_data = bytes.fromhex(tlv_hex)
+            _LOGGER.info("Spec write: sending TLV %s (%d bytes)", tlv_hex, len(tlv_data))
+            resp = await self.ctrl.send_spec_write(tlv_data)
             if resp:
                 return {"ok": True, "response": resp.hex(), "len": len(resp)}
             return {"ok": False, "error": "no response"}
@@ -409,20 +445,38 @@ class BLEManager:
             if not self.ctrl:
                 break
 
-            # 同时监听 MiOT (cmd_recv) 通知
+            # 同时监听 MiOT (cmd_recv) 和 BLE Spec (blespec) 通知
             try:
-                data = await asyncio.wait_for(
-                    self.ctrl.wait_notify("cmd_recv"), timeout=2.0)
+                tasks = [
+                    asyncio.create_task(self.ctrl.wait_notify("cmd_recv")),
+                    asyncio.create_task(self.ctrl.wait_notify("blespec")),
+                ]
+                done, pending = await asyncio.wait(tasks, timeout=2.0, return_when=asyncio.FIRST_COMPLETED)
+                for t in pending:
+                    t.cancel()
+                    
                 if not self.ctrl:
                     break
-                last_notify = time.time()
-                if data[2] == 0x02 and len(data) >= 4:
-                                 self.ctrl is not None, self.ctrl and self.ctrl.client is not None)
-                    await self._handle_inline_data(data)
-                elif data[2] == 0x00 and len(data) >= 6:
-                    await self._handle_multiframe(data)
-                continue
-            except asyncio.TimeoutError:
+                
+                if done:
+                    for task in done:
+                        data = task.result()
+                        if data is None:
+                            continue
+                        last_notify = time.time()
+                        if len(data) >= 4 and data[2] in (0x00, 0x02):
+                            # MiOT 格式
+                            if data[2] == 0x02:
+                                await self._handle_inline_data(data)
+                            elif data[2] == 0x00 and len(data) >= 6:
+                                await self._handle_multiframe(data)
+                        else:
+                            # blespec 通道原始 BLE Spec 数据
+                            _LOGGER.info("Blespec raw: len=%d %s", len(data),
+                                         data.hex()[:60] if isinstance(data, bytes) else str(data)[:60])
+                    continue
+                
+                # Timeout: 无数据
                 now = time.time()
                 if now - last_refresh > self.config.server.settings_refresh_interval:
                     await self._refresh_settings()
@@ -454,15 +508,40 @@ class BLEManager:
         fail_count = 0
         for piid in READABLE_SETTINGS_PIIDS:
             try:
-                result = await self.ctrl.send_miot_command(2, piid)
-                if result and "value" in result:
-                    settings[str(piid)] = result["value"]
-                    if piid == 17:
-                        pdo_caps["c1c2"] = decode_pdo_caps(result["value"], "c1", "c2")
-                    elif piid == 18:
-                        pdo_caps["c3a"] = decode_pdo_caps(result["value"], "c3", "a")
-                    elif piid == 21:
-                        await self.state.update_protocol_extend(result["value"])
+                if piid == 21:
+                    result = await self.ctrl.send_miot_command(2, piid)
+                    if result and result.get("value") is not None:
+                        low_byte = result["value"] & 0xFF
+                        if update_existing and self.state.protocol_extend > 0xFF:
+                            # 刷新时: 只更新低字节，保留本地已缓存的 C2/C3/A 位
+                            cached_high = self.state.protocol_extend & 0xFFFFFF00
+                            full_val = cached_high | low_byte
+                            _LOGGER.debug("PIID21 refresh: low=0x%02X, cached_high=0x%06X → 0x%08X",
+                                         low_byte, cached_high >> 8, full_val)
+                        else:
+                            # 首次读取: 设备 GET 只返回 C1 字节，C2/C3/A 默认全开
+                            c1_flags = low_byte & 0xFF
+                            c2_flags = 0x0F  # 默认全开（不能用c1_flags推测）
+                            c3_flags = 0x03
+                            a_flags = 0x03
+                            full_val = (a_flags << 24) | (c3_flags << 16) | (c2_flags << 8) | c1_flags
+                            _LOGGER.info("PIID21: low=0x%02X → full=0x%08X (C1=0x%02X C2=0x%02X C3=%d A=%d)",
+                                         low_byte, full_val, c1_flags, c2_flags, c3_flags, a_flags)
+                        settings[str(piid)] = full_val
+                        await self.state.update_protocol_extend(full_val)
+                        # 初始化 desired_switches (后续用户操作从这里出发)
+                        self.state._desired_switches = dict(self.state.protocol_switches)
+                    else:
+                        fail_count += 1
+                        _LOGGER.debug("PIID21: no response (value=%s)", result.get("value") if result else None)
+                else:
+                    result = await self.ctrl.send_miot_command(2, piid)
+                    if result and "value" in result:
+                        settings[str(piid)] = result["value"]
+                        if piid == 17:
+                            pdo_caps["c1c2"] = decode_pdo_caps(result["value"], "c1", "c2")
+                        elif piid == 18:
+                            pdo_caps["c3a"] = decode_pdo_caps(result["value"], "c3", "a")
             except Exception as e:
                 fail_count += 1
                 _LOGGER.debug("Failed to read PIID %d: %s", piid, e)
@@ -548,40 +627,97 @@ class BLEManager:
     async def _handle_protocol_extend_command(self, cmd_data, cmd_future):
         """处理协议开关命令 (PIID 21, 对齐米家 setProtocolExtend).
         
-        cmd_data: {"port": "c1", "protocol": "pd"}  toggle 指定协议
+        cmd_data: {"port": "c1", "protocol": "pd"}   toggle 指定协议
+                  {"port": "c2", "protocol": "pd", "action": "on"}  显式开关
                   {"switches": {port: {pd: bool,...}}}  批量设置
                   {"value": int}  直接写原始值
+        
+        注意: BLE Spec TLV GET 设备不支持，状态通过本地缓存维护。
+              每次写入后更新缓存，避免读取不完整导致 toggle 方向错误。
         """
         try:
             if "value" in cmd_data:
                 new_val = cmd_data["value"]
+                # 更新 desired 缓存 (直接写值模式)
+                v = new_val
+                self.state._desired_switches = {
+                    "c1": {"pd": bool(v & 1), "pps": bool(v & 2), "ufcs": bool(v & 4)},
+                    "c2": {"pd": bool(v & 256), "pps": bool(v & 512), "ufcs": bool(v & 1024)},
+                    "c3": {"ufcs": bool(v & 65536), "scp": bool(v & 131072)},
+                    "a": {"ufcs": bool(v & 16777216), "scp": bool(v & 33554432)},
+                }
             elif "switches" in cmd_data:
                 new_val = ChargerState.encode_protocol_extend(cmd_data["switches"])
             elif "port" in cmd_data and "protocol" in cmd_data:
-                cur = self.state.protocol_switches
                 port = cmd_data["port"]
                 proto = cmd_data["protocol"]
-                if port in cur and proto in cur[port]:
-                    cur[port][proto] = not cur[port][proto]
-                new_val = ChargerState.encode_protocol_extend(cur)
+                action = cmd_data.get("action", "toggle")
+                dw = self.state.protocol_switches
+                if port not in dw or proto not in dw.get(port, {}):
+                    raise ValueError(f"Unknown port/protocol: {port}/{proto}")
+                cur_state = dw[port][proto]
+                _LOGGER.info("Protocol switch: %s.%s was=%s -> %s",
+                             port, proto, cur_state, not cur_state if action == "toggle" else (action == "on"))
+                # 设备当前状态为基准，只翻转目标端口的目标协议
+                def _c1c2_f(p):
+                    pd = dw[p]["pd"]; pps = dw[p]["pps"]; ufcs = dw[p]["ufcs"]
+                    if p == port and proto == "pd":   pd = not cur_state if action == "toggle" else (action == "on")
+                    if p == port and proto == "pps":  pps = not cur_state if action == "toggle" else (action == "on")
+                    if p == port and proto == "ufcs": ufcs = not cur_state if action == "toggle" else (action == "on")
+                    return 0x08 | (pd<<0) | (pps<<1) | (ufcs<<2)
+                def _c_f(p):
+                    ufcs = dw[p]["ufcs"]; scp = dw[p]["scp"]
+                    if p == port and proto == "ufcs": ufcs = not cur_state if action == "toggle" else (action == "on")
+                    if p == port and proto == "scp":  scp = not cur_state if action == "toggle" else (action == "on")
+                    return (ufcs<<0) | (scp<<1)
+                new_val = (_c_f("a")<<24) | (_c_f("c3")<<16) | (_c1c2_f("c2")<<8) | _c1c2_f("c1")
+                _LOGGER.info("Protocol %s: val=0x%08X", port, new_val)
             else:
                 raise ValueError("Invalid protocol_extend command")
 
-            # BLE Spec TLV 格式发送 PIID21 (替代 MiOT 4-byte SET)
-            # 帧: [0x2000|prop_size:2B LE][msg_id:2B LE][count:1B][siid:1B][piid:2B LE][len:2B LE][value:4B LE]
-            prop = struct.pack('<B', 2) + struct.pack('<H', 21) + struct.pack('<H', 4) + struct.pack('<I', new_val)
-            tlv = struct.pack('<H', len(prop) | 0x2000) + struct.pack('<H', 0) + struct.pack('<B', 1) + prop
-            _LOGGER.info("Protocol extend via BLE Spec TLV: value=0x%X tlv=%s", new_val, tlv.hex())
-            resp = await self.ctrl.send_spec_flatbuffer_command(tlv)
-            if resp:
-                _LOGGER.info("Protocol extend response: %s", resp.hex())
+            old_val = self.state.protocol_extend
+            _LOGGER.info("Protocol extend: old=0x%08X new=0x%08X", old_val, new_val)
             
-            await self.state.update_protocol_extend(new_val)
+            # Step 1: PIID21 SET (协议开关)
+            result = await self.ctrl.send_miot_command(2, 21, value=new_val)
+            if result:
+                _LOGGER.info("Protocol extend MIOT SET: %s", result)
+
+            # Step 2: 读取设备返回的真实 PIID21 值
+            # (设备固件的智能功率分配可能修改其他端口的协议状态)
+            # 注意: 设备 GET 常只返回低 1 字节, 高字节需从发送值保留
+            actual_new = new_val
+            await asyncio.sleep(0.5)
+            result_piid21 = await self.ctrl.send_miot_command(2, 21)
+            if result_piid21 and result_piid21.get("value") is not None:
+                raw = result_piid21["value"]
+                if raw <= 0xFF:
+                    # 设备只返回低字节；C1用1-byte SET时new_val就是低字节，
+                    # 需用old_val保留高频字节
+                    if new_val <= 0xFF:
+                        actual_new = (old_val & 0xFFFFFF00) | raw
+                    else:
+                        actual_new = (new_val & 0xFFFFFF00) | raw
+                else:
+                    actual_new = raw
+                _LOGGER.info("Protocol extend: device returned 0x%08X (sent 0x%08X → using 0x%08X)",
+                             raw, new_val, actual_new)
+            else:
+                _LOGGER.info("Protocol extend: device no response, using sent value 0x%08X", new_val)
+
+            # Step 3: 不做端口 reset — 设备固件在 PIID21 SET 后自行处理 PD 重协商。
+            # reset(PIID16 off/on) 会触发全端口功率重协商，导致 C2 等活跃端口电压跌落。
+            
+            # 持久化设备实际状态 (显示用) 和用户期望状态 (下次编码用)
+            await self.state.update_protocol_extend(actual_new)
+            if "value" not in cmd_data:
+                pass  # desired_switches updated in protocol branch above
             _invalidate()
             self._publish_settings(retain=True)
             if cmd_future and not cmd_future.done():
                 cmd_future.set_result({
-                    "ok": True, "value": new_val,
+                    "ok": True, "value": actual_new,
+                    "previous": old_val,
                     "switches": self.state.protocol_switches
                 })
         except Exception as e:
@@ -624,36 +760,16 @@ class BLEManager:
         b4 = pt[4]
         piid = pt[7] if len(pt) > 7 else -1
         
-        # BLE Spec 0f 20 frames: 解析为端口数据 (设备已切换BLE Spec模式)
-        if pt[0:2] == b'\x0f\x20':
-            if b4 == 0x04 and piid in PORT_NAMES:
-                pdo_data = None
-                if piid in (1, 2):
-                    pdo_data = self.state.pdo_caps.get("c1c2", {}).get(PORT_NAMES[piid])
-                elif piid in (3, 4):
-                    pdo_data = self.state.pdo_caps.get("c3a", {}).get(PORT_NAMES[piid])
-                port_info = decode_port(piid, pt, pdo_data)
-                if port_info:
-                    old = self.state.ports.get(piid)
-                    await self.state.update_port(piid, port_info)
-                    if old is None or old.to_dict() != port_info:
-                        _invalidate()
-                        self._publish_port(PORT_NAMES[piid], port_info)
-                        if self._history and port_info.get("active", False):
-                            loop = asyncio.get_running_loop()
-                            task = loop.run_in_executor(None, self._history.record_port_data, piid, port_info)
-                            task.add_done_callback(
-                                lambda t: _LOGGER.error("History write failed: %s", t.exception()) if t.exception() else None)
-            return
-        
-        
+        # 统一使用 V2 启发式检测 (0f 20 与 0c 20 帧的 code byte 含义相同，
+        # 不是 BLE Spec 标准协议号 1-10；直接查表会导致 code=4 → "AFC" 误判)
         if b4 == 0x04 and piid in PORT_NAMES:
             pdo_data = None
             if piid in (1, 2):
                 pdo_data = self.state.pdo_caps.get("c1c2", {}).get(PORT_NAMES[piid])
             elif piid in (3, 4):
                 pdo_data = self.state.pdo_caps.get("c3a", {}).get(PORT_NAMES[piid])
-            port_info = decode_port(piid, pt, pdo_data)
+            port_info = decode_port(piid, pt, pdo_data,
+                                    protocol_switches=self.state.protocol_switches)
             if port_info:
                 old = self.state.ports.get(piid)
                 await self.state.update_port(piid, port_info)
