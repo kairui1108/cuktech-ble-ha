@@ -6,6 +6,7 @@ import logging
 import secrets
 import struct
 import time
+from typing import Optional
 
 try:
     from bleak import BleakClient
@@ -30,7 +31,7 @@ from .protocol import (
     HANDLE_DEVICE_INFO, HANDLE_AUTH_CTRL, HANDLE_AUTH_DATA,
     HANDLE_CMD_SEND, HANDLE_CMD_RECV, HANDLE_FW_VERSION,
     CHAR_DEVICE_INFO, CHAR_AUTH_CTRL, CHAR_AUTH_DATA,
-    CHAR_CMD_SEND, CHAR_CMD_RECV, CHAR_FW_VERSION,
+    CHAR_CMD_SEND, CHAR_CMD_RECV, CHAR_FW_VERSION, CHAR_BLE_SPEC,
     SIID_CHARGER, PIID_NAMES, PIID_DISPLAY, PORT_BITS,
     PROTOCOL_NAMES, PD_FIXED_VOLTAGES, PDO_KIND_BY_HIGH_BYTE,
     mac_str_to_bytes, require_runtime_dependencies,
@@ -158,6 +159,7 @@ class CuktechBLEController:
         for char, name in [
             (CHAR_AUTH_CTRL, "auth_ctrl"), (CHAR_AUTH_DATA, "auth_data"),
             (CHAR_CMD_SEND, "cmd_send"), (CHAR_CMD_RECV, "cmd_recv"),
+            (CHAR_BLE_SPEC, "blespec"),   # BLE Spec 通知 (00000005)
         ]:
             try:
                 await self.client.start_notify(char, self._make_notify_handler(name))
@@ -703,39 +705,88 @@ class CuktechBLEController:
         Returns:
             响应数据 bytes，或 None
         """
+        return await self.send_spec_flatbuffer(pb_data)
+
+    async def send_spec_flatbuffer(self, fb_data: bytes) -> Optional[bytes]:
+        """通过 BLE Spec 通道 (0000001c) 发送 FlatBuffers 消息。
+        
+        使用帧协议: header → RCV_RDY → encrypted_data → RCV_OK
+        响应在 cmd_recv 通知中，帧头 0x0f 0x20 (vs MiOT 的 0x0c 0x20)。
+        
+        Args:
+            fb_data: FlatBuffers 编码的消息
+            
+        Returns:
+            解密后的响应数据 bytes，或 None
+        """
         if not self.authenticated:
-            _LOGGER.warning("Not authenticated")
+            _LOGGER.warning("Spec: not authenticated")
             return None
+        
+        if not self.client:
+            _LOGGER.warning("Spec: not connected")
+            return None
+        
         await self._drain_pending_pushes()
         
-        if not await self._send_encrypted(pb_data):
+        client = self.client
+        
+        # 找到 0000001c 特征
+        target_char = None
+        for service in client.services:
+            for char in service.characteristics:
+                if "0000001c" in char.uuid:
+                    target_char = char
+                    break
+        if not target_char:
+            _LOGGER.warning("Spec: 0000001c not found")
             return None
         
-        # 接收响应
-        deadline = asyncio.get_running_loop().time() + 8.0
-        while True:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                return None
-            data = await self.wait_notify("cmd_recv", timeout=min(remaining, 3.0))
-            if not data or len(data) < 4:
-                continue
-            if data[2] == 0x02 and len(data) >= 4:
-                encrypted_payload = data[4:]
-                await self.client.write_gatt_char(
-                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
-                pt = self.decrypt(encrypted_payload)
-                if pt and len(pt) >= 4 and pt[4] == 0x04:
-                    _LOGGER.info("Spec pb response: %s", pt.hex())
-                    return pt
-            elif data[2] == 0x00 and len(data) >= 6:
-                frame_count = data[4] + 0x100 * data[5]
-                await self.client.write_gatt_char(
-                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
-                for _ in range(frame_count):
-                    await self.wait_notify("cmd_recv", timeout=3.0)
-                await self.client.write_gatt_char(
-                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
+        try:
+            # 加密 payload
+            encrypted = self._encrypt(fb_data)
+            _LOGGER.debug("Spec: sending %d bytes (encrypted: %d)", len(fb_data), len(encrypted))
+            
+            # 尝试方式1: 直接发送加密帧 (像 CMD_SEND 那样)
+            frame = bytes([0x00, 0x00, 0x02, 0x00]) + encrypted
+            await client.write_gatt_char(target_char, frame, response=False)
+            _LOGGER.debug("Spec: wrote direct encrypted frame to 0000001c")
+            
+            # 接收响应
+            deadline = asyncio.get_running_loop().time() + 10.0
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
+                data = await self.wait_notify("cmd_recv", timeout=min(remaining, 3.0))
+                if not data or len(data) < 4:
+                    continue
+                if data[2] == 0x02:
+                    pt = self.decrypt(data[4:])
+                    if pt and len(pt) >= 2:
+                        if pt[0:2] == b'\x0f\x20':
+                            # BLE Spec 响应
+                            await client.write_gatt_char(
+                                CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
+                            _LOGGER.info("Spec: response: %s", pt.hex())
+                            return pt
+                        elif pt[0:2] == b'\x0c\x20':
+                            # MiOT 响应 (可能是 push)
+                            _LOGGER.debug("Spec: miot push: %s", pt.hex())
+                elif data[2] == 0x00 and len(data) >= 6:
+                    # 多帧
+                    frame_count = data[4] + 0x100 * data[5]
+                    await client.write_gatt_char(
+                        CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
+                    for _ in range(frame_count):
+                        await self.wait_notify("cmd_recv", timeout=3.0)
+                    await client.write_gatt_char(
+                        CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
+        except Exception as e:
+            _LOGGER.error("Spec: flatbuffer send error: %s", e)
+            return None
+        
+        return None
 
     async def _recv_set_response(self, siid, piid, timeout=8.0):
         """接收 SET 命令的响应: 期望 ACK (B4=0x01) + Result (B4=0x04)。"""

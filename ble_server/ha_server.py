@@ -266,6 +266,20 @@ class Server:
         result = await self.ble.ble_spec_protobuf_framed(pb_data)
         return web.json_response(result)
 
+    async def handle_spec_fb(self, request):
+        """POST /api/spec-fb — BLE Spec FlatBuffers 发送."""
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        hex_str = body.get("payload", "")
+        try:
+            fb_data = bytes.fromhex(hex_str)
+        except ValueError:
+            return web.json_response({"ok": False, "error": "invalid hex"}, status=400)
+        result = await self.ble.ble_spec_send_flatbuffer(fb_data)
+        return web.json_response(result)
+
     async def handle_enable(self, request):
         try:
             body = await request.json()
@@ -548,6 +562,7 @@ app.router.add_get("/api/export/{port}", lambda r: get_server().handle_export(r)
 app.router.add_post("/api/blespec-test", lambda r: get_server().handle_blespec_test(r))
 app.router.add_post("/api/spec-pb", lambda r: get_server().handle_spec_pb(r))
 app.router.add_post("/api/spec-pb2", lambda r: get_server().handle_spec_pb_framed(r))
+app.router.add_post("/api/spec-fb", lambda r: get_server().handle_spec_fb(r))
 app.router.add_static("/static", WEB_DIR / "static", show_index=False)
 
 

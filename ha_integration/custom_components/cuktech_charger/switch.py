@@ -16,19 +16,12 @@ from .const import TOPIC_PROTOCOL as _  # noqa: F401
 _LOGGER = logging.getLogger(__name__)
 
 # 协议开关定义 (对齐米家 PIID 21 protocol_ctl_extend)
-# bit 定义: c1_flags={pd:0, pps:1, ufcs:2}, c2={pd:8, pps:9, ufcs:10}
-#            c3_flags={ufcs:16, scp:17}, a={ufcs:24, scp:25}
+# MiOT 模式限制: 仅支持 1 字节读写 → C1 端口可用, C2/C3/A 需通过米家App控制
+# bit 定义: c1_flags={pd:0, pps:1, ufcs:2}
 PROTOCOL_SWITCHES = {
     "c1_pd":   {"port": "c1", "proto": "pd",   "name": "C1 PD",   "icon": "mdi:flash", "bit": 0},
     "c1_pps":  {"port": "c1", "proto": "pps",  "name": "C1 PPS",  "icon": "mdi:flash", "bit": 1},
     "c1_ufcs": {"port": "c1", "proto": "ufcs", "name": "C1 UFCS", "icon": "mdi:flash", "bit": 2},
-    "c2_pd":   {"port": "c2", "proto": "pd",   "name": "C2 PD",   "icon": "mdi:flash", "bit": 8},
-    "c2_pps":  {"port": "c2", "proto": "pps",  "name": "C2 PPS",  "icon": "mdi:flash", "bit": 9},
-    "c2_ufcs": {"port": "c2", "proto": "ufcs", "name": "C2 UFCS", "icon": "mdi:flash", "bit": 10},
-    "c3_ufcs": {"port": "c3", "proto": "ufcs", "name": "C3 UFCS", "icon": "mdi:flash", "bit": 16},
-    "c3_scp":  {"port": "c3", "proto": "scp",  "name": "C3 SCP",  "icon": "mdi:flash", "bit": 17},
-    "a_ufcs":  {"port": "a",  "proto": "ufcs", "name": "A UFCS",  "icon": "mdi:flash", "bit": 24},
-    "a_scp":   {"port": "a",  "proto": "scp",  "name": "A SCP",   "icon": "mdi:flash", "bit": 25},
 }
 
 SETTING_PIIDS = {

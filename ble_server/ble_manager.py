@@ -193,52 +193,17 @@ class BLEManager:
         await self._read_initial_settings()
         await asyncio.sleep(2)
 
-        # BLE Spec 通道探索：尝试订阅 00000005 特征的通知
+    def _try_parse_blespec(self, raw_data: bytes):
+        """尝试解析 BLE Spec 通知数据为 32-bit 端口格式."""
         try:
-            await self._probe_ble_spec_channel()
-        except Exception as e:
-            _LOGGER.debug("BLE Spec probe failed (expected): %s", e)
-
-    async def _probe_ble_spec_channel(self):
-        """探测 BLE Spec 通道 (00000005 + 0000001c + CMD_SEND notify)."""
-        if not self.ctrl or not self.ctrl.client:
-            return
-        client = self.ctrl.client
-        
-        # 存储找到的所有 BLE Spec 通道
-        self._ble_spec_channels = []
-        
-        for service in client.services:
-            for char in service.characteristics:
-                uuid = char.uuid.split('-')[0] if '-' in char.uuid else char.uuid
-                
-                # 通道 1: 00000005 (BLE Spec 通知)
-                if uuid == "00000005":
-                    _LOGGER.info("BLE Spec notify channel: %s (handle %d, props: %s)",
-                                 char.uuid, char.handle, char.properties)
-                    try:
-                        await client.start_notify(char, lambda _, data: _LOGGER.info(
-                            "BLE Spec NOTIFY[05]: %s (%d bytes)", data.hex(), len(data)))
-                        self._ble_spec_channels.append(char)
-                        _LOGGER.info("  -> subscribed to 00000005")
-                    except Exception as e:
-                        _LOGGER.warning("  -> subscribe failed: %s", e)
-                
-                # 通道 2: 0000001c (设备信息 - Write/Notify)
-                if uuid == "0000001c":
-                    _LOGGER.info("BLE Spec device_info channel: %s (handle %d, props: %s)",
-                                 char.uuid, char.handle, char.properties)
-                    try:
-                        await client.start_notify(char, lambda _, data: _LOGGER.info(
-                            "BLE Spec NOTIFY[1c]: %s (%d bytes)", data.hex(), len(data)))
-                        self._ble_spec_channels.append(char)
-                        _LOGGER.info("  -> subscribed to 0000001c")
-                    except Exception as e:
-                        _LOGGER.warning("  -> subscribe failed: %s", e)
-                
-                # 通道 3: 0000001a (CMD_SEND notify) - 不覆盖控制器的订阅
-                if uuid == "0000001a":
-                    _LOGGER.info("  -> skip 0000001a (already subscribed by controller)")
+            _LOGGER.debug("BLESpec raw: %s (%d bytes)", raw_data.hex()[:40], len(raw_data))
+            if len(raw_data) < 4:
+                return
+            pt = self.ctrl.decrypt(raw_data[4:]) if self.ctrl else None
+            if pt:
+                _LOGGER.info("BLESpec decrypted: %s (%d bytes)", pt.hex(), len(pt))
+        except Exception:
+            pass
 
     async def ble_spec_test_write(self, payload: bytes):
         """测试 BLE Spec 写入: 向 0000001c (device_info) 发请求，监控响应."""
@@ -326,6 +291,19 @@ class BLEManager:
             _LOGGER.info("Spec: response=%s", data.hex() if data else 'None')
             
             return {"ok": True, "sent": len(frame)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    async def ble_spec_send_flatbuffer(self, fb_data: bytes):
+        """通过 BLE Spec FlatBuffers 发送命令并获取响应."""
+        if not self.ctrl or not self.ctrl.client:
+            return {"ok": False, "error": "not connected"}
+        try:
+            _LOGGER.info("Spec FB: sending %d bytes: %s", len(fb_data), fb_data.hex())
+            resp = await self.ctrl.send_spec_flatbuffer(fb_data)
+            if resp:
+                return {"ok": True, "response": resp.hex(), "len": len(resp)}
+            return {"ok": False, "error": "no response"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -429,12 +407,35 @@ class BLEManager:
             if not self.ctrl:
                 break
 
+            # 同时监听 MiOT (cmd_recv) 和 BLE Spec (blespec) 通知
             try:
-                data = await asyncio.wait_for(
-                    self.ctrl.wait_notify("cmd_recv"), timeout=2.0)
+                done, pending = await asyncio.wait(
+                    [
+                        asyncio.create_task(self.ctrl.wait_notify("cmd_recv")),
+                        asyncio.create_task(self.ctrl.wait_notify("blespec")),
+                    ],
+                    timeout=2.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                # 取消未完成的任务
+                for task in pending:
+                    task.cancel()
+                
                 if not self.ctrl:
                     break
                 last_notify = time.time()
+                
+                # 处理 BLE Spec 通知 (32-bit 端口数据格式)
+                for task in done:
+                    try:
+                        data = task.result()
+                        if data and len(data) >= 4 and isinstance(data, bytes):
+                            await self._handle_inline_data(data)
+                            # 如果数据长度 >= 4 且格式像 BLE Spec 32-bit 值, 尝试解析
+                            if len(data) >= 4 and data[2] == 0x02:
+                                self._try_parse_blespec(data)
+                    except Exception:
+                        pass
             except asyncio.TimeoutError:
                 now = time.time()
                 if now - last_refresh > self.config.server.settings_refresh_interval:
