@@ -296,12 +296,12 @@ class BLEManager:
             return {"ok": False, "error": str(e)}
 
     async def ble_spec_send_flatbuffer(self, fb_data: bytes):
-        """通过 BLE Spec FlatBuffers 发送命令并获取响应."""
+        """通过 BLE Spec FlatBuffers (MiOT加密通道) 发送命令并获取响应."""
         if not self.ctrl or not self.ctrl.client:
             return {"ok": False, "error": "not connected"}
         try:
-            _LOGGER.info("Spec FB: sending %d bytes: %s", len(fb_data), fb_data.hex())
-            resp = await self.ctrl.send_spec_flatbuffer(fb_data)
+            _LOGGER.info("Spec FB: sending %d bytes via MiOT encrypt: %s", len(fb_data), fb_data.hex())
+            resp = await self.ctrl.send_spec_flatbuffer_command(fb_data)
             if resp:
                 return {"ok": True, "response": resp.hex(), "len": len(resp)}
             return {"ok": False, "error": "no response"}

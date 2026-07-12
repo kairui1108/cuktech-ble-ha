@@ -696,6 +696,39 @@ class CuktechBLEController:
         else:
             return await self._recv_get_response(siid, piid, timeout=8.0)
 
+    async def send_spec_flatbuffer_command(self, fb_data: bytes) -> Optional[bytes]:
+        """通过 MiOT 加密通道发送 BLE Spec FlatBuffers 命令.
+        
+        对应 SDK: bhe.OooO00o → uhb.OooO0o0 → xp.OooO0Oo
+        
+        FlatBuffers 数据直接作为 plaintext 通过 AES-CCM 加密发送.
+        """
+        if not self.authenticated:
+            _LOGGER.warning("Not authenticated")
+            return None
+        await self._drain_pending_pushes()
+        
+        if not await self._send_encrypted(fb_data):
+            _LOGGER.warning("Spec: _send_encrypted failed")
+            return None
+        
+        # 接收响应 (与 MiOT 相同的响应格式)
+        deadline = asyncio.get_running_loop().time() + 8.0
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return None
+            data = await self.wait_notify("cmd_recv", timeout=min(remaining, 3.0))
+            if not data or len(data) < 4:
+                continue
+            if data[2] == 0x02 and len(data) >= 5:
+                pt = self.decrypt(data[4:])
+                if pt:
+                    await self.client.write_gatt_char(
+                        CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
+                    _LOGGER.info("Spec response: %s", pt.hex())
+                    return pt
+
     async def send_spec_protobuf(self, pb_data: bytes):
         """发送 BLE Spec protobuf 消息并返回响应原始数据.
         
