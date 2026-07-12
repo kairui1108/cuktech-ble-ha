@@ -53,6 +53,15 @@ class BLEManager:
     def set_history(self, history):
         self._history = history
 
+    @property
+    def is_running(self) -> bool:
+        """是否正在运行 (不处于停止状态)。"""
+        return not self._stop_event.is_set()
+
+    async def request_stop(self):
+        """请求停止 BLE 循环 (设置 _stop_event，不直接断开)。"""
+        self._stop_event.set()
+
     def _get_reconnect_delay(self):
         """Calculate exponential backoff delay."""
         delay = min(
@@ -265,9 +274,11 @@ class BLEManager:
                 except Exception:
                     try:
                         power_file = f"/sys/class/bluetooth/{hci}/power"
-                        if os.path.exists(power_file) and open(power_file).read().strip() == "1":
-                            _LOGGER.info("BT adapter ready (via sysfs)")
-                            break
+                        if os.path.exists(power_file):
+                            with open(power_file) as f:
+                                if f.read().strip() == "1":
+                                    _LOGGER.info("BT adapter ready (via sysfs)")
+                                    break
                     except Exception:
                         pass
             else:
@@ -346,8 +357,8 @@ class BLEManager:
                 fail_count += 1
                 _LOGGER.debug("Failed to read PIID %d: %s", piid, e)
             await asyncio.sleep(0.1)
-        if fail_count == 14:
-            _LOGGER.warning("All PIID reads failed, BLE channel may be broken")
+        if fail_count >= len(READABLE_SETTINGS_PIIDS):
+            _LOGGER.warning("All %d PIID reads failed, BLE channel may be broken", fail_count)
         await self.state.update_settings(settings)
         await self.state.update_pdo_caps(pdo_caps)
         _invalidate()

@@ -213,7 +213,7 @@ class Server:
         enabled = body.get("enabled", True)
         if enabled:
             async with self._start_lock:
-                if not self.ble._stop_event.is_set():
+                if self.ble.is_running:
                     return web.json_response({"ok": True, "enabled": True, "note": "already running"})
                 app_ = request.app
                 if "ble_task" in app_:
@@ -227,7 +227,7 @@ class Server:
                 app_["ble_task"] = asyncio.create_task(self.ble.start())
         else:
             async with self._start_lock:
-                self.ble._stop_event.set()
+                await self.ble.request_stop()
                 app_ = request.app
                 if "ble_task" in app_ and app_["ble_task"] and not app_["ble_task"].done():
                     try:

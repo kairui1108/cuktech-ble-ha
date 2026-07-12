@@ -1,6 +1,7 @@
 """CUKTECH BLE Controller - Core BLE connection and command handling."""
 import asyncio
 import hashlib
+import hmac
 import io
 import logging
 import secrets
@@ -411,7 +412,7 @@ class CuktechBLEController:
         hmac_dev.update(salt_inv)
         expected_dev_hmac = hmac_dev.finalize()
 
-        if expected_dev_hmac != dev_hmac_info:
+        if not hmac.compare_digest(expected_dev_hmac, dev_hmac_info):
             _LOGGER.error("  [!] 设备 HMAC 验证失败!")
             return False
         _LOGGER.info("  [+] 设备 HMAC 验证通过!")
@@ -486,11 +487,14 @@ class CuktechBLEController:
             push_count += 1
 
             if data[2] == 0x00 and len(data) >= 6:
-                frame_count = data[4] + 0x100 * data[5]
+                frame_count = min(data[4] + 0x100 * data[5], 100)
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
+                deadline = time.monotonic() + 10.0
                 for i in range(frame_count):
-                    frame = await self.wait_notify("cmd_recv", timeout=3.0)
+                    if time.monotonic() >= deadline:
+                        break
+                    frame = await self.wait_notify("cmd_recv", timeout=min(deadline - time.monotonic(), 3.0))
                     if not frame:
                         break
                 await self.client.write_gatt_char(
@@ -627,13 +631,20 @@ class CuktechBLEController:
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
                 drained += 1
             elif data and len(data) >= 6 and data[2] == 0x00:
-                # 多帧: 处理所有帧
+                # 多帧: 限制总帧数和总超时
                 frame_count = data[4] + 0x100 * data[5]
+                if frame_count > 100:
+                    _LOGGER.warning("Drain: %d frames exceeds limit, capping at 100", frame_count)
+                    frame_count = 100
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
+                deadline = time.monotonic() + 10.0  # 总超时 10s
                 for _ in range(frame_count):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
                     try:
-                        frame = await asyncio.wait_for(q.get(), timeout=2.0)
+                        frame = await asyncio.wait_for(q.get(), timeout=min(remaining, 2.0))
                     except asyncio.TimeoutError:
                         break
                 await self.client.write_gatt_char(
@@ -811,10 +822,15 @@ class CuktechBLEController:
     async def get_properties(self, props):
         """批量获取属性。props = [(siid, piid), ...]"""
         results = {}
+        failed = 0
         for siid, piid in props:
             result = await self.send_miot_command(siid, piid)
             if result and 'value' in result:
                 results[(siid, piid)] = result['value']
+            else:
+                failed += 1
             await asyncio.sleep(0.1)
+        if failed > 0:
+            _LOGGER.warning("get_properties: %d/%d properties failed", failed, len(props))
         return results
 
