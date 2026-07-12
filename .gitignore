@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.jar
 
 # Virtual Environment
 .venv/
@@ -49,6 +50,11 @@ cuktech-ble-server/.venv/
 cuktech-ble-server/__pycache__/
 cuktech-ble-server/src/cuktech_ble/__pycache__/
 ble_server/data/
+docs/frida
+docs/hci_log
+docs/dex
+docs/smali_out
+docs/plugin_analysis
 
 # Environment variables
 .env
@@ -73,5 +79,7 @@ ha_config/.storage/core.config_entries
 
 # Local scripts
 bump-version.sh
+sync.sh
 *.lock
 .log_level
+baksmali.jar

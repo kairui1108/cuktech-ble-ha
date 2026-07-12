@@ -84,8 +84,8 @@ class Server:
             self.mqtt_client.connect(self.config.mqtt.host, self.config.mqtt.port, self.config.mqtt.keepalive)
             self.mqtt_client.loop_start()
             _LOGGER.info("MQTT connecting to %s:%s", self.config.mqtt.host, self.config.mqtt.port)
-        except Exception as e:
-            _LOGGER.error("MQTT connection failed: %s", e)
+        except Exception:
+            _LOGGER.error("MQTT connection failed: %s:%s", self.config.mqtt.host, self.config.mqtt.port)
             self.mqtt_client = None
 
         if self.mqtt_client:
@@ -145,6 +145,7 @@ class Server:
         self.mqtt_client.on_message = on_mqtt_message
         self.mqtt_client.subscribe(f"{self.config.mqtt.topic_prefix}/set")
         self.mqtt_client.subscribe(f"{self.config.mqtt.topic_prefix}/port")
+
         _LOGGER.info("MQTT subscriptions ready")
 
     def invalidate_status_cache(self):
@@ -212,7 +213,7 @@ class Server:
         enabled = body.get("enabled", True)
         if enabled:
             async with self._start_lock:
-                if not self.ble._stop_event.is_set():
+                if self.ble.is_running:
                     return web.json_response({"ok": True, "enabled": True, "note": "already running"})
                 app_ = request.app
                 if "ble_task" in app_:
@@ -226,7 +227,7 @@ class Server:
                 app_["ble_task"] = asyncio.create_task(self.ble.start())
         else:
             async with self._start_lock:
-                self.ble._stop_event.set()
+                await self.ble.request_stop()
                 app_ = request.app
                 if "ble_task" in app_ and app_["ble_task"] and not app_["ble_task"].done():
                     try:
@@ -354,7 +355,7 @@ class Server:
         }
 
         body = json.dumps(result, ensure_ascii=False).encode()
-        etag = hashlib.md5(body).hexdigest()
+        etag = hashlib.sha256(body).hexdigest()
 
         # Update cache with cleanup
         self._chart_cache[cache_key] = (now, etag, body)
@@ -411,14 +412,21 @@ class Server:
 
 
 WEB_DIR = Path(__file__).parent / "web"
-server = None
+_server = None
 
 
 def get_server():
-    global server
-    if server is None:
-        server = Server()
-    return server
+    """获取全局 Server 单例 (惰性初始化)。"""
+    global _server
+    if _server is None:
+        _server = Server()
+    return _server
+
+
+def reset_server():
+    """重置全局 Server 单例 (仅用于测试)。"""
+    global _server
+    _server = None
 
 
 @web.middleware

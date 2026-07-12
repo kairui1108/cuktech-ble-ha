@@ -413,3 +413,4 @@ class CuktechMQTTCoordinator:
             )
         except Exception as err:
             _LOGGER.error("Failed to publish MQTT command: %s", err)
+
