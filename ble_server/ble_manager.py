@@ -417,7 +417,6 @@ class BLEManager:
                     break
                 last_notify = time.time()
                 if data[2] == 0x02 and len(data) >= 4:
-                    _LOGGER.info("inline frame: %s ctrl=%s client=%s", data[:12].hex(), 
                                  self.ctrl is not None, self.ctrl and self.ctrl.client is not None)
                     await self._handle_inline_data(data)
                 elif data[2] == 0x00 and len(data) >= 6:
@@ -625,9 +624,26 @@ class BLEManager:
         b4 = pt[4]
         piid = pt[7] if len(pt) > 7 else -1
         
-        # BLE Spec 0f 20 frames: 仅记录日志，不做端口更新
+        # BLE Spec 0f 20 frames: 解析为端口数据 (设备已切换BLE Spec模式)
         if pt[0:2] == b'\x0f\x20':
-            _LOGGER.debug("BLESpec frame: piid=%d", piid)
+            if b4 == 0x04 and piid in PORT_NAMES:
+                pdo_data = None
+                if piid in (1, 2):
+                    pdo_data = self.state.pdo_caps.get("c1c2", {}).get(PORT_NAMES[piid])
+                elif piid in (3, 4):
+                    pdo_data = self.state.pdo_caps.get("c3a", {}).get(PORT_NAMES[piid])
+                port_info = decode_port(piid, pt, pdo_data)
+                if port_info:
+                    old = self.state.ports.get(piid)
+                    await self.state.update_port(piid, port_info)
+                    if old is None or old.to_dict() != port_info:
+                        _invalidate()
+                        self._publish_port(PORT_NAMES[piid], port_info)
+                        if self._history and port_info.get("active", False):
+                            loop = asyncio.get_running_loop()
+                            task = loop.run_in_executor(None, self._history.record_port_data, piid, port_info)
+                            task.add_done_callback(
+                                lambda t: _LOGGER.error("History write failed: %s", t.exception()) if t.exception() else None)
             return
         
         
