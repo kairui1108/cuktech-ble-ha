@@ -45,7 +45,6 @@ import io
 import logging
 import os
 import secrets
-import struct
 import sys
 
 _LOGGER = logging.getLogger("cuktech_ble")

@@ -355,7 +355,7 @@ class Server:
         }
 
         body = json.dumps(result, ensure_ascii=False).encode()
-        etag = hashlib.md5(body).hexdigest()
+        etag = hashlib.sha256(body).hexdigest()
 
         # Update cache with cleanup
         self._chart_cache[cache_key] = (now, etag, body)
@@ -412,14 +412,21 @@ class Server:
 
 
 WEB_DIR = Path(__file__).parent / "web"
-server = None
+_server = None
 
 
 def get_server():
-    global server
-    if server is None:
-        server = Server()
-    return server
+    """获取全局 Server 单例 (惰性初始化)。"""
+    global _server
+    if _server is None:
+        _server = Server()
+    return _server
+
+
+def reset_server():
+    """重置全局 Server 单例 (仅用于测试)。"""
+    global _server
+    _server = None
 
 
 @web.middleware
