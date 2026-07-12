@@ -9,7 +9,6 @@ TOPIC_PORT = f"{TOPIC_PREFIX}/port"
 TOPIC_SETTINGS = f"{TOPIC_PREFIX}/settings"
 TOPIC_STATUS = f"{TOPIC_PREFIX}/status"
 TOPIC_SET = f"{TOPIC_PREFIX}/set"
-TOPIC_PROTOCOL = f"{TOPIC_PREFIX}/protocol"
 TOPIC_PROBE = f"{TOPIC_PREFIX}/__probe__"
 
 # Port mapping

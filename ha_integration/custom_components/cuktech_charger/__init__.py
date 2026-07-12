@@ -24,7 +24,6 @@ from .const import (
     TOPIC_PORT,
     TOPIC_PREFIX,
     TOPIC_PROBE,
-    TOPIC_PROTOCOL,
     TOPIC_SETTINGS,
     TOPIC_STATUS,
     TOPIC_SET,
@@ -415,12 +414,3 @@ class CuktechMQTTCoordinator:
         except Exception as err:
             _LOGGER.error("Failed to publish MQTT command: %s", err)
 
-    async def async_protocol_toggle(self, port: str, protocol: str) -> None:
-        """Toggle a protocol switch via MQTT (PIID 21)."""
-        try:
-            await mqtt.async_publish(
-                self.hass, TOPIC_PROTOCOL,
-                json.dumps({"port": port, "protocol": protocol})
-            )
-        except Exception as err:
-            _LOGGER.error("Failed to publish protocol command: %s", err)
