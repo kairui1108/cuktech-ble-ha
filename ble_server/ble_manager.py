@@ -615,7 +615,7 @@ class BLEManager:
         except Exception as e:
             self._decrypt_failures += 1
             return
-        if not pt or len(pt) < 8:
+        if not pt or len(pt) < 5:  # 端口数据最小: 0c20xx00 4字节头 + b4
             self._decrypt_failures += 1
             if self._decrypt_failures >= 10:
                 _LOGGER.warning("Decrypt failed %d times consecutively, session stale, triggering reconnect", self._decrypt_failures)
