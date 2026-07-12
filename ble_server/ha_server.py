@@ -84,8 +84,8 @@ class Server:
             self.mqtt_client.connect(self.config.mqtt.host, self.config.mqtt.port, self.config.mqtt.keepalive)
             self.mqtt_client.loop_start()
             _LOGGER.info("MQTT connecting to %s:%s", self.config.mqtt.host, self.config.mqtt.port)
-        except Exception as e:
-            _LOGGER.error("MQTT connection failed: %s", e)
+        except Exception:
+            _LOGGER.error("MQTT connection failed: %s:%s", self.config.mqtt.host, self.config.mqtt.port)
             self.mqtt_client = None
 
         if self.mqtt_client:
