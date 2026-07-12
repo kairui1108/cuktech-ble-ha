@@ -37,10 +37,9 @@ class TestDecodePort:
         assert "PD" in result["protocol"]
 
     def test_active_qc_port(self):
-        """Test decoding an active QC port."""
-        # Last 4 bytes: in_use=1, protocol=0x70 (QC), current=15 (1.5A), voltage=90 (9.0V)
+        """Test decoding an active QC port (C3 supports QC)."""
         pt = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x70, 15, 90])
-        result = decode_port(2, pt)
+        result = decode_port(3, pt)
         assert result is not None
         assert result["voltage"] == 9.0
         assert result["current"] == 1.5

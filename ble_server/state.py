@@ -198,19 +198,20 @@ class ChargerState:
             return self._cache
 
 
-def decode_port(piid, pt, pdo_data=None):
+def decode_port(piid, pt, pdo_data=None, protocol_switches=None):
     """解码端口数据，使用 V2 协议检测引擎.
 
     Args:
         piid: 端口 ID (1-4)
         pt: 解密后的 MiOT 属性负载 (bytes)
-        pdo_data: PDO 能力信息 (可选)
+        pdo_data: PDO 能力信息 (可选, PIID 17/18)
+        protocol_switches: PIID 21 当前协议开关状态 (可选)
 
     Returns:
         端口数据字典: {voltage, current, power, active, protocol, ...}
         或 None (数据无效)
     """
-    return _decode_port_v2(piid, pt, pdo_data)
+    return _decode_port_v2(piid, pt, pdo_data, protocol_switches=protocol_switches)
 
 
 def decode_pdo_caps(value, high_port, low_port):

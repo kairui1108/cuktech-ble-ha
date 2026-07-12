@@ -492,7 +492,8 @@ class BLEManager:
                 pdo_data = self.state.pdo_caps.get("c1c2", {}).get(PORT_NAMES[piid])
             elif piid in (3, 4):
                 pdo_data = self.state.pdo_caps.get("c3a", {}).get(PORT_NAMES[piid])
-            port_info = decode_port(piid, pt, pdo_data)
+            port_info = decode_port(piid, pt, pdo_data,
+                                    protocol_switches=self.state.protocol_switches)
             if port_info:
                 old = self.state.ports.get(piid)
                 await self.state.update_port(piid, port_info)
