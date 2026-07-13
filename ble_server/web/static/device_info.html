@@ -31,20 +31,37 @@
             display: grid;
             grid-template-columns: 180px 1fr;
             gap: 20px;
-            align-items: start;
+            align-items: end;
             width: 100%;
         }
-        .charger-image {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-width: 0;
+        .charger-image { display: flex; align-items: center; justify-content: center; min-width: 0; position: relative; }
+        /* ── Device Container ── */
+        .device-wrap { width: 160px; max-width: 100%; margin: 0 auto; position: relative; }
+        .device-wrap-inner { position: relative; width: 100%; overflow: hidden; }
+        .unconnected-img { width: 100%; display: none; margin: 0 auto; object-fit: contain; }
+        .unconnected-img.show { display: block; }
+        .device-charger { position: relative; width: 160px; margin: 0 auto; display: block; }
+        .device-charger.charging { animation: deviceFloat 3s ease-in-out infinite; }
+        @keyframes deviceFloat {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-2px); }
         }
-        .charger-image img {
-            max-width: 100%;
-            max-height: 200px;
-            object-fit: contain;
+        .device-img { width: 100%; display: block; }
+        .dark-glow-ani {
+            position: absolute; width: 80%; height: 60%; left: 10%; top: 5%;
+            border-radius: 50%; opacity: 0; transition: opacity 0.8s ease;
+            pointer-events: none; z-index: 0;
+            background: radial-gradient(ellipse, rgba(70,180,255,0.18) 0%, rgba(70,180,255,0.04) 50%, transparent 70%);
         }
+        .dark-glow-ani.active { opacity: 1; }
+        .usb-overlay-ani { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; }
+        .usb-mod-ani { position: absolute; left: 0; right: 0; height: 14%; display: none; }
+        .usb-mod-ani.active { display: block; }
+        .usb-picon { position: absolute; width: 10%; height: 12px; left: 70%; z-index: 4; }
+        .usb-picon img { width: 100%; height: 100%; object-fit: contain; }
+        .usb-pbg { position: absolute; left: 43%; z-index: 3; }
+        .usb-pbg img { height: 100%; object-fit: contain; }
+        .usb-pval { position: absolute; z-index: 4; color: #64B5F6; font-size: 8px; font-weight: bold; text-align: center; left: 80%; width: 20%; }
         .charger-controls {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -157,8 +174,11 @@
             text-transform: uppercase; 
         }
         @media (max-width: 600px) {
-            .charger-layout { grid-template-columns: 1fr; }
-            .charger-image { max-height: 150px; }
+            .charger-layout { grid-template-columns: 1fr; align-items: start; }
+            .charger-image { justify-content: flex-start; transform: translateX(-12px); }
+            .device-wrap { max-width: 200px; }
+            .device-wrap-inner { height: auto; overflow: visible; }
+            .device-charger { width: 200px; height: auto; }
             .charger-controls { grid-template-columns: 1fr; }
         }
     </style>
@@ -166,7 +186,21 @@
 <body>
     <div class="charger-layout">
         <div class="charger-image">
-            <img id="chargerImage" src="" alt="CUKTECH Charger">
+            <div class="device-wrap" id="deviceWrap">
+                <img class="unconnected-img show" id="unconnectedImg" src="/static/plugin_imgs/main_card_ad1204u_unconnected.png" alt="CUKTECH Charger">
+                <div class="device-wrap-inner">
+                    <div class="device-charger" id="deviceChargerAnim">
+                        <div class="dark-glow-ani" id="darkGlowAni"></div>
+                        <img class="device-img" src="/static/plugin_imgs/main_charger_dark_ad1204_all.png" alt="">
+                        <div class="usb-overlay-ani" id="usbOverlayAni">
+                            <div class="usb-mod-ani" id="usbModC1" style="top:25%"><div class="usb-picon" style="top:1px"><img src="/static/plugin_imgs/main_charger_dark_power_on.png" alt=""></div><div class="usb-pbg" style="top:0;width:57%;height:24px"><img src="/static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width:100%;height:100%"></div><div class="usb-pval" id="usbPvalC1" style="top:7px">0W</div></div>
+                            <div class="usb-mod-ani" id="usbModC2" style="top:35%"><div class="usb-picon" style="top:1px"><img src="/static/plugin_imgs/main_charger_dark_power_on.png" alt=""></div><div class="usb-pbg" style="top:0;width:57%;height:24px"><img src="/static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width:100%;height:100%"></div><div class="usb-pval" id="usbPvalC2" style="top:7px">0W</div></div>
+                            <div class="usb-mod-ani" id="usbModC3" style="top:45%"><div class="usb-picon" style="top:1px"><img src="/static/plugin_imgs/main_charger_dark_power_on.png" alt=""></div><div class="usb-pbg" style="top:0;width:57%;height:24px"><img src="/static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width:100%;height:100%"></div><div class="usb-pval" id="usbPvalC3" style="top:7px">0W</div></div>
+                            <div class="usb-mod-ani" id="usbModA" style="top:55%"><div class="usb-picon" style="top:1px"><img src="/static/plugin_imgs/main_charger_dark_power_on.png" alt=""></div><div class="usb-pbg" style="top:0;left:42%;width:57%;height:24px"><img src="/static/plugin_imgs/main_card_usb_a_rectangle.png" alt="" style="width:100%;height:100%"></div><div class="usb-pval" id="usbPvalA" style="top:7px">0W</div></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
         <div class="charger-controls">
             <div class="control-box">
@@ -202,17 +236,8 @@
     </div>
 
     <script>
-        const chargerImg = document.getElementById('chargerImage');
-        fetch('/static/charger.png')
-            .then(r => r.blob())
-            .then(blob => {
-                const reader = new FileReader();
-                reader.onloadend = () => { chargerImg.src = reader.result; };
-                reader.readAsDataURL(blob);
-            })
-            .catch(() => { chargerImg.style.display = 'none'; });
-
         const API_BASE = window.location.origin;
+        const PORT_KEY_TO_ID = { c1: 1, c2: 2, c3: 3, a: 4 };
         let bleConnected = false;
 
         async function fetchStatus() {
@@ -259,8 +284,41 @@
                 if (data.firmware_version) {
                     document.getElementById('firmwareVersion').textContent = '固件版本：' + data.firmware_version;
                 }
+                updateDeviceContainer(data.ports);
             } catch (e) {
                 console.error('Fetch error:', e);
+            }
+        }
+
+        function updateDeviceContainer(ports) {
+            const unconnected = document.getElementById('unconnectedImg');
+            const charger = document.getElementById('deviceChargerAnim');
+            const glow = document.getElementById('darkGlowAni');
+            if (!unconnected || !charger) return;
+            let totalW = 0;
+            for (const [id, port] of Object.entries(ports || {})) {
+                if (port.enabled && port.power > 0) totalW += port.power;
+            }
+            if (totalW > 0) {
+                unconnected.classList.remove('show');
+                charger.classList.add('charging');
+                if (glow) glow.classList.add('active');
+                ['c1','c2','c3','a'].forEach(k => {
+                    const p = ports[PORT_KEY_TO_ID[k]] || { voltage:0,current:0,power:0,enabled:false };
+                    const mod = document.getElementById('usbMod' + k.toUpperCase());
+                    const pval = document.getElementById('usbPval' + k.toUpperCase());
+                    const active = p.enabled && p.power > 0;
+                    if (mod) mod.classList.toggle('active', active);
+                    if (pval) pval.textContent = active ? p.power.toFixed(1) + 'W' : '0W';
+                });
+            } else {
+                unconnected.classList.add('show');
+                charger.classList.remove('charging');
+                if (glow) glow.classList.remove('active');
+                ['c1','c2','c3','a'].forEach(k => {
+                    const m = document.getElementById('usbMod' + k.toUpperCase());
+                    if (m) m.classList.remove('active');
+                });
             }
         }
 

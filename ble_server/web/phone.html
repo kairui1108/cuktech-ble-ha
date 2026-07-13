@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>CUKTECH 10 Ultra 充电器</title>
+<script src="static/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="static/phone.css">
+</head>
+<body>
+
+<div class="phone" id="app">
+    <!-- Top Navigation -->
+    <div class="navbar">
+        <div style="width:36px;"></div>
+        <div class="nav-title">CUKTECH 10 Ultra</div>
+        <div class="theme-btn" id="themeBtn" onclick="toggleTheme()" style="width:28px;height:28px;cursor:pointer;font-size:18px;line-height:28px;text-align:center;">☀️</div>
+    </div>
+
+    <!-- Parallax Top View -->
+    <div class="top-view">
+        <div class="top-spacer"></div>
+
+        <div class="imagebg">
+            <!-- Dark glow -->
+            <div class="dark-glow" id="darkGlow"></div>
+
+            <!-- Unconnected placeholder -->
+            <img class="unconnected-img" id="unconnectedImg"
+                 src="static/plugin_imgs/main_card_ad1204u_unconnected.png" alt="">
+
+            <!-- Device Image (hidden when idle) -->
+            <div class="device-container" id="deviceContainer">
+                <!-- Scene Mode Badge -->
+                <div class="scene-badge" id="sceneBadge">
+                    <img id="sceneBadgeIcon" src="" alt="">
+                    <span id="sceneBadgeText"></span>
+                </div>
+                <img class="device-img" id="deviceImg" src="static/plugin_imgs/main_charger_dark_ad1204_all.png" alt="">
+
+                <!-- USB Port Power Overlay -->
+                <div class="usb-overlay" id="usbOverlay">
+                    <!-- C1 -->
+                    <div class="usb-module" id="usbModuleC1" style="top: 36px;">
+                        <div class="usb-protocol-icon" style="top: 8px; left:70px;">
+                            <img id="usbProtocolC1" src="static/plugin_imgs/main_charger_dark_power_on.png" alt="">
+                        </div>
+                        <div class="usb-power-bg" style="top: 0px; left: 0px; width: 230px; height: 36px;">
+                            <img src="static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width: 230px; height: 36px;">
+                        </div>
+                        <div class="usb-power-val" id="usbPowerC1" style="top: 4px; left: 140px;">0W</div>
+                    </div>
+                    <!-- C2 -->
+                    <div class="usb-module" id="usbModuleC2" style="top: 68px;">
+                        <div class="usb-protocol-icon" style="top: 8px; left:70px;">
+                            <img id="usbProtocolC2" src="static/plugin_imgs/main_charger_dark_power_on.png" alt="">
+                        </div>
+                        <div class="usb-power-bg" style="top: 0px; left: 0px; width: 230px; height: 36px;">
+                            <img src="static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width: 230px; height: 36px;">
+                        </div>
+                        <div class="usb-power-val" id="usbPowerC2" style="top: 4px; left: 140px;">0W</div>
+                    </div>
+                    <!-- C3 -->
+                    <div class="usb-module" id="usbModuleC3" style="top: 100px;">
+                        <div class="usb-protocol-icon" style="top: 8px; left:70px;">
+                            <img id="usbProtocolC3" src="static/plugin_imgs/main_charger_dark_power_on.png" alt="">
+                        </div>
+                        <div class="usb-power-bg" style="top: 0px; left: 0px; width: 230px; height: 36px;">
+                            <img src="static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width: 230px; height: 36px;">
+                        </div>
+                        <div class="usb-power-val" id="usbPowerC3" style="top: 4px; left: 140px;">0W</div>
+                    </div>
+                    <!-- A -->
+                    <div class="usb-module" id="usbModuleA" style="top: 133px;">
+                        <div class="usb-protocol-icon" style="top: 11px; left:70px;">
+                            <img id="usbProtocolA" src="static/plugin_imgs/main_charger_dark_power_on.png" alt="">
+                        </div>
+                        <div class="usb-power-bg" style="top: 0px; left: 3.35px; width: 235px; height: 40px;">
+                            <img src="static/plugin_imgs/main_card_usb_a_rectangle.png" alt="" style="width: 235px; height: 40px;">
+                        </div>
+                        <div class="usb-power-val" id="usbPowerA" style="top: 4px; left: 140px;">0W</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bottom-spacer"></div>
+    </div>
+
+    <!-- Bottom Scrollable Content -->
+    <div class="bottom-view">
+
+        <!-- Connection Status Card -->
+        <div class="card" id="connectCard" style="margin-top:-40px;position:relative;z-index:10;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <div id="connectDot" style="width:10px;height:10px;border-radius:50%;background:#666;"></div>
+                    <span id="connectStatus" style="font-size:15px;color:var(--text-dim);">未连接</span>
+                </div>
+                <button id="connectBtn" class="sim-btn" onclick="toggleConnection()" style="padding:6px 16px;border-radius:16px;font-size:12px;">连接设备</button>
+            </div>
+        </div>
+
+        <!-- Scene Mode Card -->
+        <div class="card scene-card" id="sceneCard" style="margin-top:12px;">
+            <div class="scene-card-header">
+                <span class="scene-card-title">场景模式</span>
+                <div class="scene-separator"></div>
+                <span class="scene-card-subtitle" id="sceneName">AI模式</span>
+                <div class="scene-card-flex"></div>
+                <div class="scene-card-arrow show" id="sceneArrow">
+                    <img src="static/plugin_imgs/main_charger_dark_icon_more.png" alt="">
+                </div>
+            </div>
+            <div class="scene-buttons">
+                <button class="scene-btn active" data-mode="1" onclick="setScene(1)">
+                    <img id="sceneImg1" src="static/plugin_imgs/main_charger_dark_ai_on.png" alt="">
+                    <span class="scene-label">AI模式</span>
+                </button>
+                <button class="scene-btn" data-mode="2" onclick="setScene(2)">
+                    <img id="sceneImg2" src="static/plugin_imgs/main_charger_dark_mac_off.png" alt="">
+                    <span class="scene-label">数码生态</span>
+                </button>
+                <button class="scene-btn" data-mode="3" onclick="setScene(3)">
+                    <img id="sceneImg3" src="static/plugin_imgs/main_charger_dark_single_off.png" alt="">
+                    <span class="scene-label">单口模式</span>
+                </button>
+                <button class="scene-btn" data-mode="4" onclick="setScene(4)">
+                    <img id="sceneImg4" src="static/plugin_imgs/main_charger_dark_balance_off.png" alt="">
+                    <span class="scene-label">均衡模式</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Port Control Card -->
+        <div class="card port-ctl-card">
+            <div class="port-ctl-title">端口控制</div>
+            <div class="port-ctl-items">
+                <div class="port-ctl-item">
+                    <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_c1_on.png" alt=""></div>
+                    <span class="port-ctl-label">C1</span>
+                    <label class="toggle"><input type="checkbox" checked id="toggleC1" onchange="togglePort('c1')"><span class="toggle-slider"></span></label>
+                </div>
+                <div class="port-ctl-item">
+                    <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_c2_on.png" alt=""></div>
+                    <span class="port-ctl-label">C2</span>
+                    <label class="toggle"><input type="checkbox" checked id="toggleC2" onchange="togglePort('c2')"><span class="toggle-slider"></span></label>
+                </div>
+                <div class="port-ctl-item">
+                    <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_c3_on.png" alt=""></div>
+                    <span class="port-ctl-label">C3</span>
+                    <label class="toggle"><input type="checkbox" checked id="toggleC3" onchange="togglePort('c3')"><span class="toggle-slider"></span></label>
+                </div>
+                <div class="port-ctl-item">
+                    <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_a_on.png" alt=""></div>
+                    <span class="port-ctl-label">USB-A</span>
+                    <label class="toggle"><input type="checkbox" checked id="toggleA" onchange="togglePort('a')"><span class="toggle-slider"></span></label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Screen Setting Card -->
+        <div class="card screen-card">
+            <div class="screen-card-header">
+                <span class="screen-card-title">息屏时间</span>
+                <span class="screen-card-value" id="screenTimeVal" onclick="cycleScreenTime()">
+                    5分钟 <img src="static/plugin_imgs/main_charger_dark_icon_more.png" alt="">
+                </span>
+            </div>
+        </div>
+
+        <!-- USB-A Trickle Card -->
+        <div class="card trickle-card">
+            <div class="trickle-card-header">
+                <span class="trickle-card-title">USB-A常通电</span>
+                <label class="toggle"><input type="checkbox" id="toggleTrickle" onchange="toggleTrickle()"><span class="toggle-slider"></span></label>
+            </div>
+        </div>
+
+        <!-- Rate / Power Card -->
+        <div class="card rate-card">
+            <div class="rate-inner">
+                <!-- Total Power -->
+                <div class="total-power-title">当前总功率</div>
+                <div class="power-row">
+                    <div class="power-left">
+                        <div class="power-value-row">
+                            <span class="power-number" id="totalPowerNum">0</span>
+                            <span class="power-unit">W</span>
+                        </div>
+                        <div class="power-label">当前功率</div>
+                    </div>
+                    <div class="mini-chart" id="miniChart"></div>
+                </div>
+
+
+                <!-- Per-Port Charts -->
+                <div class="full-chart-title" style="margin-top:16px;">功率曲线</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div style="min-width:0;overflow:hidden;"><div id="portPowerC1Row" style="min-height:20px;"></div><div style="height:100px;position:relative;"><canvas id="chartC1"></canvas></div></div>
+                    <div style="min-width:0;overflow:hidden;"><div id="portPowerC2Row" style="min-height:20px;"></div><div style="height:100px;position:relative;"><canvas id="chartC2"></canvas></div></div>
+                    <div style="min-width:0;overflow:hidden;"><div id="portPowerC3Row" style="min-height:20px;"></div><div style="height:100px;position:relative;"><canvas id="chartC3"></canvas></div></div>
+                    <div style="min-width:0;overflow:hidden;"><div id="portPowerARow" style="min-height:20px;"></div><div style="height:100px;position:relative;"><canvas id="chartA"></canvas></div></div>
+                </div>
+
+                <!-- Power Distribution -->
+                <div class="full-chart-title" style="margin-top:16px;">功率占比</div>
+                <div id="powerDist" style="display:flex;height:8px;border-radius:4px;overflow:hidden;margin-bottom:2px;background:rgba(255,255,255,0.06);"></div>
+                <div id="powerDistText" style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-dim);"></div>
+            </div>
+        </div>
+
+        <!-- Delay Off Card -->
+        <div class="card" style="margin-top:12px;">
+            <div style="font-size:17px;color:var(--text-dim);margin-bottom:20px;">延时关闭</div>
+            <div id="delayOffGrid"></div>
+        </div>
+    </div>
+
+    <!-- No sim controls - using real data -->
+</div>
+
+<script src="static/phone.js"></script>
+
+</body>
+</html>

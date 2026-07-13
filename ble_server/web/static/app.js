@@ -166,6 +166,9 @@
 
         const COUNTDOWN_PIIDS = { 1: 9, 2: 10, 3: 11, 4: 12 };
         const PORT_KEY_TO_ID = { 'c1': 1, 'c2': 2, 'c3': 3, 'a': 4 };
+        let lastLocalChange = 0;
+        function markLocal() { lastLocalChange = Date.now(); }
+        function isRecent() { return Date.now() - lastLocalChange < 3000; }
         const QUICK_MINUTES = [15, 30, 60, 90, 120, 240];
 
         function initChart() {
@@ -296,6 +299,7 @@
             updateStatusBadge(data.connected, data.authenticated, data.mqtt_connected);
             updateBleButton();
             renderPorts(data.ports);
+            updateDeviceContainer(data.ports);
             updateSettingsUI(data.settings || {});
             renderCountdown(data.settings || {});
             let totalPower = 0, activeCount = 0, maxV = 0;
@@ -337,17 +341,27 @@
 
         function renderPorts(ports) {
             const grid = document.getElementById('portGrid');
+            // Save current toggle states during recent-change window
+            const savedChecks = {};
+            if (isRecent()) {
+                for (const [id] of Object.entries(PORT_MAP)) {
+                    const key = PORT_KEY_MAP[id];
+                    const t = document.getElementById(`toggle-${key}`);
+                    if (t) savedChecks[key] = t.checked;
+                }
+            }
             let html = '';
             for (const [id, name] of Object.entries(PORT_MAP)) {
                 const port = ports[id] || { voltage: 0, current: 0, power: 0, enabled: false, protocol: 'idle' };
                 const key = PORT_KEY_MAP[id];
                 const protocolColor = port.protocol !== 'idle' ? 'var(--accent)' : 'var(--text-dim)';
+                const checked = (isRecent() && savedChecks.hasOwnProperty(key)) ? savedChecks[key] : port.enabled;
                 html += `
-                    <div class="port-card ${port.enabled ? 'active' : ''}" id="port-${id}" onclick="handlePortClick(event, ${id})">
+                    <div class="port-card ${checked ? 'active' : ''}" id="port-${id}" onclick="handlePortClick(event, ${id})">
                         <div class="port-header">
                             <span class="port-name ${key}">${name}</span>
                             <label class="port-toggle" onclick="event.stopPropagation()">
-                                <input type="checkbox" id="toggle-${key}" ${port.enabled ? 'checked' : ''} onchange="togglePort('${key}', this.checked)">
+                                <input type="checkbox" id="toggle-${key}" ${checked ? 'checked' : ''} onchange="togglePort('${key}', this.checked)">
                                 <span class="toggle-slider"></span>
                             </label>
                         </div>
@@ -379,13 +393,14 @@
             } else {
                 SETTINGS_CONFIG.forEach(s => {
                     const select = grid.querySelector(`select[onchange*="${s.piid}"]`);
-                    if (select) { const newVal = settings[String(s.piid)] ?? s.options[0].value; if (select.value != newVal) select.value = newVal; }
+                    if (select && !isRecent()) { const newVal = settings[String(s.piid)] ?? s.options[0].value; if (select.value != newVal) select.value = newVal; }
                 });
             }
             lastSettings = settings;
         }
 
         async function togglePort(port, on) {
+            markLocal();
             const toggle = document.getElementById(`toggle-${port}`);
             if (toggle) toggle.disabled = true;
             try {
@@ -404,6 +419,7 @@
         }
 
         async function setSetting(piid, value) {
+            markLocal();
             try { await fetch(`${API_BASE}/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid, value }) }); } catch (e) { console.error('Set setting error:', e); }
         }
 
@@ -462,6 +478,7 @@
         async function setCountdown(port, minutes) {
             if (countdownPending[port]) return;
             countdownPending[port] = true;
+            markLocal();
             const id = PORT_KEY_TO_ID[port];
             const btn = document.getElementById(`countdown-btn-${port}`);
             const statusEl = document.getElementById(`countdown-status-${port}`);
@@ -564,6 +581,46 @@
         async function pollStatus() {
             await fetchStatus();
             setTimeout(pollStatus, 2000);
+        }
+
+        function updateDeviceContainer(ports) {
+            const unconnected = document.getElementById('unconnectedImg');
+            const charger = document.getElementById('deviceChargerAnim');
+            const glow = document.getElementById('darkGlowAni');
+            const badge = document.getElementById('sceneBadgeAni');
+            if (!unconnected || !charger) return;
+
+            let totalW = 0;
+            for (const [id, port] of Object.entries(ports || {})) {
+                if (port.enabled && port.power > 0) totalW += port.power;
+            }
+
+            if (totalW > 0) {
+                unconnected.classList.remove('show');
+                charger.classList.add('charging');
+                glow.classList.add('active');
+                // Scene badge: not shown until scene mode data available
+                if (badge) badge.classList.remove('show');
+
+                const portKeys = ['c1','c2','c3','a'];
+                for (const key of portKeys) {
+                    const p = ports[PORT_KEY_TO_ID[key]] || { voltage:0, current:0, power:0, enabled:false, protocol:'idle' };
+                    const mod = document.getElementById('usbMod' + key.toUpperCase());
+                    const pval = document.getElementById('usbPval' + key.toUpperCase());
+                    const active = p.enabled && p.power > 0;
+                    if (mod) mod.classList.toggle('active', active);
+                    if (pval) pval.textContent = active ? p.power.toFixed(1) + 'W' : '0W';
+                }
+            } else {
+                unconnected.classList.add('show');
+                charger.classList.remove('charging');
+                glow.classList.remove('active');
+                ['c1','c2','c3','a'].forEach(k => {
+                    const m = document.getElementById('usbMod' + k.toUpperCase());
+                    if (m) m.classList.remove('active');
+                });
+                if (badge) badge.classList.remove('show');
+            }
         }
 
         // Initialize if Chart.js is ready, otherwise wait for CDN fallback

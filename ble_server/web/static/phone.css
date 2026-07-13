@@ -1,0 +1,270 @@
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+    --c1: #46B4FF; --c2: #FF7A00; --c3: #89D8F3; --a: #FFD24B;
+    --bg: #121215; --card-bg: #000; --card-border: rgba(137, 246, 243, 0.5);
+    --pval-color: #FFF;
+    --text: rgba(255,255,255,0.9); --text-dim: rgba(255,255,255,0.4);
+    --text-sub: rgba(255,255,255,0.6);
+    --page-width: 430px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans SC', 'MiSans', sans-serif;
+    background: #0a0a0f; display: flex; justify-content: center;
+    min-height: 100vh; overflow-x: hidden;
+}
+
+body.light {
+    --bg: #f0f0f5; --card-bg: #fff; --card-border: rgba(0,0,0,0.1);
+    --text: #1a1a1a; --text-dim: #888; --text-sub: #666;
+    --pval-color: #000;
+}
+
+.phone {
+    width: 100%; max-width: var(--page-width); min-height: 100vh;
+    background: var(--bg); position: relative;
+    padding-bottom: 80px;
+}
+
+/* ── Top Navigation ── */
+.navbar {
+    display: flex; align-items: center; padding: 8px 16px;
+    height: 48px; position: sticky; top: 0; z-index: 102;
+    background: var(--bg); transition: transform 0.3s ease;
+}
+.navbar.hide { opacity: 0; pointer-events: none; }
+.nav-back { width: 36px; height: 36px; padding: 6px; cursor: pointer; }
+.nav-back img { width: 100%; height: 100%; opacity: 0.7; }
+.nav-title { flex: 1; text-align: center; font-size: 16px; font-weight: 500;
+    color: var(--text); margin-right: 36px; }
+.nav-more { width: 28px; height: 28px; cursor: pointer; padding: 4px; display: none; }
+.nav-more img { width: 100%; height: 100%; opacity: 0.5; }
+
+/* ── Parallax Top View (Fixed, non-scrollable) ── */
+.top-view {
+    width: 100%; height: 380px; position: relative;
+    display: flex; flex-direction: column;
+}
+
+.top-spacer { flex: 5; }
+
+/* ── Device Image Container ── */
+.imagebg {
+    width: calc(100% - 54px); height: 280px; margin: 20px auto;
+    position: relative; overflow: visible;
+}
+
+/* Dark glow behind device when connected */
+.dark-glow {
+    position: absolute; width: 260px; height: 260px;
+    left: 50%; top: 50%; transform: translate(-50%, -50%);
+    border-radius: 50%; opacity: 0; transition: opacity 0.6s ease;
+    z-index: 0; pointer-events: none;
+    background: radial-gradient(circle, rgba(70,180,255,0.15) 0%, rgba(70,180,255,0.05) 40%, transparent 70%);
+}
+.dark-glow.active { opacity: 1; }
+
+/* Unconnected placeholder */
+.unconnected-img {
+    width: 360px; height: 307px; object-fit: contain;
+    margin: 0 auto; display: block; z-index: 2; position: relative;
+}
+.unconnected-img.hidden { display: none; }
+
+/* Device image */
+.device-container {
+    position: relative; width: 360px; height: 481px;
+    margin: 0 auto; display: none; z-index: 1; overflow: visible;
+}
+.device-container.show { display: block; }
+.device-container.charging {
+    animation: deviceFloat 3s ease-in-out infinite;
+}
+.device-img {
+    width: 360px; height: 481px; object-fit: contain;
+    position: absolute; top: -128px; left: 0; z-index: 0;
+}
+@keyframes deviceFloat {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+}
+
+/* ── Header Scene Mode Badge (on top of device image) ── */
+.scene-badge {
+    position: absolute; top: -40px; left: 50%; transform: translateX(-50%);
+    height: 30px; z-index: 5;
+    display: none; align-items: center; justify-content: center;
+}
+.scene-badge.show { display: flex; }
+.scene-badge img { width: 20px; height: 20px; margin-right: 4px; }
+.scene-badge span { font-size: 12px; color: var(--pval-color); }
+
+/* ── USB Port Power Overlay ── */
+.usb-overlay { position: relative; width: 360px; margin-left: 134.5px; z-index: 3; pointer-events: none; }
+.usb-module { position: absolute; left: 0; width: 360px; display: none; }
+.usb-module.active { display: block; }
+.usb-protocol-icon { position: absolute; width: 25px; height: 16px; left: 62px; z-index: 4; }
+.usb-protocol-icon img { width: 100%; height: 100%; object-fit: contain; }
+.usb-power-bg { position: absolute; z-index: 3; }
+.usb-power-bg img { height: 100%; object-fit: contain; }
+.usb-power-val {
+    position: absolute; z-index: 4; color: var(--pval-color); font-size: 21px;
+    font-weight: bold; text-align: center; width: 70px;
+}
+
+/* Bottom spacer */
+.bottom-spacer { flex: 11; }
+
+/* ── Bottom Scroll Area ── */
+.bottom-view { padding: 0 16px; }
+
+/* ── Card Container ── */
+.card {
+    width: 100%; background: var(--card-bg); border-radius: 12px;
+    margin-top: 12px; padding: 18px 20px 24px;
+    border: 1px solid var(--card-border);
+    margin-left: auto; margin-right: auto;
+}
+
+/* ── Scene Mode Card ── */
+.scene-card { margin-top: 8px; }
+.scene-card-header { display: flex; align-items: center; margin-bottom: 25px; }
+.scene-card-title { font-size: 17px; color: var(--text-dim); }
+.scene-separator { width: 1px; height: 14px; background: rgba(255,255,255,0.15); margin: 0 8px; }
+.scene-card-subtitle { font-size: 17px; color: var(--text); }
+.scene-card-flex { flex: 1; }
+.scene-card-arrow { width: 20px; height: 20px; cursor: pointer; display: none; }
+.scene-card-arrow.show { display: block; }
+.scene-card-arrow img { width: 100%; height: 100%; opacity: 0.6; }
+
+.scene-buttons {
+    display: flex; justify-content: space-between; margin-top: 0;
+}
+.scene-btn {
+    display: flex; flex-direction: column; align-items: center;
+    cursor: pointer; border: none; background: none; padding: 0;
+}
+.scene-btn img { width: 80px; height: 80px; object-fit: cover; transition: transform 0.2s; }
+.scene-btn:active img { transform: scale(0.95); }
+.scene-btn .scene-label {
+    font-size: 13px; color: var(--text-sub); margin-top: 4px;
+}
+.scene-btn.active .scene-label { color: var(--text); font-weight: 500; }
+
+/* ── Port Control Card ── */
+.port-ctl-card { margin-top: 12px; }
+.port-ctl-title { font-size: 17px; color: var(--text-dim); margin-bottom: 18px; }
+.port-ctl-items { display: flex; flex-wrap: wrap; gap: 10px; }
+.port-ctl-item {
+    flex: 1; min-width: 130px; display: flex; align-items: center;
+    justify-content: space-between; padding: 8px 0;
+}
+.port-ctl-port-icon { width: 32px; height: 20px; }
+.port-ctl-port-icon img { width: 100%; height: 100%; object-fit: contain; }
+body.light .port-ctl-port-icon img { filter: invert(1); }
+.port-ctl-label { font-size: 14px; color: var(--text); margin-left: 8px; flex: 1; }
+
+/* Toggle Switch */
+.toggle { position: relative; width: 51px; height: 31px; cursor: pointer; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+    position: absolute; inset: 0; border-radius: 31px;
+    background: rgba(120,120,128,0.32); transition: 0.3s;
+}
+.toggle-slider::before {
+    content: ''; position: absolute; width: 27px; height: 27px; top: 2px; left: 2px;
+    border-radius: 50%; background: #fff; transition: 0.3s;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+.toggle input:checked + .toggle-slider { background: #34C759; }
+.toggle input:checked + .toggle-slider::before { transform: translateX(20px); }
+
+/* ── Screen Setting Card ── */
+.screen-card { margin-top: 12px; }
+.screen-card-header { display: flex; align-items: center; justify-content: space-between; }
+.screen-card-title { font-size: 17px; color: var(--text-dim); }
+.screen-card-value { font-size: 15px; color: var(--text); cursor: pointer; }
+.screen-card-value img { width: 16px; height: 16px; margin-left: 4px; vertical-align: middle; opacity: 0.5; }
+
+/* ── USB-A Trickle Card ── */
+.trickle-card { margin-top: 12px; }
+
+/* ── Delay Slider ── */
+.delay-slider { width:100%; height:4px; -webkit-appearance:none; appearance:none; outline:none; cursor:pointer; border-radius:2px; margin:8px 0; }
+.delay-slider::-webkit-slider-thumb { -webkit-appearance:none; width:22px; height:22px; border-radius:50%; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,0.3); cursor:pointer; }
+.delay-slider::-moz-range-thumb { width:22px; height:22px; border-radius:50%; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,0.3); cursor:pointer; }
+.trickle-card-header { display: flex; align-items: center; justify-content: space-between; }
+.trickle-card-title { font-size: 17px; color: var(--text-dim); }
+
+/* ── Rate / Power Card (big card) ── */
+.rate-card {
+    margin-top: 10px; border-radius: 26px;
+    padding: 0; overflow: hidden;
+}
+.rate-inner { padding: 30px 20px 24px; }
+
+/* Total Power Section */
+.total-power-title { font-size: 16px; font-weight: 500; color: var(--text); margin-bottom: 0; }
+.power-row { display: flex; align-items: center; height: 100px; }
+.power-left { flex: 1; padding-left: 0; }
+.power-value-row { display: flex; align-items: baseline; }
+.power-number { font-size: 28px; font-weight: 500; color: var(--text); line-height: 34px; }
+.power-unit { font-size: 10px; color: var(--text); margin-left: 2px; }
+.power-label { font-size: 12px; color: var(--text-dim); margin-top: 0; }
+
+/* Mini line chart placeholder */
+.mini-chart {
+    width: 200px; height: 100px; margin-left: 20px;
+    display: flex; align-items: flex-end; gap: 2px;
+}
+.mini-bar {
+    flex: 1; border-radius: 2px 2px 0 0; transition: height 0.5s ease;
+    background: #46B4FF;
+}
+
+/* Port Power List */
+.port-power-title { font-size: 17px; font-weight: 500; color: var(--text); margin-bottom: 16px; }
+.port-power-row { display: flex; align-items: baseline; margin-bottom: 6px; }
+.port-power-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
+.port-power-name { font-size: 14px; color: var(--text); min-width: 30px; }
+.port-power-w { font-size: 16px; font-weight: 500; color: var(--text); min-width: 55px; text-align: right; }
+.port-power-w-unit { font-size: 13px; color: var(--text); }
+.port-power-protocol { font-size: 13px; color: var(--text-dim); margin-left: 15px; }
+
+/* Full line chart placeholder */
+.full-chart-title { font-size: 16px; font-weight: 500; color: var(--text); margin-top: 18px; margin-bottom: 8px; }
+}
+
+/* X axis */
+
+/* Legend */
+.chart-legend {
+    display: flex; justify-content: center; gap: 16px; margin-top: 8px;
+    font-size: 11px; color: var(--text-dim);
+}
+.chart-legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; vertical-align: middle; }
+
+/* ── Sim Controls ── */
+.sim-ctrls {
+    position: fixed; bottom: 16px; right: 16px; z-index: 200;
+    display: flex; flex-direction: column; gap: 6px;
+}
+.sim-btn {
+    padding: 8px 14px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(0,0,0,0.6); color: #fff; font-size: 11px;
+    cursor: pointer; backdrop-filter: blur(10px); transition: all 0.2s;
+}
+.sim-btn:hover { background: rgba(255,255,255,0.15); }
+.sim-btn.on { border-color: #34C759; color: #34C759; }
+
+/* ── Phone frame on desktop ── */
+@media (min-width: 431px) {
+    body { align-items: flex-start; padding-top: 20px; }
+    .phone {
+        border-radius: 32px; min-height: 92vh; max-height: 96vh; overflow-y: auto;
+        box-shadow: 0 0 80px rgba(0,0,0,0.5), 0 0 200px rgba(70,180,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+    }
+    .phone::-webkit-scrollbar { width: 0; }
+}
