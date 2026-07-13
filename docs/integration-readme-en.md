@@ -75,6 +75,18 @@ Re-authentication supported when server URL changes.
 | `sensor.cuktech_charger_c1_current` | C1 current | A |
 | `sensor.cuktech_charger_c1_power` | C1 power | W |
 | `sensor.cuktech_charger_c1_protocol` | C1 protocol | - |
+| `sensor.cuktech_charger_c2_voltage` | C2 voltage | V |
+| `sensor.cuktech_charger_c2_current` | C2 current | A |
+| `sensor.cuktech_charger_c2_power` | C2 power | W |
+| `sensor.cuktech_charger_c2_protocol` | C2 protocol | - |
+| `sensor.cuktech_charger_c3_voltage` | C3 voltage | V |
+| `sensor.cuktech_charger_c3_current` | C3 current | A |
+| `sensor.cuktech_charger_c3_power` | C3 power | W |
+| `sensor.cuktech_charger_c3_protocol` | C3 protocol | - |
+| `sensor.cuktech_a_voltage` | A voltage | V |
+| `sensor.cuktech_a_current` | A current | A |
+| `sensor.cuktech_a_power` | A power | W |
+| `sensor.cuktech_a_protocol` | A protocol | - |
 | `sensor.cuktech_charger_total_power` | Total power | W |
 
 ### Switch
@@ -87,10 +99,28 @@ Re-authentication supported when server URL changes.
 | `switch.cuktech_charger_c3_port` | C3 port switch |
 | `switch.cuktech_a_port` | A port switch |
 
+### Select
+
+| Entity | Description | Options |
+|--------|-------------|---------|
+| `select.cuktech_scene_mode` | Scene mode | AI / Digital Eco / Single Port / Balanced |
+| `select.cuktech_screen_save_time` | Screen timeout | 5min / 1min / 10min / 30min / Always on |
+| `select.cuktech_language` | Language | English / 中文 |
+
+### Number
+
+| Entity | Description | Range |
+|--------|-------------|-------|
+| `number.cuktech_charger_c1_countdown` | C1 countdown | 0-1440 min |
+| `number.cuktech_charger_c2_countdown` | C2 countdown | 0-1440 min |
+| `number.cuktech_charger_c3_countdown` | C3 countdown | 0-1440 min |
+| `number.cuktech_a_countdown` | A countdown | 0-1440 min |
+
 ### Known Limitations
 
 - **Single Device**: Current architecture supports only one charger at a time. Multi-device support is planned for future releases.
 - **Protocol Detection**: Charging protocol identification (PD/QC/USB-A etc.) is inferred from port voltage and PDO data, and may not always match the actual protocol.
+- **Platform Support**: Development and testing are done exclusively on Linux. Compatibility with other platforms (macOS, Windows) has not been verified — use at your own risk.
 
 ## License
 

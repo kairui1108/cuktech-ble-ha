@@ -58,6 +58,10 @@ class Server:
             self.mqtt_client.publish(topic, json.dumps(payload, ensure_ascii=False), retain=retain)
 
     def setup_mqtt(self):
+        if not self.config.mqtt.enabled:
+            _LOGGER.info("MQTT disabled, running in standalone web server mode")
+            return
+
         import paho.mqtt.client as mqtt
         self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         if self.config.mqtt.username:
@@ -512,8 +516,6 @@ async def on_startup(app_):
         s.setup_mqtt()
         if s.mqtt_client:
             s.setup_mqtt_subscriptions()
-        else:
-            _LOGGER.warning("MQTT not connected, BLE commands via MQTT will not work")
         app_["ble_task"] = asyncio.create_task(s.ble.start())
 
 

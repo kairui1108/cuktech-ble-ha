@@ -122,7 +122,7 @@
         .theme-btn { background: rgba(255, 255, 255, 0.06); border: 1px solid var(--card-border); border-radius: 6px; padding: 4px 10px; color: var(--text-dim); font-size: 11px; cursor: pointer; transition: all 0.2s; }
         .theme-btn:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--accent); }
         .theme-menu { display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 8px; margin-bottom: 8px; min-width: 140px; z-index: 10; }
-        .theme-menu.show { display: none; }
+        .theme-menu.show { display: block; }
         .theme-option { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); transition: background 0.2s; }
         .theme-option:hover { background: rgba(255, 255, 255, 0.08); }
         .theme-option.active { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); }

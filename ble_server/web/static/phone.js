@@ -3,6 +3,12 @@ const API_BASE = window.location.origin;
 const SCENE_NAMES = { 1: 'AI模式', 2: '数码生态', 3: '单口模式', 4: '均衡模式' };
 const SCENE_IMAGES = { 1: 'ai', 2: 'apple', 3: 'single', 4: 'balance' };
 const SCENE_BTN_IMAGES = { 1: 'ai', 2: 'mac', 3: 'single', 4: 'balance' };
+const SCENE_DESCS = {
+    1: '自动识别设备智能匹配最优充电功率',
+    2: '多口同时充电均衡分配功率',
+    3: '单口最大功率输出优先C1口',
+    4: '多个端口均衡分配充电功率',
+};
 const SCENE_PIID = 5;
 const SCREEN_TIMES = ['5分钟', '1分钟', '10分钟', '30分钟', '常亮'];
 const PORT_KEYS = ['c1', 'c2', 'c3', 'a'];
@@ -182,6 +188,8 @@ function renderDeviceArea() {
 
 function renderSceneCard() {
     document.getElementById('sceneName').textContent = SCENE_NAMES[state.scene];
+    const desc = document.getElementById('sceneDesc');
+    if (desc) desc.textContent = SCENE_DESCS[state.scene] || '';
     const arrow = document.getElementById('sceneArrow');
     arrow.classList.toggle('show', true);
 
@@ -310,12 +318,12 @@ function renderPowerDist() {
     const bar = document.getElementById('powerDist');
     const text = document.getElementById('powerDistText');
     if (!bar || !text) return;
-    const MAX_W = 120;
+    const MAX_W = 210;
     let powers = [];
     let totalActive = 0;
     for (const key of PORT_KEYS) {
         const p = state.ports[key];
-        const w = (state.ports[key].enabled && state.ports[key].v > 0) ? p.w : 0;
+        const w = (state.ports[key].enabled && p.w > 0) ? p.w : 0;
         totalActive += w;
         powers.push({ key, name: PORT_NAMES[key], w, color: PORT_COLORS[key] });
     }

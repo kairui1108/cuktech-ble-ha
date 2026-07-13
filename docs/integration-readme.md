@@ -123,11 +123,14 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 | 协议 | 说明 |
 |------|------|
 | idle | 无设备连接 |
+| 5V | USB 5V |
 | PD | USB Power Delivery |
-| PD Fixed | PD 固定电压档位（5/9/12/15/20V） |
-| PD PPS | PD 可编程电源（可调电压） |
+| PPS | PD 可编程电源 |
 | QC | Quick Charge |
-| USB-A | USB-A 充电（DCP） |
+| AFC | Samsung Adaptive Fast Charging |
+| FCP | Huawei Fast Charge Protocol |
+| SCP | Huawei Super Charge Protocol |
+| UFCS | Universal Fast Charging Specification |
 
 ## 故障排除
 
@@ -152,6 +155,7 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 
 - **单设备**：当前架构仅支持同时连接一个充电器，多设备支持将在后续版本更新
 - **充电协议检测**：基于端口电压和 PDO 数据推断，仅供参考，可能与实际协议不完全一致
+- **平台支持**：开发与测试均基于 Linux 环境，其他平台（macOS、Windows）的兼容性未经验证，使用风险自行承担
 
 ## 致谢
 

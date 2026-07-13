@@ -85,7 +85,7 @@ Access at `http://<SERVER_IP>:8199/`
 
 | Topic | Direction | Description |
 |-------|-----------|-------------|
-| `cuktech/porter/port/{c1,c2,c3,a}` | Publish | Port data (JSON) |
+| `cuktech/charger/port/{c1,c2,c3,a}` | Publish | Port data (JSON, retain) |
 | `cuktech/charger/settings` | Publish | Settings (retain) |
 | `cuktech/charger/status` | Publish | Connection status (retain + LWT) |
 | `cuktech/charger/set` | Subscribe | Set command |
@@ -116,6 +116,20 @@ Access at `http://<SERVER_IP>:8199/`
 - **Single Device**: Current architecture supports only one charger at a time. Multi-device support is planned for future releases.
 - **Protocol Detection**: Charging protocol identification (PD/QC/USB-A etc.) is inferred from port voltage and PDO data, and may not always match the actual protocol.
 - **Platform Support**: Development and testing are done exclusively on Linux. Compatibility with other platforms (macOS, Windows) has not been verified — use at your own risk.
+
+## Protocol Support
+
+| Protocol | Description |
+|----------|-------------|
+| 5V | USB 5V |
+| PD | USB Power Delivery |
+| PPS | PD Programmable Power Supply |
+| QC | Quick Charge |
+| AFC | Samsung Adaptive Fast Charging |
+| FCP | Huawei Fast Charge Protocol |
+| SCP | Huawei Super Charge Protocol |
+| UFCS | Universal Fast Charging Specification |
+| idle | No device connected |
 
 ## License
 
