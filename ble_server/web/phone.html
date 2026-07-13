@@ -91,13 +91,13 @@
     <div class="bottom-view">
 
         <!-- Connection Status Card -->
-        <div class="card" id="connectCard" style="margin-top:-40px;position:relative;z-index:10;">
+        <div class="card" id="connectCard" style="margin-top:-40px;position:relative;z-index:10;-webkit-tap-highlight-color:transparent;">
             <div style="display:flex;align-items:center;justify-content:space-between;">
                 <div style="display:flex;align-items:center;gap:10px;">
                     <div id="connectDot" style="width:10px;height:10px;border-radius:50%;background:#666;"></div>
                     <span id="connectStatus" style="font-size:15px;color:var(--text-dim);">未连接</span>
                 </div>
-                <button id="connectBtn" class="sim-btn" onclick="toggleConnection()" style="padding:6px 16px;border-radius:16px;font-size:12px;">连接设备</button>
+                <button id="connectBtn" class="sim-btn" onclick="toggleConnection()" style="padding:8px 20px;border-radius:16px;font-size:12px;min-height:36px;">连接设备</button>
             </div>
         </div>
 
