@@ -1,0 +1,169 @@
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg: #1c1c1c; --card-bg: #252525; --card-border: #3b3b3b;
+            --text: #e1e1e1; --text-dim: #959595;
+            --accent: #03a9f4; --accent-rgb: 3, 169, 244;
+            --success: #389e3d; --success-rgb: 56, 158, 61;
+            --warning: #ffa42b; --warning-rgb: 255, 164, 43;
+            --danger: #db4437; --danger-rgb: 219, 68, 55;
+            --port-c1: #03a9f4; --port-c2: #7c4dff; --port-c3: #389e3d; --port-a: #ffa42b;
+            --border-radius: 8px;
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 16px; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 20px; padding: 24px 0 16px; }
+        .header h1 { font-size: 22px; font-weight: 600; margin-bottom: 10px; background: linear-gradient(135deg, var(--accent), #7c4dff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .status-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 500; }
+        .status-badge.connected { background: rgba(var(--success-rgb), 0.12); color: var(--success); box-shadow: 0 0 20px rgba(var(--success-rgb), 0.1); }
+        .status-badge.disconnected { background: rgba(var(--danger-rgb), 0.12); color: var(--danger); }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: pulse 2s infinite; }
+        .status-badge.disconnected .status-dot { animation: none; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--border-radius); padding: 20px; margin-bottom: 14px; }
+        .card:hover { border-color: var(--accent); }
+        .card-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .card-title::before { content: ''; width: 3px; height: 14px; background: var(--accent); border-radius: 2px; }
+        .time-btn { padding: 4px 8px; border: 1px solid var(--card-border); border-radius: 4px; background: transparent; color: var(--text-dim); font-size: 10px; cursor: pointer; transition: all 0.2s; }
+        .time-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .time-btn.active { background: rgba(var(--accent-rgb), 0.15); border-color: var(--accent); color: var(--accent); }
+        .btn-group { display: flex; gap: 10px; }
+        .btn { flex: 1; padding: 12px 16px; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
+        .btn:active { transform: scale(0.96); }
+        .btn-primary { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); border: 1px solid rgba(var(--accent-rgb), 0.3); }
+        .btn-primary:hover { background: rgba(var(--accent-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.2); }
+        .btn-danger { background: rgba(var(--danger-rgb), 0.15); color: var(--danger); border: 1px solid rgba(var(--danger-rgb), 0.3); }
+        .btn-danger:hover { background: rgba(var(--danger-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--danger-rgb), 0.2); }
+        .btn-secondary { background: rgba(255, 255, 255, 0.06); color: var(--text); border: 1px solid var(--card-border); }
+        .btn-secondary:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--accent); }
+        .btn-toggle { position: relative; overflow: hidden; }
+        .btn-toggle .btn-on, .btn-toggle .btn-off { transition: opacity 0.2s; }
+        .btn-toggle.is-on .btn-on { display: inline; }
+        .btn-toggle.is-on .btn-off { display: none; }
+        .btn-toggle:not(.is-on) .btn-on { display: none; }
+        .btn-toggle:not(.is-on) .btn-off { display: inline; }
+        .power-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+        .power-item { text-align: center; padding: 16px 8px; background: rgba(255, 255, 255, 0.03); border-radius: 12px; }
+        .power-value { font-size: 28px; font-weight: 700; color: var(--accent); line-height: 1; }
+        .power-value.success { color: var(--success); }
+        .power-value.warning { color: var(--warning); }
+        .power-label { font-size: 11px; color: var(--text-dim); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .charger-layout { display: grid; grid-template-columns: 180px 1fr; gap: 20px; align-items: end; }
+        .charger-image { display: flex; align-items: center; justify-content: center; min-width: 0; position: relative; }
+        /* ── Device Container (animated charger image) ── */
+        .device-wrap { width: 160px; max-width: 100%; margin: 0 auto; position: relative; }
+        .device-wrap-inner { position: relative; width: 100%; overflow: hidden; }
+        .unconnected-img { width: 100%; display: none; margin: 0 auto; object-fit: contain; }
+        .unconnected-img.show { display: block; }
+        .device-charger { position: relative; width: 160px; margin: 0 auto; display: block; }
+        .device-charger.charging { animation: deviceFloat 3s ease-in-out infinite; }
+        @keyframes deviceFloat {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-2px); }
+        }
+        .device-img { width: 100%; display: block; }
+        .dark-glow-ani {
+            position: absolute; width: 80%; height: 60%; left: 10%; top: 5%;
+            border-radius: 50%; opacity: 0; transition: opacity 0.8s ease;
+            pointer-events: none; z-index: 0;
+            background: radial-gradient(ellipse, rgba(70,180,255,0.18) 0%, rgba(70,180,255,0.04) 50%, transparent 70%);
+        }
+        .dark-glow-ani.active { opacity: 1; }
+        .scene-badge-ani { display: none; }
+        .scene-badge-ani.show { display: flex; position: absolute; top: -5px; left: 50%; transform: translateX(-50%); z-index: 5; align-items: center; gap: 3px; white-space: nowrap; }
+        .scene-badge-ani img { width: 14px; height: 14px; }
+        .scene-badge-ani span { font-size: 10px; color: #FFF; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+        /* USB Overlay */
+        .usb-overlay-ani { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; }
+        .usb-mod-ani { position: absolute; left: 0; right: 0; height: 14%; display: none; }
+		.usb-mod-ani.active { display: block; }
+        .usb-picon { position: absolute; width: 10%; height: 12px; left: 73%; z-index: 4; }
+        .usb-picon img { width: 100%; height: 100%; object-fit: contain; }
+        .usb-pbg { position: absolute; left: 43%; z-index: 3; }
+        .usb-pbg img { height: 100%; object-fit: contain; }
+        .usb-pval { position: absolute; z-index: 4; color: #64B5F6; font-size: 8px; font-weight: bold; text-align: center; left: 80%; width: 20%; }
+        .charger-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-width: 0; overflow: hidden; }
+        .control-box { background: rgba(255, 255, 255, 0.03); border-radius: 10px; padding: 12px; min-width: 0; overflow: hidden; }
+        .control-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .port-count { font-size: 14px; font-weight: 600; color: var(--success); }
+        .port-count-label { font-size: 11px; color: var(--text-dim); }
+        .stat-box { text-align: center; padding: 12px 8px; background: rgba(255, 255, 255, 0.03); border-radius: 10px; min-width: 0; }
+        .stat-value { font-size: 22px; font-weight: 700; color: var(--accent); line-height: 1; }
+        .stat-value.success { color: var(--success); }
+        .stat-value.warning { color: var(--warning); }
+        .stat-label { font-size: 10px; color: var(--text-dim); margin-top: 4px; text-transform: uppercase; }
+        .chart-container { position: relative; height: 200px; margin-top: 8px; }
+        .port-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; overflow: hidden; }
+        .port-card { background: rgba(255, 255, 255, 0.03); border-radius: 12px; padding: 16px; border: 1px solid transparent; transition: all 0.3s; cursor: pointer; min-width: 0; overflow: hidden; }
+        .port-card:hover { border-color: rgba(var(--accent-rgb), 0.3); }
+        .port-card.active { border-color: rgba(var(--accent-rgb), 0.3); background: rgba(var(--accent-rgb), 0.05); }
+        .port-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+        .port-name { font-size: 15px; font-weight: 700; }
+        .port-name.c1 { color: var(--port-c1); }
+        .port-name.c2 { color: var(--port-c2); }
+        .port-name.c3 { color: var(--port-c3); }
+        .port-name.a { color: var(--port-a); }
+        .port-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .port-stat { text-align: center; }
+        .port-stat-value { font-size: 16px; font-weight: 600; }
+        .port-stat-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
+        .port-toggle { position: relative; width: 44px; height: 24px; }
+        .port-toggle input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255, 255, 255, 0.1); border-radius: 24px; transition: 0.3s; }
+        .toggle-slider:before { content: ""; position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.3s; }
+        .port-toggle input:checked + .toggle-slider { background: var(--accent); box-shadow: 0 0 12px rgba(var(--accent-rgb), 0.4); }
+        .port-toggle input:checked + .toggle-slider:before { transform: translateX(20px); }
+        .settings-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; overflow: hidden; }
+        .setting-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: rgba(255, 255, 255, 0.03); border-radius: 10px; min-width: 0; overflow: hidden; }
+        .setting-label { font-size: 13px; color: var(--text-dim); }
+        .setting-select { padding: 6px 10px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 12px; min-width: 100px; max-width: 120px; cursor: pointer; }
+        .setting-select:focus { outline: none; border-color: var(--accent); }
+        .footer { text-align: center; padding: 20px 0; font-size: 11px; color: var(--text-dim); display: flex; align-items: center; justify-content: center; }
+        .theme-switcher { position: relative; display: inline-block; }
+        .theme-btn { background: rgba(255, 255, 255, 0.06); border: 1px solid var(--card-border); border-radius: 6px; padding: 4px 10px; color: var(--text-dim); font-size: 11px; cursor: pointer; transition: all 0.2s; }
+        .theme-btn:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--accent); }
+        .theme-menu { display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 8px; margin-bottom: 8px; min-width: 140px; z-index: 10; }
+        .theme-menu.show { display: none; }
+        .theme-option { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); transition: background 0.2s; }
+        .theme-option:hover { background: rgba(255, 255, 255, 0.08); }
+        .theme-option.active { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); }
+        .theme-dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.2); }
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.7); z-index: 100; justify-content: center; align-items: center; padding: 20px; }
+        .modal-overlay.show { display: flex; }
+        .modal { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--border-radius); padding: 24px; width: 100%; max-width: 700px; max-height: 90vh; overflow-y: auto; }
+        .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+        .modal-title { font-size: 18px; font-weight: 600; }
+        .modal-close { width: 32px; height: 32px; border: none; border-radius: 50%; background: rgba(255, 255, 255, 0.1); color: var(--text); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        .modal-close:hover { background: rgba(255, 255, 255, 0.2); }
+        .modal-chart-container { position: relative; height: 250px; margin-bottom: 20px; }
+        .modal-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+        .countdown-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; overflow: hidden; }
+        .countdown-item { background: rgba(255, 255, 255, 0.03); border-radius: 12px; padding: 16px; min-width: 0; overflow: hidden; }
+        .countdown-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+        .countdown-port { font-size: 14px; font-weight: 600; }
+        .countdown-port.c1 { color: var(--port-c1); }
+        .countdown-port.c2 { color: var(--port-c2); }
+        .countdown-port.c3 { color: var(--port-c3); }
+        .countdown-port.a { color: var(--port-a); }
+        .countdown-current { font-size: 12px; color: var(--text-dim); }
+        .countdown-input-group { display: flex; gap: 8px; margin-bottom: 10px; justify-content: center; }
+        .countdown-input { padding: 8px 12px; border: 1px solid var(--card-border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 14px; text-align: center; width: 100px; }
+        .countdown-input:focus { outline: none; border-color: var(--accent); }
+        .countdown-unit { padding: 8px 12px; border: 1px solid var(--card-border); border-radius: 8px; background: rgba(255, 255, 255, 0.03); color: var(--text-dim); font-size: 12px; display: flex; align-items: center; }
+        .countdown-quick { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+        .countdown-quick-btn { padding: 6px 10px; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; background: rgba(255, 255, 255, 0.08); color: var(--text); font-size: 11px; cursor: pointer; transition: all 0.2s; }
+        .countdown-quick-btn:hover { background: rgba(var(--accent-rgb), 0.2); border-color: var(--accent); color: var(--accent); }
+        .countdown-actions { display: flex; gap: 8px; margin-top: 10px; }
+        .countdown-toggle-btn { flex: 1; padding: 8px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .countdown-toggle-btn.set { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); border: 1px solid rgba(var(--accent-rgb), 0.2); }
+        .countdown-toggle-btn.set:hover { background: rgba(var(--accent-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.2); }
+        .countdown-toggle-btn.clear { background: rgba(var(--danger-rgb), 0.12); color: var(--danger); border: 1px solid rgba(var(--danger-rgb), 0.3); }
+        .countdown-toggle-btn.clear:hover { background: rgba(var(--danger-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--danger-rgb), 0.15); }
+        @media (max-width: 600px) {
+            .charger-layout { grid-template-columns: 1fr; align-items: start; }
+            .charger-image { justify-content: flex-start; transform: translateX(-12px); }
+            .device-wrap { max-width: 200px; }
+            .device-wrap-inner { height: auto; overflow: visible; }
+            .device-charger { width: 200px; height: auto; }
+            .charger-controls { grid-template-columns: 1fr; }
+            .port-grid, .settings-grid, .countdown-grid { grid-template-columns: 1fr; }
+        }
