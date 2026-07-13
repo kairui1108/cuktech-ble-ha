@@ -122,7 +122,7 @@ class TestPublishMethods:
         mgr.set_mqtt_publisher(publisher)
         data = {"voltage": 20.0, "current": 2.0}
         mgr._publish_port("c1", data)
-        publisher.assert_called_once_with("cuktech/charger/port/c1", data)
+        publisher.assert_called_once_with("cuktech/charger/port/c1", data, retain=False)
 
     def test_publish_without_mqtt(self):
         """Test publish methods don't crash when MQTT is None."""

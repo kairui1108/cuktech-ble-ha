@@ -81,6 +81,7 @@ cuktech-ble-ha/
 │   ├── ha_server.py               # HTTP API + MQTT 服务
 │   ├── ble_manager.py             # BLE 连接管理
 │   ├── state.py                   # 状态管理
+│   ├── state_protocol_v2.py       # 协议检测引擎 V2
 │   ├── history.py                 # SQLite 历史数据
 │   ├── config.py                  # 配置（支持 YAML）
 │   ├── config.yaml.example        # 配置模板
@@ -88,7 +89,7 @@ cuktech-ble-ha/
 │   ├── cuktech_ctl.sh             # 服务控制脚本
 │   ├── web/
 │   │   └── index.html             # Web 前端界面
-│   ├── tests/                     # 单元测试 (101 tests)
+│   ├── tests/                     # 单元测试 (115 tests)
 │   └── systemd/                   # systemd 服务配置
 │
 ├── ha_integration/                # HA 自定义集成
@@ -227,7 +228,7 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 
 | 主题 | 说明 |
 |------|------|
-| `cuktech/charger/port/{c1\|c2\|c3\|a}` | 端口数据（推送） |
+| `cuktech/charger/port/{c1\|c2\|c3\|a}` | 端口数据（retain） |
 | `cuktech/charger/settings` | 设置数据（retain） |
 | `cuktech/charger/status` | 连接状态（retain + LWT） |
 | `cuktech/charger/set` | 设置命令（订阅） |
@@ -250,7 +251,7 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 ## 测试
 
 ```bash
-# BLE Server (101 tests)
+# BLE Server (115 tests)
 cd ble_server && .venv/bin/python -m pytest tests/
 
 # HA Integration (70 tests)

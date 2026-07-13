@@ -30,6 +30,12 @@ def _invalidate():
         _status_cache_invalidator()
 
 
+def _has_bluetoothctl():
+    """Check if bluetoothctl is available."""
+    import shutil
+    return shutil.which("bluetoothctl") is not None
+
+
 class BLEManager:
     def __init__(self, mac, token, state, config):
         self.mac = mac
@@ -89,7 +95,11 @@ class BLEManager:
                 break
             except Exception as e:
                 last_error = e
-                _LOGGER.error("BLE loop error: %s", e, exc_info=True)
+                err_str = str(e)
+                if 'POWERED_OFF' in err_str or 'No powered Bluetooth' in err_str:
+                    _LOGGER.warning("Bluetooth is powered off, will retry in 60s...")
+                else:
+                    _LOGGER.error("BLE loop error: %s", e, exc_info=True)
             finally:
                 await self._disconnect()
             if not self._stop_event.is_set():
@@ -113,13 +123,16 @@ class BLEManager:
                         delay = min(60 * self._auth_fail_count, 180)
                     _LOGGER.warning("Auth failed %d times, reset adapter and waiting %ds...",
                                     self._auth_fail_count, delay)
+                elif last_error and ('POWERED_OFF' in str(last_error) or 'No powered Bluetooth' in str(last_error)):
+                    delay = 60  # Bluetooth powered off, check less frequently
                 elif last_error:
                     await self._force_disconnect_bluetooth()
                     delay = self._get_reconnect_delay()
                 else:
                     delay = self._get_reconnect_delay()
                 self._reconnect_attempts += 1
-                _LOGGER.info("Reconnecting in %.0fs (attempt %d)...", delay, self._reconnect_attempts)
+                if 'POWERED_OFF' not in str(last_error or '') and 'No powered Bluetooth' not in str(last_error or ''):
+                    _LOGGER.info("Reconnecting in %.0fs (attempt %d)...", delay, self._reconnect_attempts)
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
                     break
@@ -129,15 +142,17 @@ class BLEManager:
     async def stop(self):
         self._stop_event.set()
         await self._disconnect()
-        await self._force_disconnect_bluetooth()
+        if _has_bluetoothctl():
+            await self._force_disconnect_bluetooth()
 
     def _find_ble_adapter(self):
         """自动检测支持 BLE 的蓝牙适配器名称（如 hci0, hci1）"""
+        if not os.path.exists("/sys/class/bluetooth"):
+            return "hci0"
         import glob
         hci_devs = sorted(glob.glob("/sys/class/bluetooth/hci*"))
         for hci_dir in hci_devs:
             hci_name = os.path.basename(hci_dir)
-            # 跳过虚拟适配器
             if ":" in hci_name:
                 continue
             if os.path.isdir(os.path.join(hci_dir, "device")):
@@ -229,7 +244,14 @@ class BLEManager:
         # 此处不再重复调用，避免设备收到多次断连通知导致状态混乱
 
     async def _force_disconnect_bluetooth(self):
-        """使用 bluetoothctl 强制断开蓝牙连接并重置适配器"""
+        """使用 bluetoothctl 强制断开蓝牙连接并重置适配器。
+
+        仅在 Linux + bluetoothctl 可用时执行；其它平台由 bleak 层处理断连，
+        适配器电源循环属于 Linux 特有的 BlueZ 恢复手段，跳过不影响功能。
+        """
+        if not _has_bluetoothctl():
+            _LOGGER.info("bluetoothctl not available, skipping adapter power cycle")
+            return
         try:
             proc = await asyncio.create_subprocess_exec(
                 "bluetoothctl", "disconnect", self.mac,
@@ -367,7 +389,7 @@ class BLEManager:
     async def _read_initial_settings(self):
         await self._fetch_settings(update_existing=False)
         for piid, pname in PORT_NAMES.items():
-            self._publish_port(pname, PORT_DEFAULT)
+            self._publish_port(pname, PORT_DEFAULT, retain=True)
 
     async def _refresh_settings(self):
         await self._fetch_settings(update_existing=True)
@@ -424,7 +446,7 @@ class BLEManager:
                     if piid:
                         await self.state.update_port(piid, PORT_DEFAULT)
                         _invalidate()
-                        self._publish_port(PORT_NAMES[piid], PORT_DEFAULT)
+                        self._publish_port(PORT_NAMES[piid], PORT_DEFAULT, retain=True)
             _invalidate()
             self._publish_settings(retain=True)
             if cmd_future and not cmd_future.done():
@@ -473,7 +495,7 @@ class BLEManager:
                 await self.state.update_port(piid, port_info)
                 if old is None or old.to_dict() != port_info:
                     _invalidate()
-                    self._publish_port(PORT_NAMES[piid], port_info)
+                    self._publish_port(PORT_NAMES[piid], port_info, retain=True)
                     if self._history and port_info.get("active", False):
                         loop = asyncio.get_running_loop()
                         task = loop.run_in_executor(None, self._history.record_port_data, piid, port_info)
@@ -527,9 +549,9 @@ class BLEManager:
         if self._mqtt_publish:
             self._mqtt_publish(self.config.topic_settings, self.state.settings, retain=retain)
 
-    def _publish_port(self, port_name, data):
+    def _publish_port(self, port_name, data, retain=False):
         if self._mqtt_publish:
-            self._mqtt_publish(f"{self.config.topic_port}/{port_name}", data)
+            self._mqtt_publish(f"{self.config.topic_port}/{port_name}", data, retain=retain)
 
     async def send_command(self, cmd_type, cmd_data, timeout=None):
         if not self.ctrl or not self.state.authenticated:

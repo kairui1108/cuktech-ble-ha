@@ -46,6 +46,7 @@ class BLEConfig:
 
 @dataclass
 class MQTTConfig:
+    enabled: bool = False
     host: str = "localhost"
     port: int = 1883
     username: str = ""
@@ -105,7 +106,11 @@ def load_config() -> Config:
     except (ValueError, TypeError) as e:
         raise ValueError(f"MQTT port must be an integer: {e}")
 
+    _mqtt_enabled_env = os.environ.get("MQTT_ENABLED", "").lower()
+    mqtt_enabled = _mqtt_enabled_env in ("1", "true", "yes") or mqtt_cfg.get("enabled", False)
+
     mqtt = MQTTConfig(
+        enabled=mqtt_enabled,
         host=os.environ.get("MQTT_HOST", mqtt_cfg.get("host", "localhost")),
         port=mqtt_port,
         username=os.environ.get("MQTT_USER", mqtt_cfg.get("username", "")),

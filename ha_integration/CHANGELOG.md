@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.0.4] - 2026-07-13
+
+### Added
+- Protocol detection V2 engine (state_protocol_v2.py)
+- PROTOCOL_OPTIONS aligned with Mi Home: 5V/QC/AFC/FCP/SCP/PD/PPS/UFCS
+- Integration test fixtures for protocol detection
+
+### Changed
+- BLE Server dependency bumped to v1.0.4
+- MQTT is now opt-in: mqtt.enabled defaults to false
+- ConfigFlow default name updated to full product name
+
+### Fixed
+- PIID 6 duplicate value comment added
+- test_health_failures renamed to match actual assertions
+- Availability logic: HTTP failure respects MQTT connected state
+- MQTT connected: false no longer falsely marks device available
+- Duplicate entities: removed PIID 19/20 from SENSOR_PIIDS (already in SETTING_PIIDS)
+- MQTT publish error handling: async_set_value/port_control wrapped in try/except
+- conftest.py: real HA base classes for proper @property support
+
+### Removed
+- CuktechProtocolSwitch (10 protocol switch entities) — control moved to BLE Server side
+- TOPIC_PROTOCOL from const.py
+- /api/protocol endpoint from ble_server
+
 ## [1.0.3] - 2026-07-11
 
 ### Added

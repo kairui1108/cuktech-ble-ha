@@ -1,5 +1,92 @@
 # Release Notes
 
+## v1.0.4
+
+### BLE Server — 协议对话
+
+#### 协议检测 (Protocol V2)
+- **协议检测引擎**: state_protocol_v2.py 米家协议号(1-10)映射引擎，电压+code 启发式估算
+- **PIID 21 protocol_ctl_extend**: 支持读写协议扩展命令
+- **多字节 SET/GET**: controller.py 支持 poco-endian 多字节值
+- **PD 子类型检测**: _estimate_pd_subtype — <12V 判 PPS default，>=12V 判 PD default
+- **code 0x70**: 添加 C1/C2 PD 电压检查，避免误判为 QC
+- **PDO 集成**: PDO + protocol_switches 联合检测，提升 PPS 识别准确率
+- **PD-off 检测**: PIID21 PD 禁用时强制 5V
+
+#### 安全修复
+- **HMAC 时序攻击**: != → hmac.compare_digest() (controller.py)
+- **文件句柄泄露**: open() → with open() (ble_manager.py)
+- **SQLite 线程安全**: _write_lock → _db_lock 覆盖所有读写操作 (history.py)
+- **MQTT 密码泄露**: 防止异常日志中打印 MQTT 密码
+- **ETag**: hashlib.md5 → hashlib.sha256 (ha_server.py)
+
+#### 代码质量
+- 死导入清理: io (controller.py), struct (protocol.py)
+- 全局单例: 添加 reset_server() 用于测试清理 (ha_server.py)
+- DRY: 提取 _try_decode_inline() 通用辅助方法 (controller.py)
+- _drain_pending_pushes 超时: 添加 10s 截止时间 + 100 帧上限 (controller.py)
+- get_properties 静默失败: 部分失败时记录 warning (controller.py)
+- BLE handle_enable 封装: _stop_event → is_running + request_stop() (ha_server.py)
+
+#### 移动端页面 (phone.html)
+- 全新手机端自适应界面，自动检测手机浏览器跳转
+- 设备图片 USB 端口叠加层（图标 + 实时功率）
+- 场景模式选择器（AI/数码生态/单口/均衡），配模式描述
+- 端口控制卡片（独立开关）
+- 功率曲线折线图（每端口独立 Chart.js，Y 轴自动缩放）
+- 功率占比分布条（含空闲功率）
+- 延时关闭滑动控制（0-240 分钟无级调节）
+- 连接状态卡片 + Toast 提示
+- 深色/浅色主题（跟随系统 + 手动切换）
+- CSS/JS 独立为外部文件
+
+#### 桌面端 Web UI
+- CSS 独立为 index.css，phone.css
+- 添加场景模式描述文案
+- 清理未使用图标（76 → 36 个）
+- 删除 phone_test.html
+
+#### MQTT 解耦
+- **默认不启用 MQTT**，mqtt.enabled: false
+- 仅 config.yaml 设置 enabled: true 或 MQTT_ENABLED=1 时连接
+
+#### 跨平台兼容
+- 非 Linux 平台跳过 bluetoothctl 操作（_force_disconnect_bluetooth, _find_ble_adapter）
+- BLE 连接功能由 bleak 库处理，macOS/Windows 正常使用
+
+#### BLE 修复与优化
+- start() 中 elif last_error: 分支顺序修复，POWERED_OFF 的 60 秒延迟生效
+- 蓝牙关闭时降低日志频率（warning + 60s，无栈追踪）
+- 多处防止闪烁保护（3 秒内忽略 API 返回）
+- 连接按钮改为轮询 status 直到确认
+- _force_disconnect_bluetooth: disconnect 后 sleep(3) 等待 LL 断开确认
+- _connect: 固定 sleep(3) 等待适配器初始化
+- _disconnect: 始终执行 GATT cleanup
+- Auth 失败后等待从 2s 增至 3s
+- 适配器就绪等待从 10s 增至 15s
+- NoneType 守卫: 主循环 + inline data + multiframe + controller 添加 if not self.ctrl
+- controller.start_notify: 包裹 try/except，单个失败不影响其他通道
+
+### HA Integration
+
+- (协议检测移至 BLE Server 侧，移除 CuktechProtocolSwitch)
+- const.py: 移除 TOPIC_PROTOCOL
+- sensor.py: PROTOCOL_OPTIONS 对齐米家（5V/QC/AFC/FCP/SCP/PD/PPS/UFCS）
+- ConfigFlow 设备名更新为完整产品名
+
+### 文档
+
+- **protocol_ctl_extend**: controller.py 添加 PIID 21 用途注释
+- **PIID 映射**: protocol.py 注释更新
+- **Lovelace 示例**: ha_config/example_lovelace.yaml 更新
+- **docs/**: 新增 MIJIA_PLUGIN_ANALYSIS.md 逆向分析文档
+
+### 测试
+
+- **新增测试**: protocol_detection 协议检测、HA integration 集成测试
+- **测试隔离**: conftest.py 全局 mock asyncio.create_subprocess_exec
+- **总计 185 个测试**: BLE Server 115 + HA Integration 70，全部通过
+
 ## v1.0.3
 
 ### BLE Server

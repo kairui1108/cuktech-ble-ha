@@ -65,9 +65,10 @@ try:
     c.connect(host, port, 2)
     c.loop_start()
     import time; time.sleep(0.5)
-    zero = json.dumps({'voltage':0.0,'current':0.0,'power':0.0,'active':False})
+    zero = json.dumps({'voltage':0.0,'current':0.0,'power':0.0,'active':False,'protocol':'idle'})
     for p in ['c1','c2','c3','a']:
-        c.publish(topic+'/port/'+p, zero)
+        c.publish(topic+'/port/'+p, zero, retain=True)
+    c.publish(topic+'/settings', '{}', retain=True)
     c.publish(topic+'/status', json.dumps({'connected':False}), retain=True)
     time.sleep(0.5)
     c.loop_stop()
@@ -113,6 +114,19 @@ if cfg_path.exists():
     if [ -n "$MAC" ] && bluetoothctl info "$MAC" 2>/dev/null | grep -q "Connected: yes"; then
         bluetoothctl disconnect "$MAC" 2>/dev/null || true
         sleep 1
+    fi
+    # Power cycle BLE adapter to ensure clean state for new process
+    if command -v bluetoothctl &>/dev/null; then
+        bluetoothctl power off 2>/dev/null || true
+        sleep 1
+        bluetoothctl power on 2>/dev/null || true
+        # Wait up to 10s for adapter to be ready
+        for i in $(seq 1 10); do
+            sleep 1
+            if bluetoothctl show 2>/dev/null | grep -q "Powered: yes"; then
+                break
+            fi
+        done
     fi
 }
 
