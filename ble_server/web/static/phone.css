@@ -24,20 +24,23 @@ body.light {
 .phone {
     width: 100%; max-width: var(--page-width); min-height: 100vh;
     background: var(--bg); position: relative;
-    padding-bottom: 80px;
+    padding-top: 48px; padding-bottom: 80px;
 }
 
 /* ── Top Navigation ── */
 .navbar {
     display: flex; align-items: center; padding: 8px 16px;
-    height: 48px; position: sticky; top: 0; z-index: 102;
-    background: var(--bg); transition: transform 0.3s ease;
+    height: 48px; position: fixed; top: 0; left: 0; right: 0; z-index: 102;
+    background: var(--bg); transition: opacity 0.3s ease;
+    max-width: var(--page-width); margin: 0 auto;
 }
 .navbar.hide { opacity: 0; pointer-events: none; }
+.navbar.hide .theme-btn { pointer-events: auto; }
 .nav-back { width: 36px; height: 36px; padding: 6px; cursor: pointer; }
 .nav-back img { width: 100%; height: 100%; opacity: 0.7; }
 .nav-title { flex: 1; text-align: center; font-size: 16px; font-weight: 500;
     color: var(--text); margin-right: 36px; }
+.theme-btn { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 .nav-more { width: 28px; height: 28px; cursor: pointer; padding: 4px; display: none; }
 .nav-more img { width: 100%; height: 100%; opacity: 0.5; }
 
@@ -254,6 +257,7 @@ body.light .port-ctl-port-icon img { filter: invert(1); }
     padding: 8px 14px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.15);
     background: rgba(0,0,0,0.6); color: #fff; font-size: 11px;
     cursor: pointer; backdrop-filter: blur(10px); transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
 }
 .sim-btn:hover { background: rgba(255,255,255,0.15); }
 .sim-btn.on { border-color: #34C759; color: #34C759; }
