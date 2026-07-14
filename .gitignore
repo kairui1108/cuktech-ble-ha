@@ -50,11 +50,19 @@ cuktech-ble-server/.venv/
 cuktech-ble-server/__pycache__/
 cuktech-ble-server/src/cuktech_ble/__pycache__/
 ble_server/data/
+ble_server/spec_cli.py
 docs/frida
 docs/hci_log
 docs/dex
 docs/smali_out
 docs/plugin_analysis
+docs/apk
+docs/smali_out2
+docs/smali_out3
+docs/tmp
+docs/tools
+docs/bug.md
+
 
 # Environment variables
 .env

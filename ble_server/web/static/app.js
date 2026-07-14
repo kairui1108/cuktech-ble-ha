@@ -595,8 +595,11 @@
                 if (port.enabled && port.power > 0) totalW += port.power;
             }
 
+            const wrapInner = document.querySelector('.device-wrap-inner');
+
             if (totalW > 0) {
                 unconnected.classList.remove('show');
+                if (wrapInner) wrapInner.classList.remove('idle');
                 charger.classList.add('charging');
                 glow.classList.add('active');
                 // Scene badge: not shown until scene mode data available
@@ -613,6 +616,7 @@
                 }
             } else {
                 unconnected.classList.add('show');
+                if (wrapInner) wrapInner.classList.add('idle');
                 charger.classList.remove('charging');
                 glow.classList.remove('active');
                 ['c1','c2','c3','a'].forEach(k => {

@@ -52,6 +52,7 @@
         /* ── Device Container (animated charger image) ── */
         .device-wrap { width: 160px; max-width: 100%; margin: 0 auto; position: relative; }
         .device-wrap-inner { position: relative; width: 100%; overflow: hidden; }
+.device-wrap-inner.idle { display: none; }
         .unconnected-img { width: 100%; display: none; margin: 0 auto; object-fit: contain; }
         .unconnected-img.show { display: block; }
         .device-charger { position: relative; width: 160px; margin: 0 auto; display: block; }
