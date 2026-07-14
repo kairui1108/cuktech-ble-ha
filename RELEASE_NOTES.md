@@ -1,5 +1,41 @@
 # Release Notes
 
+## v1.0.5
+
+### BLE Server — 协议开关控制
+
+#### 新增功能
+- **PIID21 协议开关修复**: SET 编码支持 2 字节 piid、正确 tl 编码、动态 total_len
+- **TLV 编码重构**: 提取 `_build_miot_tlv()` 静态方法，统一 UINT8/UINT32 编码
+- **`/api/protocol` 端点**: 支持 toggle/set/bulk/value 四种操作模式
+- **本地状态同步**: 协议开关操作后立即更新本地 state，提升响应一致性
+
+#### Bug 修复
+- **Session 密钥泄露**: `print()` 改为 `_LOGGER.debug()` (controller.py)
+- **私有锁访问**: `state._lock` 公开为 `state.lock` 属性 (state.py + ha_server.py)
+- **模块导入兜底**: `state.py` 添加 `try/except ImportError` 路径修复
+
+#### 代码质量
+- `_build_miot_tlv`: 消除重复 plaintext 拼接逻辑 (controller.py)
+- `assertion_error: NoneType` 守卫增强
+
+### HA Integration — 协议开关实体
+
+#### 新增实体
+- **CuktechProtocolSwitch**: 10 个协议开关实体（C1/C2: PD/PPS/UFCS, C3/A: UFCS/SCP）
+- **PPS PD 依赖**: C1/C2 PPS 实体在 PD 关闭时自动显示关闭状态
+
+#### 新增协议
+- `protocol_switches` 属性: 解码 PIID 21 为 per-port per-protocol 字典 (coordinator)
+- `_encode_protocol_extend`: 编码协议开关状态回 PIID 21 值
+- `async_set_protocol`: 带锁的读-改-写操作
+
+### 测试
+
+- **新增 37 个测试**: BLE Server +20 (TLV 编码/协议开关/API), HA +17 (协议开关实体/编解码)
+- **总计 222 个测试**: BLE Server 135 + HA Integration 87，全部通过
+- **aiohttp 安装**: 修复 ha_server 测试环境依赖
+
 ## v1.0.4
 
 ### BLE Server — 协议对话
