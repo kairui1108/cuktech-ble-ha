@@ -289,7 +289,7 @@ SET_COMMANDS = {
                      'values': {'1': 4, '5': 0, '10': 1, '30': 2, 'off': 3}},
     'set-language':  {'piid': 13, 'name': '语言',
                      'values': {'en': 0, 'cn': 1}},
-    'set-usba':     {'piid': 15, 'name': 'USB-A常通电',
+    'set-usba':     {'piid': 15, 'name': 'USB-A小电流',
                      'values': {'on': 1, 'off': 0, '1': 1, '0': 0}},
     'goto':         {'piid': 14, 'name': '显示界面', 'write_only': True,
                      'values': {'1': 1, '2': 2, '3': 3, '4': 4, '5': 5}},

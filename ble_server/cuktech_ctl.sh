@@ -91,9 +91,25 @@ else:
 " 2>/dev/null || echo 8199
 }
 
+is_mqtt_enabled() {
+    "$PYTHON" -c "
+import yaml
+from pathlib import Path
+cfg_path = Path('$SCRIPT_DIR/config.yaml')
+if cfg_path.exists():
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f) or {}
+    enabled = cfg.get('mqtt', {}).get('enabled', False)
+    if enabled:
+        print(1)
+" 2>/dev/null || echo 0
+}
+
 do_cleanup() {
     echo "Cleaning up old processes and BLE connections..."
-    mqtt_cleanup
+    if [ "$(is_mqtt_enabled)" = "1" ]; then
+        mqtt_cleanup
+    fi
     local PORT
     PORT=$(read_server_port)
     lsof -i :"$PORT" -t 2>/dev/null | xargs -r kill -9 2>/dev/null || true
@@ -164,12 +180,16 @@ do_start() {
 do_stop() {
     if ! pid=$(get_pid); then
         echo "Server not running"
-        mqtt_cleanup
+        if [ "$(is_mqtt_enabled)" = "1" ]; then
+            mqtt_cleanup
+        fi
         return 0
     fi
 
     echo "Stopping server (PID: $pid)..."
-    mqtt_cleanup
+    if [ "$(is_mqtt_enabled)" = "1" ]; then
+        mqtt_cleanup
+    fi
     kill "$pid" 2>/dev/null
     local count=0
     while kill -0 "$pid" 2>/dev/null && [ $count -lt 10 ]; do

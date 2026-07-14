@@ -89,3 +89,65 @@ class TestProtocolConstants:
         """Test all ports have bit assignments."""
         assert len(PORT_BITS) == 4
         assert all(v in range(4) for v in PORT_BITS.values())
+
+
+class TestBuildMiotTlv:
+    """Test _build_miot_tlv TLV encoding."""
+
+    def test_set_uint8_value(self):
+        """Test SET with 1-byte value."""
+        from src.cuktech_ble.controller import CuktechBLEController
+        # siid=2, piid=5, value=3 (场景模式=3)
+        result = CuktechBLEController._build_miot_tlv(1, 2, 5, value=3)
+        tl = (1 << 12) | 1  # type_id=1(UINT8), len=1
+        expected = bytes([
+            12, 0x20,  # total_len=12, frame_type=0x20
+            1, 0x00,   # seq=1, [0x00]
+            0x00, 0x01, # opcode=SET(0x00), cnt=1
+            2,          # siid=2
+            5, 0x00,    # piid=5 (LE)
+            tl & 0xFF, (tl >> 8) & 0xFF,  # tl
+            3,          # value=3
+        ])
+        assert result == expected
+        assert len(result) == 12
+
+    def test_set_uint32_value(self):
+        """Test SET with 4-byte value (PIID 21 protocol_extend)."""
+        from src.cuktech_ble.controller import CuktechBLEController
+        # siid=2, piid=21, value=50532111 (0x0303030F)
+        value = 0x0303030F
+        result = CuktechBLEController._build_miot_tlv(1, 2, 21, value=value)
+        assert len(result) == 15
+        assert result[0] == 15  # total_len
+        tl = (5 << 12) | 4  # type_id=5(UINT32), len=4
+        assert result[9:11] == bytes([tl & 0xFF, (tl >> 8) & 0xFF])  # tl
+        # Last 4 bytes = value in LE
+        assert result[11:15] == b'\x0F\x03\x03\x03'
+
+    def test_get_command(self):
+        """Test GET command (value=None)."""
+        from src.cuktech_ble.controller import CuktechBLEController
+        # siid=2, piid=5, no value
+        result = CuktechBLEController._build_miot_tlv(1, 2, 5)
+        assert len(result) == 12
+        assert result[4] == 0x02  # opcode=GET
+        assert result[-1] == 0x00  # dummy value byte
+
+    def test_piid_le_encoding(self):
+        """Test piid is encoded as 2-byte little-endian."""
+        from src.cuktech_ble.controller import CuktechBLEController
+        # piid=512 (0x200) should be 0x00, 0x02
+        result = CuktechBLEController._build_miot_tlv(1, 2, 512, value=1)
+        assert result[7] == 0x00  # piid low byte
+        assert result[8] == 0x02  # piid high byte
+
+    def test_total_len_formula(self):
+        """Test total_len = 11 + value_bytes."""
+        from src.cuktech_ble.controller import CuktechBLEController
+        r1 = CuktechBLEController._build_miot_tlv(1, 2, 5, value=0x00)     # UINT8 → 1 byte
+        r2 = CuktechBLEController._build_miot_tlv(1, 2, 21, value=0x10000) # UINT32 → 4 bytes
+        r3 = CuktechBLEController._build_miot_tlv(1, 2, 5)                 # GET → 1 byte dummy
+        assert r1[0] == 12   # 11 + 1
+        assert r2[0] == 15   # 11 + 4
+        assert r3[0] == 12   # 11 + 1

@@ -33,6 +33,7 @@ body.light {
     height: 48px; position: fixed; top: 0; left: 0; right: 0; z-index: 102;
     background: var(--bg); transition: opacity 0.3s ease;
     max-width: var(--page-width); margin: 0 auto;
+    border-radius: 0 0 18px 18px;
 }
 .navbar.hide { opacity: 0; pointer-events: none; }
 .navbar.hide .theme-btn { pointer-events: auto; }
@@ -44,17 +45,28 @@ body.light {
 .nav-more { width: 28px; height: 28px; cursor: pointer; padding: 4px; display: none; }
 .nav-more img { width: 100%; height: 100%; opacity: 0.5; }
 
-/* ── Parallax Top View (Fixed, non-scrollable) ── */
+/* ── Top View (sticky) ── */
 .top-view {
-    width: 100%; height: 380px; position: relative;
+    width: 100%; height: 304px; position: sticky; top: 48px;
     display: flex; flex-direction: column;
 }
+.imagebg {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    width: 100%; height: 100%; transition: opacity 0.05s linear;
+}
+/* Bottom view: small gap from sticky top-view, scrolls up behind it naturally */
+.bottom-view {
+    position: relative; z-index: 5;
+    background: var(--bg);
+    border-radius: 26px 26px 0 0;
+    min-height: 100vh;
+}
 
-.top-spacer { flex: 5; }
+.top-spacer { flex: 10; }
 
 /* ── Device Image Container ── */
 .imagebg {
-    width: calc(100% - 54px); height: 280px; margin: 20px auto;
+    width: calc(100% - 54px); height: 260px; margin: 30px auto 0;
     position: relative; overflow: visible;
 }
 
@@ -112,12 +124,12 @@ body.light {
 .usb-power-bg { position: absolute; z-index: 3; }
 .usb-power-bg img { height: 100%; object-fit: contain; }
 .usb-power-val {
-    position: absolute; z-index: 4; color: var(--pval-color); font-size: 21px;
+    position: absolute; z-index: 4; color: var(--pval-color); font-size: 17px;
     font-weight: bold; text-align: center; width: 70px;
 }
 
 /* Bottom spacer */
-.bottom-spacer { flex: 11; }
+.bottom-spacer { flex: 2; }
 
 /* ── Bottom Scroll Area ── */
 .bottom-view { padding: 0 16px; }
@@ -159,10 +171,9 @@ body.light {
 .port-ctl-card { margin-top: 12px; }
 .port-ctl-title { font-size: 17px; color: var(--text-dim); margin-bottom: 18px; }
 .port-ctl-items { display: flex; flex-wrap: wrap; gap: 10px; }
-.port-ctl-item {
-    flex: 1; min-width: 130px; display: flex; align-items: center;
-    justify-content: space-between; padding: 8px 0;
-}
+.port-ctl-item { flex: 1; min-width: 130px; padding: 6px 0; }
+.port-ctl-item-top { display: flex; align-items: center; justify-content: space-between; }
+.port-protos { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 8px; }
 .port-ctl-port-icon { width: 32px; height: 20px; }
 .port-ctl-port-icon img { width: 100%; height: 100%; object-fit: contain; }
 body.light .port-ctl-port-icon img { filter: invert(1); }
@@ -197,6 +208,16 @@ body.light .port-ctl-port-icon img { filter: invert(1); }
 .delay-slider { width:100%; height:4px; -webkit-appearance:none; appearance:none; outline:none; cursor:pointer; border-radius:2px; margin:8px 0; }
 .delay-slider::-webkit-slider-thumb { -webkit-appearance:none; width:22px; height:22px; border-radius:50%; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,0.3); cursor:pointer; }
 .delay-slider::-moz-range-thumb { width:22px; height:22px; border-radius:50%; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,0.3); cursor:pointer; }
+
+/* ── Protocol Switch Buttons ── */
+.proto-btn { padding: 3px 8px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04); color: var(--text-dim); font-size: 10px; cursor: pointer; transition: all 0.2s; }
+.proto-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.proto-btn:active { transform: scale(0.96); }
+.proto-btn[disabled] { opacity: 0.3; cursor: not-allowed; }
+body.light .proto-btn { border-color: rgba(0,0,0,0.15); background: rgba(0,0,0,0.06); color: #000; }
+body.light .proto-btn.on { background: var(--accent); border-color: var(--accent); color: #000; }
+body.light .proto-btn:not(.on) { color: #888; }
+body.light .port-protos { background: rgba(0,0,0,0.03); }
 .trickle-card-header { display: flex; align-items: center; justify-content: space-between; }
 .trickle-card-title { font-size: 17px; color: var(--text-dim); }
 

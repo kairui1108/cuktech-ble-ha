@@ -31,7 +31,7 @@ PIID_NAMES = {
     12: "A口倒计时",
     13: "语言",
     14: "进入界面",
-    15: "USB-A常通电",
+    15: "USB-A小电流",
     16: "端口控制",
     19: "空闲息屏",
     20: "屏幕方向锁",
@@ -64,6 +64,18 @@ for piid, cfg in SELECT_PIIDS.items():
         if v in cfg["options"] and v not in option_map:
             option_map[v] = k
     SELECT_OPTION_MAP[piid] = option_map
+
+# Protocol switch bit definitions (PIID 21)
+# c1: bit0=PD, bit1=PPS, bit2=UFCS, bit3=保留(固定1)
+# c2: bit8=PD, bit9=PPS, bit10=UFCS, bit11=保留(固定1)
+# c3: bit16=UFCS, bit17=SCP
+# a:  bit24=UFCS, bit25=SCP
+PROTOCOL_BITS = {
+    "c1": {"pd": 0, "pps": 1, "ufcs": 2},
+    "c2": {"pd": 8, "pps": 9, "ufcs": 10},
+    "c3": {"ufcs": 16, "scp": 17},
+    "a":  {"ufcs": 24, "scp": 25},
+}
 
 # Device info
 DEVICE_INFO = {

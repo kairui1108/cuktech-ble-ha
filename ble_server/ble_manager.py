@@ -416,6 +416,9 @@ class BLEManager:
         try:
             await self.ctrl.send_miot_command(2, piid, value=value)
             await self.state.update_settings({str(piid): value})
+            # 同步协议扩展缓存，防止后续 toggle 读到过期值
+            if piid == 21:
+                await self.state.update_protocol_extend(value)
             _invalidate()
             self._publish_settings(retain=True)
             if cmd_future and not cmd_future.done():

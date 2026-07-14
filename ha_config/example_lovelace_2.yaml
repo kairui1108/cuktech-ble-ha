@@ -1,0 +1,1323 @@
+views:
+  - title: 首页
+    type: sections
+    max_columns: 4
+    icon: mdi:home
+    cards: []
+    sections:
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 室内环境
+            subtitle: 温湿度 & 传感器
+          - type: custom:mushroom-template-card
+            primary: >-
+              {{
+              states('sensor.vchon_cn_blt_3_1petfov010400_mbs20_temperature_p_2_1001')
+              }}°C
+            secondary: 温度
+            icon: mdi:thermometer
+            icon_color: >-
+              {% set t =
+              states('sensor.vchon_cn_blt_3_1petfov010400_mbs20_temperature_p_2_1001')
+              | float(0) %} {% if t > 28 %}red{% elif t > 24 %}orange{% elif t >
+              18 %}green{% else %}blue{% endif %}
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: >-
+              {{
+              states('sensor.vchon_cn_blt_3_1petfov010400_mbs20_relative_humidity_p_2_1002')
+              }}%
+            secondary: 湿度
+            icon: mdi:water-percent
+            icon_color: >-
+              {% set h =
+              states('sensor.vchon_cn_blt_3_1petfov010400_mbs20_relative_humidity_p_2_1002')
+              | float(0) %} {% if h > 70 %}blue{% elif h > 50 %}green{% else
+              %}orange{% endif %}
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-entity-card
+            entity: sensor.vchon_cn_blt_3_1petfov010400_mbs20_battery_level_p_3_1003
+            name: 传感器电量
+            icon: mdi:battery
+            tap_action:
+              action: more-info
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 设备开关
+            subtitle: null
+          - type: custom:mushroom-light-card
+            entity: light.zhi_neng_tai_deng
+            name: 智能台灯
+            icon: mdi:desk-lamp
+            use_light_color: true
+            show_brightness_control: true
+            show_color_temp_control: true
+            show_color_control: true
+          - type: custom:mushroom-entity-card
+            entity: switch.yutai_cn_1207584909_fsov7m_on_p_2_1
+            name: 风扇插座
+            icon: mdi:power-plug
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.chuangmi_cn_494337729_212a01_on_p_2_1
+            name: 摄像头插座
+            icon: mdi:power-plug-outline
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.cuco_cn_690749015_cp2d_on_p_2_1
+            name: 热水器
+            icon: mdi:water-boiler
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.chuangmi_cn_475325046_212a01_on_p_2_1
+            name: 智能插座
+            icon: mdi:power-plug
+            tap_action:
+              action: toggle
+            visibility:
+              - condition: state
+                entity: switch.chuangmi_cn_475325046_212a01_on_p_2_1
+                state: 'off'
+          - type: custom:mushroom-entity-card
+            entity: switch.qmi_cn_1048317009_psv3_on_p_2_1
+            name: 插线板
+            icon: mdi:power-socket
+            tap_action:
+              action: toggle
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 能耗监控
+            subtitle: null
+          - type: custom:mushroom-template-card
+            primary: >-
+              {{ states('sensor.qmi_cn_1048317009_psv3_electric_power_p_3_2') }}
+              W
+            secondary: 插线板实时功率
+            icon: mdi:flash
+            icon_color: >-
+              {% set p =
+              states('sensor.qmi_cn_1048317009_psv3_electric_power_p_3_2') |
+              float(0) %} {% if p > 2000 %}red{% elif p > 1000 %}orange{% else
+              %}green{% endif %}
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: >-
+              {{ states('sensor.qmi_cn_1048317009_psv3_power_consumption_p_3_1')
+              }} kWh
+            secondary: 插线板累计耗电
+            icon: mdi:chart-line
+            icon_color: amber
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: >-
+              {{ states('sensor.cuco_cn_690749015_cp2d_electric_power_p_3_4') }}
+              W
+            secondary: 热水器功率
+            icon: mdi:water-heater
+            icon_color: >-
+              {% set p =
+              states('sensor.cuco_cn_690749015_cp2d_electric_power_p_3_4') |
+              float(0) %} {% if p > 2000 %}red{% elif p > 1000 %}orange{% else
+              %}cyan{% endif %}
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.cuco_cn_690749015_cp2d_temperature_p_6_2'') }}°C'
+            secondary: 热水器温度
+            icon: mdi:thermometer-water
+            icon_color: red
+            tap_action:
+              action: more-info
+          - type: sensor
+            entity: sensor.chuangmi_cn_475325046_212a01_electric_power_p_5_6
+            graph: line
+            detail: 2
+            hours_to_show: 24
+            name: 智能插座功率趋势
+          - type: sensor
+            entity: sensor.daily_energy
+            graph: line
+            detail: 2
+            hours_to_show: 24
+            name: 每日用电趋势
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 网络
+            subtitle: TP-LINK WAR1200L
+          - type: custom:mushroom-template-card
+            primary: >-
+              {{ states('sensor.tp_link_smb_tl_war1200l_download_speed') }}
+              KiB/s
+            secondary: 下载速度
+            icon: mdi:download
+            icon_color: blue
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.tp_link_smb_tl_war1200l_upload_speed'') }} KiB/s'
+            secondary: 上传速度
+            icon: mdi:upload
+            icon_color: green
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-entity-card
+            entity: sensor.cloudflare_daily_requests
+            name: Cloudflare 请求
+            icon: mdi:cloud
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-entity-card
+            entity: binary_sensor.tp_link_smb_tl_war1200l_wan_status
+            name: WAN 状态
+            icon: mdi:wan
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.adguard_home_dns_queries'') }}'
+            secondary: DNS 查询总数
+            icon: mdi:dns
+            icon_color: cyan
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.adguard_home_dns_queries_blocked'') }}'
+            secondary: 已拦截查询
+            icon: mdi:shield-check
+            icon_color: green
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.adguard_home_dns_queries_blocked_ratio'') }}'
+            secondary: 拦截率
+            icon: mdi:percent
+            icon_color: amber
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.adguard_home_average_processing_speed'') }}'
+            secondary: 平均处理速度
+            icon: mdi:speedometer
+            icon_color: purple
+            tap_action:
+              action: more-info
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 系统监控
+            subtitle: N100 服务器
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.n100_cpu_load'') }}%'
+            secondary: CPU 负载
+            icon: mdi:cpu-64-bit
+            icon_color: >-
+              {% set c = states('sensor.n100_cpu_load') | float(0) %} {% if c >
+              80 %}red{% elif c > 50 %}orange{% else %}green{% endif %}
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.n100_memory_used'') }}%'
+            secondary: 内存使用
+            icon: mdi:memory
+            icon_color: >-
+              {% set m = states('sensor.n100_memory_used') | float(0) %} {% if m
+              > 80 %}red{% elif m > 60 %}orange{% else %}green{% endif %}
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.n100_cpu_temp'') }}°C'
+            secondary: CPU 温度
+            icon: mdi:thermometer
+            icon_color: >-
+              {% set t = states('sensor.n100_cpu_temp') | float(0) %} {% if t >
+              70 %}red{% elif t > 50 %}orange{% else %}green{% endif %}
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.tp_link_smb_tl_war1200l_external_ip'') }}'
+            secondary: 公网 IP
+            icon: mdi:ip-network
+            icon_color: purple
+            tap_action:
+              action: more-info
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 充电器
+            subtitle: CUKTECH 10 GaN
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power'') }} W'
+            secondary: 总功率
+            icon: mdi:flash
+            icon_color: >-
+              {% set p = states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power') | float(0)
+              %} {% if p > 100 %}red{% elif p > 50 %}orange{% else %}green{%
+              endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: custom:mushroom-template-card
+            primary: 'C1: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_current') }}A · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_power
+          - type: custom:mushroom-template-card
+            primary: 'C2: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_power
+          - type: custom:mushroom-template-card
+            primary: 'C3: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_power
+          - type: custom:mushroom-template-card
+            primary: 'A: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_protocol') }}
+            icon: mdi:usb-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_power
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 充电器控制
+            subtitle: null
+          - type: custom:mushroom-chips-card
+            alignment: center
+            chips:
+              - type: template
+                icon: mdi:usb-c-port
+                icon_color: >-
+                  {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_active',
+                  'on') %}green{% else %}grey{% endif %}
+                content: C1
+              - type: template
+                icon: mdi:usb-c-port
+                icon_color: >-
+                  {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_active',
+                  'on') %}green{% else %}grey{% endif %}
+                content: C2
+              - type: template
+                icon: mdi:usb-c-port
+                icon_color: >-
+                  {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_active',
+                  'on') %}green{% else %}grey{% endif %}
+                content: C3
+              - type: template
+                icon: mdi:usb-port
+                icon_color: >-
+                  {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_active', 'on')
+                  %}green{% else %}grey{% endif %}
+                content: A
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_duan_kou
+            name: C1 开关
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_duan_kou
+            name: C2 开关
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_duan_kou
+            name: C3 开关
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_usb_a_duan_kou
+            name: USB-A 开关
+            icon: mdi:usb-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-select-card
+            entity: select.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_chang_jing_mo_shi
+            name: 场景模式
+            icon: mdi:view-dashboard
+          - type: custom:mushroom-template-card
+            primary: BLE 连接
+            secondary: null
+            icon: mdi:bluetooth
+            icon_color: blue
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.cuktech_toggle
+          - type: custom:mushroom-template-card
+            primary: 重启服务
+            secondary: null
+            icon: mdi:restart
+            icon_color: amber
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.cuktech_restart
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 媒体控制
+            subtitle: null
+          - type: custom:mushroom-media-player-card
+            entity: media_player.xiaomi_cn_529685370_l05c
+            name: 小米音箱
+            icon: mdi:speaker
+            use_media_info: true
+            show_volume_level: true
+            media_controls:
+              - on_off
+              - play_pause_stop
+              - previous
+              - next
+            volume_controls:
+              - volume_buttons
+              - volume_mute
+          - type: custom:mushroom-media-player-card
+            entity: media_player.speakerss190_72db
+            name: 蓝牙音箱
+            icon: mdi:bluetooth-speaker
+            use_media_info: true
+            show_volume_level: true
+            media_controls:
+              - on_off
+              - play_pause_stop
+              - previous
+              - next
+            volume_controls:
+              - volume_buttons
+              - volume_mute
+  - type: sections
+    title: 庭院
+    path: dd
+    icon: mdi:webcam
+    max_columns: 4
+    cards: []
+    sections:
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 实时监控
+            subtitle: 大门摄像头 · Frigate
+          - type: custom:frigate-card
+            cameras:
+              - camera_entity: camera.she_xiang_tou
+                live_provider: ha
+            view:
+              default: live
+            live:
+              preload: true
+              provider: ha
+            menu:
+              buttons:
+                live:
+                  enabled: true
+                  priority: 5
+                snapshots:
+                  enabled: true
+                  priority: 4
+                clips:
+                  enabled: true
+                  priority: 3
+                download:
+                  enabled: true
+                fullscreen:
+                  enabled: true
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: Frigate 状态
+            subtitle: 检测服务器
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.frigate_status'') }}'
+            secondary: 服务状态
+            icon: mdi:server
+            icon_color: >-
+              {% if is_state('sensor.frigate_status', 'running') %}green{% else
+              %}red{% endif %}
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.frigate_uptime'') }}'
+            secondary: 运行时间
+            icon: mdi:clock-outline
+            icon_color: cyan
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.frigate_cpu_inference_speed'') }} ms'
+            secondary: CPU 推理速度
+            icon: mdi:cpu-64-bit
+            icon_color: blue
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.frigate_camera_fps'') }} fps'
+            secondary: 摄像头帧率
+            icon: mdi:video fps-30
+            icon_color: purple
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.frigate_detection_fps'') }} fps'
+            secondary: 检测帧率
+            icon: mdi:target
+            icon_color: amber
+            tap_action:
+              action: more-info
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 检测设置
+            subtitle: 目标检测 & 移动侦测
+          - type: custom:mushroom-entity-card
+            entity: switch.she_xiang_tou_detect
+            name: 目标检测
+            icon: mdi:target
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.she_xiang_tou_motion
+            name: 移动侦测
+            icon: mdi:motion-sensor
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.she_xiang_tou_recordings
+            name: 录像
+            icon: mdi:video
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.she_xiang_tou_snapshots
+            name: 快照
+            icon: mdi:camera
+            tap_action:
+              action: toggle
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 检测记录
+            subtitle: 人物 & 动物检测
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.she_xiang_tou_person_active_count'') }}'
+            secondary: 人物检测次数
+            icon: mdi:person
+            icon_color: blue
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.she_xiang_tou_cat_active_count'') }}'
+            secondary: 猫咪检测次数
+            icon: mdi:cat
+            icon_color: amber
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.she_xiang_tou_dog_active_count'') }}'
+            secondary: 狗狗检测次数
+            icon: mdi:dog
+            icon_color: orange
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.she_xiang_tou_car_active_count'') }}'
+            secondary: 车辆检测次数
+            icon: mdi:car
+            icon_color: green
+            tap_action:
+              action: more-info
+  - type: sections
+    max_columns: 4
+    title: 延时
+    path: unknown
+    icon: mdi:camera
+    cards: []
+    sections:
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 拍摄状态
+            subtitle: null
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.timelapse_status'') }}'
+            secondary: 当前状态
+            icon: mdi:camera-timer
+            icon_color: >-
+              {% if is_state('sensor.timelapse_running', 'on') %}green{% else
+              %}grey{% endif %}
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.timelapse_frames_today'') }} 帧'
+            secondary: 今日已拍摄
+            icon: mdi:filmstrip
+            icon_color: cyan
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.timelapse_pid'') }}'
+            secondary: 进程 PID
+            icon: mdi:tag
+            icon_color: purple
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-template-card
+            primary: >-
+              {{ states('sensor.timelapse_video_path') | basename | default('无')
+              }}
+            secondary: 最新视频
+            icon: mdi:video-box
+            tap_action:
+              action: navigate
+              navigation_path: /media-browser
+            color: amber
+            features_position: bottom
+            icon_tap_action:
+              action: url
+              url_path: >-
+                http://192.168.1.63:8123/media-browser/browser/app%2Cmedia-source%3A%2F%2Fmedia_source/%2Cmedia-source%3A%2F%2Fmedia_source%2Ftimelapse%2F.
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 拍摄控制
+            subtitle: null
+          - type: custom:mushroom-template-card
+            primary: 开始拍摄
+            secondary: null
+            icon: mdi:play-circle
+            icon_color: green
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.timelapse_start
+          - type: custom:mushroom-template-card
+            primary: 停止拍摄
+            secondary: null
+            icon: mdi:stop-circle
+            icon_color: red
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.timelapse_stop
+          - type: custom:mushroom-template-card
+            primary: 手动快照
+            secondary: null
+            icon: mdi:camera
+            icon_color: blue
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.timelapse_snapshot
+          - type: custom:mushroom-template-card
+            primary: 导出视频
+            secondary: null
+            icon: mdi:video-box
+            icon_color: amber
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.timelapse_export
+          - type: custom:mushroom-template-card
+            primary: 清理帧文件
+            secondary: null
+            icon: mdi:delete-sweep
+            icon_color: orange
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.timelapse_cleanup
+          - type: custom:mushroom-entity-card
+            entity: input_boolean.timelapse_auto_mode
+            name: 自动模式
+            icon: mdi:robot
+            tap_action:
+              action: toggle
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 拍摄参数
+            subtitle: null
+          - type: custom:mushroom-select-card
+            entity: input_select.timelapse_mode
+            name: 拍摄模式
+            icon: mdi:camera-enhance
+          - type: custom:mushroom-select-card
+            entity: input_select.timelapse_quality
+            name: 视频质量
+            icon: mdi:quality-high
+          - type: custom:mushroom-number-card
+            entity: input_number.timelapse_interval
+            name: 拍摄间隔(秒)
+            icon: mdi:timer-outline
+            layout: horizontal
+          - type: custom:mushroom-number-card
+            entity: input_number.timelapse_video_fps
+            name: 视频帧率
+            icon: mdi:filmstrip
+            layout: horizontal
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 实时画面
+            subtitle: null
+          - type: picture-entity
+            entity: camera.she_xiang_tou
+            name: 摄像头实时画面
+            show_name: true
+            show_state: false
+            camera_view: live
+  - title: 充电器
+    type: sections
+    max_columns: 4
+    icon: mdi:flash
+    path: charger
+    sections:
+      - type: grid
+        cards:
+          - type: iframe
+            url: http://192.168.1.63:8199/static/device_info.html
+            aspect_ratio: '4:3'
+            grid_options:
+              columns: 12
+              rows: 8.6
+            hide_background: true
+        visibility:
+          - condition: state
+            entity: sensor.cuktech_ble_status
+            state_not: unavailable
+      - type: grid
+        cards:
+          - type: sensor
+            entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power
+            graph: line
+            detail: 2
+            hours_to_show: 6
+            name: 总功率
+            grid_options:
+              columns: 12
+              rows: 2
+          - type: custom:mushroom-template-card
+            primary: 'C1: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_current') }}A · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_power
+          - type: custom:mushroom-template-card
+            primary: 'C2: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_power
+          - type: custom:mushroom-template-card
+            primary: 'C3: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_power
+          - type: custom:mushroom-template-card
+            primary: 'A: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_protocol') }}
+            icon: mdi:usb-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_power
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_duan_kou
+            name: C1
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_duan_kou
+            name: C2
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_duan_kou
+            name: C3
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_usb_a_duan_kou
+            name: USB-A
+            icon: mdi:usb-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-template-card
+            primary: BLE 连接
+            secondary: null
+            icon: mdi:bluetooth
+            icon_color: blue
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.cuktech_toggle
+          - type: custom:mushroom-template-card
+            primary: 重启服务
+            secondary: null
+            icon: mdi:restart
+            icon_color: amber
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.cuktech_restart
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power'') }} W'
+            secondary: 总功率
+            icon: mdi:flash
+            icon_color: >-
+              {% set p = states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power') | float(0)
+              %} {% if p > 100 %}red{% elif p > 50 %}orange{% else %}green{%
+              endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power
+            grid_options:
+              columns: 6
+              rows: 1
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_usb_achang_tong_dian
+            name: USB-A常通电
+            icon: mdi:usb-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-number-card
+            entity: number.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_dao_ji_shi
+            name: C1
+            icon: mdi:timer-outline
+            layout: horizontal
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: custom:mushroom-number-card
+            entity: number.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_dao_ji_shi
+            name: C2
+            icon: mdi:timer-outline
+            layout: horizontal
+          - type: custom:mushroom-number-card
+            entity: number.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_dao_ji_shi
+            name: C3
+            icon: mdi:timer-outline
+            layout: horizontal
+          - type: custom:mushroom-number-card
+            entity: number.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_usb_a_dao_ji_shi
+            name: USB-A
+            icon: mdi:timer-outline
+            layout: horizontal
+          - type: custom:mushroom-select-card
+            entity: select.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_chang_jing_mo_shi
+            name: 场景模式
+            icon: mdi:view-dashboard
+          - type: custom:mushroom-select-card
+            entity: select.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_xi_ping_shi_jian
+            name: 息屏时间
+            icon: mdi:monitor-off
+          - type: custom:mushroom-select-card
+            entity: select.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_yu_yan
+            name: 语言
+            icon: mdi:translate
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_kong_xian_xi_ping
+            name: 空闲息屏
+            icon: mdi:monitor-off
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_ping_mu_fang_xiang_suo
+            name: 屏幕方向锁
+            icon: mdi:screen-rotation-lock
+            tap_action:
+              action: toggle
+        column_span: 2
+      - type: grid
+        cards:
+          - type: iframe
+            url: http://192.168.1.63:8199/static/countdown.html
+            aspect_ratio: '4:3'
+            grid_options:
+              columns: full
+              rows: 6.5
+            hide_background: true
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_lian_jie_kong_zhi
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+            name: BLE连接
+      - type: grid
+        cards:
+          - type: iframe
+            url: http://192.168.1.63:8199/static/power_chart.html
+            aspect_ratio: '2:1'
+            grid_options:
+              columns: full
+              rows: 6
+            hide_background: true
+        column_span: 2
+      - type: grid
+        cards:
+          - type: iframe
+            url: http://192.168.1.63:8199/static/port_monitor.html
+            aspect_ratio: '16:9'
+            grid_options:
+              columns: full
+              rows: 6
+            hide_background: true
+        column_span: 2
+      - type: grid
+        cards: []
+        column_span: 2
+  - type: sections
+    max_columns: 4
+    title: temp
+    path: temp
+    icon: mdi:battery-charging-high
+    sections:
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            title: 充电器
+            subtitle: CUKTECH 10 GaN
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power'') }} W'
+            secondary: 总功率
+            icon: mdi:flash
+            icon_color: >-
+              {% set p = states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power') | float(0)
+              %} {% if p > 100 %}red{% elif p > 50 %}orange{% else %}green{%
+              endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: custom:mushroom-template-card
+            primary: 'C1: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_current') }}A · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_power
+          - type: custom:mushroom-template-card
+            primary: 'C2: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_power
+          - type: custom:mushroom-template-card
+            primary: 'C3: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_power
+          - type: custom:mushroom-template-card
+            primary: 'A: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_protocol') }}
+            icon: mdi:usb-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_power
+          - type: custom:mushroom-chips-card
+            alignment: center
+            chips:
+              - type: template
+                icon: mdi:usb-c-port
+                icon_color: >-
+                  {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_active',
+                  'on') %}green{% else %}grey{% endif %}
+                content: C1
+              - type: template
+                icon: mdi:usb-c-port
+                icon_color: >-
+                  {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_active',
+                  'on') %}green{% else %}grey{% endif %}
+                content: C2
+              - type: template
+                icon: mdi:usb-c-port
+                icon_color: >-
+                  {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_active',
+                  'on') %}green{% else %}grey{% endif %}
+                content: C3
+              - type: template
+                icon: mdi:usb-port
+                icon_color: >-
+                  {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_active', 'on')
+                  %}green{% else %}grey{% endif %}
+                content: A
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_duan_kou
+            name: C1 开关
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_duan_kou
+            name: C2 开关
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_duan_kou
+            name: C3 开关
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_usb_a_duan_kou
+            name: USB-A 开关
+            icon: mdi:usb-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-select-card
+            entity: select.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_chang_jing_mo_shi
+            name: 场景模式
+            icon: mdi:view-dashboard
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_lian_jie_kong_zhi
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+            name: BLE连接
+          - type: custom:mushroom-template-card
+            primary: 重启服务
+            secondary: null
+            icon: mdi:restart
+            icon_color: amber
+            tap_action:
+              action: perform-action
+              perform_action: shell_command.cuktech_restart
+      - type: grid
+        cards:
+          - type: custom:mushroom-title-card
+            subtitle: CUKTECH 10 GaN Ultra
+            grid_options:
+              columns: 24
+              rows: auto
+            title: 酷态科10号超级电能充Ultra 充电器
+          - type: sensor
+            entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power
+            graph: line
+            detail: 2
+            hours_to_show: 6
+            name: 总功率
+            grid_options:
+              columns: 12
+              rows: 2
+          - type: custom:mushroom-template-card
+            primary: 'C1: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_current') }}A · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_power
+          - type: custom:mushroom-template-card
+            primary: 'C2: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_power
+          - type: custom:mushroom-template-card
+            primary: 'C3: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_protocol') }}
+            icon: mdi:usb-c-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_power
+          - type: custom:mushroom-template-card
+            primary: 'A: {{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_power'') }}W'
+            secondary: >-
+              {{ states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_voltage') }}V · {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_current') }}A· {{
+              states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_protocol') }}
+            icon: mdi:usb-port
+            icon_color: >-
+              {% if is_state('binary_sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_active', 'on')
+              %}green{% else %}grey{% endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_a_power
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_duan_kou
+            name: C1
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_duan_kou
+            name: C2
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_duan_kou
+            name: C3
+            icon: mdi:usb-c-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_usb_a_duan_kou
+            name: USB-A
+            icon: mdi:usb-port
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_pd
+            name: C1 PD
+            icon: mdi:toggle-switch
+            tap_action:
+              action: toggle
+            grid_options:
+              columns: 4
+              rows: 1
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_pps
+            name: C1 PPS
+            icon: mdi:toggle-switch
+            tap_action: &ref_0
+              action: toggle
+            grid_options: &ref_1
+              columns: 4
+              rows: 1
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_ufcs
+            name: C1 UFCS
+            icon: mdi:toggle-switch
+            tap_action: *ref_0
+            grid_options: *ref_1
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_pd
+            name: C2 PD
+            icon: mdi:toggle-switch
+            tap_action: *ref_0
+            grid_options: *ref_1
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_pps
+            name: C2 PPS
+            icon: mdi:toggle-switch
+            tap_action: *ref_0
+            grid_options: *ref_1
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_ufcs
+            name: C2 UFCS
+            icon: mdi:toggle-switch
+            tap_action: *ref_0
+            grid_options: *ref_1
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_scp
+            name: C3 SCP
+            icon: mdi:toggle-switch
+            tap_action: *ref_0
+            grid_options: *ref_1
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_ufcs
+            name: C3 UFCS
+            icon: mdi:toggle-switch
+            tap_action: *ref_0
+            grid_options: *ref_1
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_usb_a_scp
+            icon: mdi:toggle-switch
+            tap_action: *ref_0
+            grid_options: *ref_1
+            name: USB-A SCP
+          - type: custom:mushroom-entity-card
+            entity: >-
+              switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_usb_a_ufcs
+            name: USB-A UFCS
+            icon: mdi:toggle-switch
+            tap_action: *ref_0
+            grid_options: *ref_1
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_usb_achang_tong_dian
+            icon: mdi:usb-port
+            tap_action:
+              action: toggle
+            grid_options:
+              columns: 4
+              rows: 1
+            name: 小电流
+          - type: custom:mushroom-template-card
+            primary: '{{ states(''sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power'') }} W'
+            secondary: 总功率
+            icon: mdi:flash
+            icon_color: >-
+              {% set p = states('sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power') | float(0)
+              %} {% if p > 100 %}red{% elif p > 50 %}orange{% else %}green{%
+              endif %}
+            tap_action:
+              action: more-info
+              entity: sensor.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_total_power
+            grid_options:
+              columns: 4
+              rows: 1
+          - type: custom:mushroom-number-card
+            entity: number.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c1_dao_ji_shi
+            name: C1
+            icon: mdi:timer-outline
+            layout: horizontal
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: custom:mushroom-number-card
+            entity: number.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c2_dao_ji_shi
+            name: C2
+            icon: mdi:timer-outline
+            layout: horizontal
+          - type: custom:mushroom-number-card
+            entity: number.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_c3_dao_ji_shi
+            name: C3
+            icon: mdi:timer-outline
+            layout: horizontal
+          - type: custom:mushroom-number-card
+            entity: number.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_usb_a_dao_ji_shi
+            name: USB-A
+            icon: mdi:timer-outline
+            layout: horizontal
+          - type: custom:mushroom-select-card
+            entity: select.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_chang_jing_mo_shi
+            name: 场景模式
+            icon: mdi:view-dashboard
+          - type: custom:mushroom-select-card
+            entity: select.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_xi_ping_shi_jian
+            name: 息屏时间
+            icon: mdi:monitor-off
+          - type: custom:mushroom-select-card
+            entity: select.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_yu_yan
+            name: 语言
+            icon: mdi:translate
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_kong_xian_xi_ping
+            name: 空闲息屏
+            icon: mdi:monitor-off
+            tap_action:
+              action: toggle
+          - type: custom:mushroom-entity-card
+            entity: switch.ku_tai_ke_10hao_chao_ji_dian_neng_chong_ultra_chong_dian_qi_ping_mu_fang_xiang_suo
+            name: 屏幕方向锁
+            icon: mdi:screen-rotation-lock
+            tap_action:
+              action: toggle
+        column_span: 2

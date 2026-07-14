@@ -19,7 +19,7 @@ mqtt:
 
 server:
   host: "0.0.0.0"
-  port: 8199   # win系统上8199端口可能有问题，请使用其他端口
+  port: 18199   # win系统上8199端口可能有问题，请使用其他端口
   command_timeout: 10.0
   reconnect_base_delay: 1.0       # 初始重连延迟（秒）
   reconnect_max_delay: 300.0      # 最大重连延迟（秒）

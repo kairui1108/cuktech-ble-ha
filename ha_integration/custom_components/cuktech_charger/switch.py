@@ -13,8 +13,22 @@ from . import CuktechMQTTCoordinator
 from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
+# 各端口支持的协议开关定义
+PROTOCOL_SWITCHES = [
+    ("c1", "pd", "C1 PD"),
+    ("c1", "pps", "C1 PPS"),
+    ("c1", "ufcs", "C1 UFCS"),
+    ("c2", "pd", "C2 PD"),
+    ("c2", "pps", "C2 PPS"),
+    ("c2", "ufcs", "C2 UFCS"),
+    ("c3", "ufcs", "C3 UFCS"),
+    ("c3", "scp", "C3 SCP"),
+    ("a", "ufcs", "USB-A UFCS"),
+    ("a", "scp", "USB-A SCP"),
+]
+
 SETTING_PIIDS = {
-    15: {"name": "USB-A常通电", "icon": "mdi:usb-port"},
+    15: {"name": "USB-A小电流", "icon": "mdi:usb-port"},
     19: {"name": "空闲息屏", "icon": "mdi:monitor-off"},
     20: {"name": "屏幕方向锁", "icon": "mdi:screen-rotation-lock"},
 }
@@ -39,6 +53,9 @@ async def async_setup_entry(
 
     for port, cfg in PORT_SWITCHES.items():
         entities.append(CuktechPortSwitch(coord, entry, port, cfg["name"], cfg["icon"], cfg["bit"]))
+
+    for port, proto, name in PROTOCOL_SWITCHES:
+        entities.append(CuktechProtocolSwitch(coord, entry, port, proto, name))
 
     async_add_entities(entities)
 
@@ -221,3 +238,71 @@ class CuktechPortSwitch(SwitchEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
         await self.coordinator.async_port_control(self._port, "off")
+
+
+class CuktechProtocolSwitch(SwitchEntity):
+    """Switch for individual protocol on a CUKTECH Charger port (PIID 21)."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = SwitchDeviceClass.SWITCH
+
+    def __init__(
+        self,
+        coord: CuktechMQTTCoordinator,
+        entry: ConfigEntry,
+        port: str,
+        protocol: str,
+        name: str,
+    ) -> None:
+        """Initialize the protocol switch."""
+        self.coordinator = coord
+        self._entry = entry
+        self._port = port
+        self._protocol = protocol
+        self._attr_unique_id = f"{entry.entry_id}_protocol_{port}_{protocol}"
+        self._attr_name = name
+        self._attr_icon = "mdi:power-plug-outline"
+        coord.register_callback(self._update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Unregister callback when removed."""
+        self.coordinator.unregister_callback(self._update)
+        await super().async_will_remove_from_hass()
+
+    @callback
+    def _update(self) -> None:
+        """Handle state update."""
+        if self.hass is not None:
+            self.async_write_ha_state()
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Return device info."""
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **self.coordinator.device_info}
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self.coordinator.available
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if the protocol switch is on.
+
+        对于 C1/C2 的 PPS，同时检查 PD 状态：PD 关闭时 PPS 视为关闭。
+        """
+        switches = self.coordinator.protocol_switches
+        port_data = switches.get(self._port)
+        if port_data is None:
+            return None
+        if self._protocol == 'pps' and port_data.get('pd') is False:
+            return False
+        return port_data.get(self._protocol)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the protocol switch on."""
+        await self.coordinator.async_set_protocol(self._port, self._protocol, True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the protocol switch off."""
+        await self.coordinator.async_set_protocol(self._port, self._protocol, False)
