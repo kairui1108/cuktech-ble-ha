@@ -51,9 +51,10 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 - **协议检测**：自动识别 PD / PD Fixed / PD PPS / QC / USB-A 充电协议
 - **BLE 连接控制**：开关实体控制 BLE 连接/断开，二进制传感器显示连接状态
 - **端口控制**：远程开关 C1/C2/C3/A 端口
+- **协议开关控制**：10 个开关实体，独立控制各端口 PD/PPS/UFCS/SCP 协议
 - **场景模式**：AI 智能 / 数码生态 / 单口优先 / 均衡充电
 - **倒计时设置**：为每个端口设置充电倒计时（0-1440 分钟）
-- **设备设置**：息屏时间、语言、USB-A 常通电等
+- **设备设置**：息屏时间、语言、USB-A 小电流、空闲息屏、屏幕方向锁等
 - **设备信息同步**：型号、固件版本从 BLE 服务器实时同步到 HA
 - **实体可用性**：MQTT 状态 + HTTP 健康检查双重检测
 
@@ -100,6 +101,16 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 | `switch.cuktech_charger_c2_port` | C2 端口开关 |
 | `switch.cuktech_charger_c3_port` | C3 端口开关 |
 | `switch.cuktech_a_port` | A 端口开关 |
+| `switch.cuktech_charger_*_c1_pd` | C1 PD 协议开关 |
+| `switch.cuktech_charger_*_c1_pps` | C1 PPS 协议开关（PD 关闭时自动关闭） |
+| `switch.cuktech_charger_*_c1_ufcs` | C1 UFCS 协议开关 |
+| `switch.cuktech_charger_*_c2_pd` | C2 PD 协议开关 |
+| `switch.cuktech_charger_*_c2_pps` | C2 PPS 协议开关（PD 关闭时自动关闭） |
+| `switch.cuktech_charger_*_c2_ufcs` | C2 UFCS 协议开关 |
+| `switch.cuktech_charger_*_c3_ufcs` | C3 UFCS 协议开关 |
+| `switch.cuktech_charger_*_c3_scp` | C3 SCP 协议开关 |
+| `switch.cuktech_charger_*_a_ufcs` | USB-A UFCS 协议开关 |
+| `switch.cuktech_charger_*_a_scp` | USB-A SCP 协议开关 |
 
 ### 选择器（Select）
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.5] - 2026-07-14
+
+### Added
+- CuktechProtocolSwitch: 10 protocol switch entities for per-port PD/PPS/UFCS/SCP control
+- PPS PD dependency: C1/C2 PPS automatically shows OFF when PD is OFF
+- Protocol_switches decode/encode in coordinator (PIID 21)
+- Lock-protected async_set_protocol for read-modify-write safety
+- PROTOCOL_BITS constant definition in const.py
+- Entity tests: is_on, PD dependency, unique_id, async_turn_on/off
+- Coordinator tests: protocol_switches decode/encode/roundtrip/unknown
+
+### Changed
+- BLE Server dependency bumped to v1.0.5
+
+### Fixed
+- PIID 21 SET encoding: 2-byte piid LE, proper tl, dynamic total_len
+- Session key leak: print() → _LOGGER.debug()
+
+### Security
+- Key material no longer printed to stderr (debug log only)
+
 ## [1.0.4] - 2026-07-13
 
 ### Added

@@ -9,11 +9,6 @@
 
 通过 BLE（低功耗蓝牙）将 CUKTECH 10 GaN Charger Ultra 充电器接入 Home Assistant，实现实时功率监控、端口控制和自动化。
 
-## 效果预览
-
-![HA Integration](./docs/ha_integration.png)
-
-![HA Lovelace](./docs/ha_lovelace.png)
 
 ## 功能特性
 
@@ -21,6 +16,7 @@
 - **实时功率监控**：通过 MQTT 推送电压、电流、功率数据
 - **功率曲线图**：Web UI 实时显示各端口及总功率曲线
 - **端口控制**：远程开关 C1/C2/C3/A 端口
+- **协议开关控制**：独立控制各端口的 PD/PPS/UFCS/SCP 协议开关
 - **倒计时设置**：为每个端口设置充电倒计时（支持自定义分钟数）
 - **设置管理**：场景模式、息屏时间、语言等设置
 - **BLE 自动重连**：断开后自动重连，指数退避策略
@@ -31,6 +27,7 @@
 - **BLE 连接控制**：开关实体控制 BLE 连接/断开，二进制传感器显示连接状态
 - **端口传感器**：电压、电流、功率、协议类型
 - **端口控制**：开关控制 C1/C2/C3/A 端口
+- **协议开关控制**：10 个开关实体，独立控制各端口 PD/PPS/UFCS/SCP 协议（C1/C2 PPS 自动跟随 PD 状态）
 - **设置管理**：场景模式、息屏时间、语言等选择器
 - **倒计时设置**：数字实体控制各端口充电倒计时
 - **设备信息同步**：型号、固件版本从 BLE 服务器实时同步
@@ -47,7 +44,7 @@
 
 - **单设备**：当前架构仅支持同时连接一个充电器，多设备支持将在后续版本更新
 - **协议检测**：充电协议（PD/QC/USB-A 等）基于端口电压和 PDO 数据推断，仅供参考，可能与实际协议不完全一致
-- **平台支持**：开发与测试均基于 Linux 环境，其他平台（macOS、Windows）的兼容性未经验证，使用风险自行承担
+- **平台支持**：开发与测试均基于 Linux 环境，其他平台（macOS、Windows）的稳定性未经验证，使用风险自行承担
 
 ## 架构说明
 
@@ -88,8 +85,10 @@ cuktech-ble-ha/
 │   ├── check_env.sh               # 环境检查脚本
 │   ├── cuktech_ctl.sh             # 服务控制脚本
 │   ├── web/
-│   │   └── index.html             # Web 前端界面
-│   ├── tests/                     # 单元测试 (115 tests)
+│   │   ├── index.html             # 桌面端 Web 界面
+│   │   ├── phone.html             # 移动端 Web 界面
+│   │   └── static/                # 前端资源 (JS/CSS/图片)
+│   ├── tests/                     # 单元测试 (135 tests)
 │   └── systemd/                   # systemd 服务配置
 │
 ├── ha_integration/                # HA 自定义集成
@@ -109,8 +108,11 @@ cuktech-ble-ha/
 │       └── icon.png
 │
 ├── docs/                          # 文档
+│   ├── server-readme.md
+│   ├── server-readme-en.md
 │   ├── integration-readme.md
-│   └── integration-readme-en.md
+│   ├── integration-readme-en.md
+│   └── tools/                     # CLI 测试工具
 │
 ├── LICENSE
 ├── README.md
@@ -206,6 +208,7 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 | sensor | 端口协议 | PD/QC/USB-A |
 | sensor | 总功率 | 所有端口功率之和 |
 | switch | 端口控制 | 开关 C1/C2/C3/A |
+| switch | 协议开关 (×10) | 独立控制各端口 PD/PPS/UFCS/SCP |
 | select | 场景模式 | AI/数码/单口/均衡 |
 | select | 息屏时间 | 5分钟/1分钟/10分钟等 |
 | number | 倒计时 | 各端口充电倒计时 |
@@ -218,6 +221,7 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 | `/api/enable` | POST | 启用/禁用 BLE 连接 |
 | `/api/set` | POST | 设置 PIID 值 |
 | `/api/port` | POST | 控制端口开关 |
+| `/api/protocol` | POST | 控制协议开关（toggle/set/bulk/value） |
 | `/api/chart` | GET | 获取图表数据 |
 | `/api/history/{port}` | GET | 查询历史数据 |
 | `/api/statistics/{port}` | GET | 统计分析 |
@@ -251,12 +255,18 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 ## 测试
 
 ```bash
-# BLE Server (115 tests)
+# BLE Server (135 tests)
 cd ble_server && .venv/bin/python -m pytest tests/
 
-# HA Integration (70 tests)
+# HA Integration (87 tests)
 cd ha_integration && python -m pytest tests/
 ```
+
+## 效果预览
+
+![HA Integration](./docs/ha_integration.png)
+
+![HA Lovelace](./docs/ha_lovelace.png)
 
 ## 许可证
 
