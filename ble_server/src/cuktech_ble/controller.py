@@ -405,6 +405,9 @@ class CuktechBLEController:
             'app_iv': derived[36:40],
         }
         _LOGGER.info("  会话密钥已派生")
+        _LOGGER.debug("  app_key=%s app_iv=%s",
+                      self._session_keys['app_key'].hex(),
+                      self._session_keys['app_iv'].hex())
 
         # 验证设备 HMAC
         hmac_dev = CryptoHMAC(self._session_keys['dev_key'], algorithm=hashes.SHA256())
@@ -654,17 +657,57 @@ class CuktechBLEController:
             _LOGGER.debug("Drained %d pending pushes", drained)
         return drained
 
+    @staticmethod
+    def _build_miot_tlv(seq: int, siid: int, piid: int, value=None) -> bytes:
+        """构建 MiOT TLV 命令 plaintext。
+
+        帧格式 (对齐米家 SpecWriteChannelManager):
+          [total_len:1B][0x20:1B][seq:1B][0x00:1B][opcode:1B][cnt:1B]
+          [siid:1B][piid:2B LE][tl:2B LE][value:NB]
+          tl = (type_id << 12) | byte_length
+          type_id: 1=UINT8, 5=UINT32 (SpecValueType)
+        """
+        if value is not None:
+            opcode = 0x00  # SET
+            if value <= 0xFF:
+                type_id = 1   # UINT8
+                value_bytes = bytes([value & 0xFF])
+            else:
+                type_id = 5   # UINT32
+                value_bytes = value.to_bytes(4, 'little')
+        else:
+            opcode = 0x02  # GET
+            type_id = 1    # UINT8 (占位)
+            value_bytes = bytes([0x00])
+
+        byte_len = len(value_bytes)
+        tl = (type_id << 12) | byte_len
+        total_len = 11 + byte_len  # 固定帧头 11 字节 + 值长度
+
+        return bytes([
+            total_len & 0xFF, 0x20, seq, 0x00,
+            opcode, 0x01, siid & 0xFF,
+            piid & 0xFF, (piid >> 8) & 0xFF,
+            tl & 0xFF, (tl >> 8) & 0xFF,
+        ]) + value_bytes
+
     async def send_miot_command(self, siid, piid, value=None):
         """发送 MiOT BLE 命令并返回解析后的响应。
 
-        MiOT BLE 命令格式 (从 BTSnoop HCI 日志逆向):
-          SET: [0x0c] [0x20] [seq] [0x00] [0x00] [0x01] [siid] [piid] [0x00] [0x01] [0x10] [value]
-          GET: [0x0c] [0x20] [seq] [0x00] [0x02] [0x01] [siid] [piid] [0x00] [0x01] [0x10] [0x00]
+        MiOT/Spec TLV 帧格式 (对齐米家 SpecWriteChannelManager):
+          frame_header: [tot_len:1B] [0x20:1B]   — 0x20xx, xx=总长度
+          packet:       [frame_header:2B] [seq:1B] [0x00:1B] [opcode:1B] [cnt:1B]
+          TLV entry:    [siid:1B] [piid:2B LE] [tl:2B LE] [value:NB]
+          tl:           (type_id << 12) | byte_length
+          type_id:      1=UINT8, 3=UINT16, 5=UINT32 (SpecValueType)
 
         响应格式:
           SET ACK:    [0x0b] [0x20] [seq]   [0x00] [0x01] [0x01] [siid] [piid]
-          SET Result: [0x0c] [0x20] [seq+1] [0x00] [0x04] [0x01] [siid] [piid] [0x00] [0x01] [0x10] [value]
-          GET Result: [0x0e] [0x20] [seq]   [0x00] [0x03] [0x01] [siid] [piid] [0x00] [0x00] [0x00] [0x01] [0x10] [value]
+          SET Result: [0x0f] [0x20] [seq]   [0x00] [0x04] [0x01] [siid] [piid] [0x00] [0x00] [len] [type] [value]
+          GET Result: [0x11] [0x20] [seq]   [0x00] [0x03] [0x01] [siid] [piid] [0x00] [0x00] [len] [type] [value]
+
+        v1.0.4+ 修复: 框架头长度使用实际包长，piid 改为 2 字节 LE，
+        4 字节值使用 type_id=5 (UINT32) 而非 type_id=1 (UINT8)。
         """
         if not self.authenticated:
             _LOGGER.warning("Not authenticated, cannot send command")
@@ -675,25 +718,11 @@ class CuktechBLEController:
         seq = self._miot_seq
         self._miot_seq = (self._miot_seq + 1) & 0xFF
 
-        if value is not None:
-            # SET property: opcode=0x00
-            if value <= 0xFF:
-                plaintext = bytes([0x0c, 0x20, seq, 0x00,
-                                   0x00, 0x01, siid & 0xFF, piid & 0xFF,
-                                   0x00, 0x01, 0x10, value & 0xFF])
-            else:
-                # 32-bit value → LE 4 bytes, type 0x10
-                b = value.to_bytes(4, 'little')
-                plaintext = bytes([0x0c, 0x20, seq, 0x00,
-                                   0x00, 0x01, siid & 0xFF, piid & 0xFF,
-                                   0x00, 0x04, 0x10, b[0], b[1], b[2], b[3]])
-            _LOGGER.debug("SET siid=%d piid=%d value=%d (0x%X)", siid, piid, value, value)
-        else:
-            # GET property: opcode=0x02
-            plaintext = bytes([0x0c, 0x20, seq, 0x00,
-                               0x02, 0x01, siid & 0xFF, piid & 0xFF,
-                               0x00, 0x01, 0x10, 0x00])
-            _LOGGER.debug("GET siid=%d piid=%d", siid, piid)
+        plaintext = self._build_miot_tlv(seq, siid, piid, value)
+        _LOGGER.debug("%s siid=%d piid=%d value=%s len=%d",
+                      "SET" if value is not None else "GET",
+                      siid, piid, hex(value) if value is not None else "None",
+                      len(plaintext))
 
         if not await self._send_encrypted(plaintext):
             return None
@@ -730,7 +759,14 @@ class CuktechBLEController:
                 deadline = asyncio.get_running_loop().time() + 1.0
                 continue
             elif b4 == 0x04 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
-                val = self._extract_typed_u8(pt, 10, 11) if len(pt) >= 12 else None
+                val = None
+                # 值从 pt[11] 开始（经 CLI 实测验证）
+                if len(pt) >= 12:
+                    vlen = pt[11] if len(pt) > 11 else 1
+                    if vlen >= 4 and len(pt) >= 15:
+                        val = int.from_bytes(pt[11:15], 'little')
+                    else:
+                        val = pt[11]
                 return {'piid': piid, 'value': val, 'raw': pt}
 
         if got_ack:

@@ -137,6 +137,13 @@
         .modal-close:hover { background: rgba(255, 255, 255, 0.2); }
         .modal-chart-container { position: relative; height: 250px; margin-bottom: 20px; }
         .modal-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+        .modal-protocols { margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.06); }
+        .proto-title { font-size: 13px; color: var(--text-dim); margin-bottom: 10px; }
+        .proto-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+        .proto-btn { padding: 5px 12px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.08); background: none; color: var(--text-dim); font-size: 11px; cursor: pointer; transition: all 0.2s; }
+        .proto-btn.on { background: rgba(70,180,255,0.15); border-color: rgba(70,180,255,0.4); color: #64B5F6; }
+        .proto-btn:active { transform: scale(0.96); }
+        .proto-btn:disabled { opacity: 0.4; cursor: not-allowed; }
         .countdown-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; overflow: hidden; }
         .countdown-item { background: rgba(255, 255, 255, 0.03); border-radius: 12px; padding: 16px; min-width: 0; overflow: hidden; }
         .countdown-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }

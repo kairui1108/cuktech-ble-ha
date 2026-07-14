@@ -9,7 +9,13 @@ from src.cuktech_ble.protocol import PDO_KIND_BY_HIGH_BYTE
 _LOGGER = logging.getLogger(__name__)
 
 # 协议检测引擎 (V2)
-from state_protocol_v2 import decode_port as _decode_port_v2
+try:
+    from state_protocol_v2 import decode_port as _decode_port_v2
+except ImportError:
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from state_protocol_v2 import decode_port as _decode_port_v2
 
 PORT_DEFAULT = {"voltage": 0.0, "current": 0.0, "power": 0.0, "active": False, "protocol": "idle"}
 PORT_NAMES = {1: "c1", 2: "c2", 3: "c3", 4: "a"}
@@ -75,6 +81,11 @@ class ChargerState:
         self._cache_valid = False
         # PIID 21 协议扩展控制值
         self._protocol_extend: int = 0
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        """公开的异步锁，供外部模块做原子化 read-modify-write。"""
+        return self._lock
 
     @property
     def protocol_extend(self) -> int:

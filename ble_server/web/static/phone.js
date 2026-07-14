@@ -1,6 +1,45 @@
 // ── API & Config ──
 const API_BASE = window.location.origin;
 const SCENE_NAMES = { 1: 'AI模式', 2: '数码生态', 3: '单口模式', 4: '均衡模式' };
+
+// Update HTML overlay lines on the combined chart using chart's scale positions
+function drawPeakLines(chart) {
+    try {
+        var d = chart && chart._peakData;
+        if (!d) return;
+        var ys = chart.scales && chart.scales.y;
+        if (!ys) return;
+        
+        var container = chart.canvas && chart.canvas.parentNode;
+        if (!container) return;
+        var el0w = document.getElementById('chartLines0W');
+        var elPeak = document.getElementById('chartLinesPeak');
+        var elLabel = document.getElementById('chartLinesLabel');
+        if (!el0w || !elPeak || !elLabel) return;
+        
+        var zeroY = Math.round(ys.getPixelForValue(0));
+        var peakY = Math.round(ys.getPixelForValue(d.peakPower));
+        var isDark = d.isDark;
+        
+        // 0W line at bottom
+        el0w.style.top = zeroY + 'px';
+        el0w.style.borderTopColor = isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)';
+        el0w.style.display = 'block';
+        
+        // Peak line
+        if (peakY < zeroY - 4) {
+            elPeak.style.top = peakY + 'px';
+            elPeak.style.display = 'block';
+            elLabel.textContent = Math.round(d.currentPeak) + 'W';
+            elLabel.style.display = 'block';
+            elLabel.style.top = (peakY - 8) + 'px';
+            elLabel.style.right = '4px';
+        } else {
+            elPeak.style.display = 'none';
+            elLabel.style.display = 'none';
+        }
+    } catch(e) {}
+}
 const SCENE_IMAGES = { 1: 'ai', 2: 'apple', 3: 'single', 4: 'balance' };
 const SCENE_BTN_IMAGES = { 1: 'ai', 2: 'mac', 3: 'single', 4: 'balance' };
 const SCENE_DESCS = {
@@ -28,7 +67,9 @@ let state = {
     settings: {},
     firmware: '',
     trickleEnabled: false,
-    history: { c1: [], c2: [], c3: [], a: [] }
+    history: { c1: [], c2: [], c3: [], a: [] },
+    protocolSwitches: {},
+    protocolExtend: 0,
 };
 
 // ── API Fetch ──
@@ -52,6 +93,8 @@ async function fetchStatus() {
                 }
             }
         }
+        if (data.protocol_switches) state.protocolSwitches = data.protocol_switches;
+        if (data.protocol_extend !== undefined) state.protocolExtend = data.protocol_extend;
         if (data.settings) {
             state.settings = data.settings;
             const sceneVal = data.settings['5'];
@@ -142,6 +185,7 @@ function renderAll() {
     renderPowerDist();
     renderDelayOff();
     renderSettingsUI();
+    renderProtocolSwitches();
 }
 function renderDeviceArea() {
     let totalW = 0, hasAny = false;
@@ -278,32 +322,47 @@ function renderCharts() {
         if (state.history[key].length > 30) state.history[key].shift();
     }
 
-    const textColor = isDark ? '#999' : '#666';
-    const gridColor = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
-    const chartIds = { c1: 'chartC1', c2: 'chartC2', c3: 'chartC3', a: 'chartA' };
+    // Combined chart: all 4 ports
+    const combinedCanvas = document.getElementById('chartCombined');
+    if (combinedCanvas) {
+        if (portCharts.combined) portCharts.combined.destroy();
+        // 计算动态峰值 (当前可见数据的最大值)
+        let currentPeak = 0;
+        for (const key of PORT_KEYS) {
+            for (const v of state.history[key]) {
+                if (v > currentPeak) currentPeak = v;
+            }
+        }
+        const peakPower = currentPeak > 0 ? currentPeak * 1.18 : 60;
 
-    for (const key of PORT_KEYS) {
-        const canvas = document.getElementById(chartIds[key]);
-        if (!canvas) continue;
-        if (portCharts[key]) portCharts[key].destroy();
-        const labels = state.history[key].map((_,i) => i);
-        const data = state.history[key];
-        const maxVal = Math.max(10, ...data, 1);
-        portCharts[key] = new Chart(canvas, {
+        portCharts.combined = new Chart(combinedCanvas, {
             type: 'line',
             data: {
-                labels,
-                datasets: [{ data, borderColor: PORT_COLORS[key], borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: false }]
+                labels: state.history.c1.map((_, i) => i),
+                datasets: PORT_KEYS.map(key => ({
+                    label: PORT_NAMES[key],
+                    data: state.history[key],
+                    borderColor: PORT_COLORS[key],
+                    borderWidth: 1.5,
+                    tension: 0.4,
+                    pointRadius: 0,
+                    fill: false,
+                }))
             },
             options: {
                 responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+                interaction: { intersect: false, mode: 'index' },
                 plugins: { legend: { display: false } },
                 scales: {
                     x: { display: false },
-                    y: { display: false, min: 0, max: Math.ceil(maxVal * 1.1) }
+                    y: { display: false, min: 0, max: peakPower },
                 }
             }
         });
+        // Set peak data and update HTML overlays
+        var chart = portCharts.combined;
+        chart._peakData = { peakPower: peakPower, currentPeak: currentPeak, isDark: isDark };
+        drawPeakLines(chart);
     }
 }
 
@@ -314,11 +373,53 @@ function renderSettingsUI() {
     if (tt) tt.checked = state.trickleEnabled;
 }
 
+function renderProtocolSwitches() {
+    const sw = state.protocolSwitches;
+    if (!sw || Object.keys(sw).length === 0) return;
+    const labels = { pd: 'PD', pps: 'PPS', ufcs: 'UFCS', scp: 'SCP' };
+    for (const port of PORT_KEYS) {
+        const ps = sw[port];
+        const el = document.getElementById('portProtos_' + port);
+        if (!el || !ps) continue;
+        const protoKeys = Object.keys(ps);
+        let html = '';
+        for (const pk of protoKeys) {
+            // PD 关闭时隐藏 PPS 按钮（硬件不支持）
+            if ((port === 'c1' || port === 'c2') && pk === 'pps' && !sw[port].pd) continue;
+            const on = ps[pk];
+            html += `<button class="proto-btn ${on ? 'on' : ''}" data-port="${port}" data-proto="${pk}" onclick="phoneToggleProtocol(this)">${labels[pk] || pk}</button>`;
+        }
+        // C1/C2 提示 PD 与 PPS 关联，C3/A 提示需插拔
+        if (port === 'c1' || port === 'c2') {
+            html += '<div style="font-size:9px;color:var(--text-dim);margin-top:2px;">关闭PD后PPS也将关闭</div>';
+        } else {
+            html += '<div style="font-size:9px;color:var(--text-dim);margin-top:2px;">需重新插拔端口</div>';
+        }
+        el.innerHTML = html;
+    }
+}
+
+async function phoneToggleProtocol(btn) {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    const port = btn.dataset.port;
+    const proto = btn.dataset.proto;
+    try {
+        await fetch(`${API_BASE}/api/protocol`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ port, protocol: proto })
+        });
+        // 乐观更新
+        if (state.protocolSwitches[port]) state.protocolSwitches[port][proto] = !state.protocolSwitches[port][proto];
+        renderProtocolSwitches();
+    } catch (e) { console.error('Protocol toggle error:', e); }
+    finally { btn.disabled = false; }
+}
+
 function renderPowerDist() {
     const bar = document.getElementById('powerDist');
     const text = document.getElementById('powerDistText');
     if (!bar || !text) return;
-    const MAX_W = 210;
     let powers = [];
     let totalActive = 0;
     for (const key of PORT_KEYS) {
@@ -327,11 +428,10 @@ function renderPowerDist() {
         totalActive += w;
         powers.push({ key, name: PORT_NAMES[key], w, color: PORT_COLORS[key] });
     }
-    const idleW = Math.max(0, MAX_W - totalActive);
-    powers.push({ key:'idle', name:'空闲', w: idleW, color: 'rgba(255,255,255,0.06)' });
-    bar.innerHTML = powers.map(x => `<div style="width:${(x.w/MAX_W*100).toFixed(1)}%;height:100%;background:${x.color};transition:width 0.5s;"></div>`).join('');
+    const total = totalActive || 1;
+    bar.innerHTML = powers.map(x => `<div style="width:${(x.w/total*100).toFixed(1)}%;height:100%;background:${x.color};transition:width 0.5s;"></div>`).join('');
     text.innerHTML = powers.map(x => {
-        const pct = (x.w / MAX_W * 100).toFixed(0);
+        const pct = (x.w / total * 100).toFixed(0);
         return `<span style="color:${x.color};${x.w > 0 ? '' : 'opacity:0.3;'}">${x.name} ${pct}%</span>`;
     }).join('');
 }
@@ -421,14 +521,17 @@ async function cycleScreenTime() {
     try { await fetch(`${API_BASE}/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid: 6, value: state.screenTime }) }); } catch(e) {}
 }
 
-// ── Navbar scroll hide ──
-const navbar = document.querySelector('.navbar');
-function hideNavOnScroll(scrollY) {
-    if (navbar) navbar.classList.toggle('hide', scrollY > 60);
+// ── Top-view fade on scroll ──
+const topView = document.querySelector('.top-view');
+function handleFade(scrollY) {
+    if (topView) {
+        var progress = Math.min(1, Math.max(0, (scrollY - 40) / 220));
+        topView.style.opacity = (1 - progress).toFixed(3);
+    }
 }
 const phone = document.querySelector('.phone');
-if (phone) phone.addEventListener('scroll', () => hideNavOnScroll(phone.scrollTop));
-window.addEventListener('scroll', () => hideNavOnScroll(window.scrollY));
+if (phone) phone.addEventListener('scroll', () => handleFade(phone.scrollTop));
+window.addEventListener('scroll', () => handleFade(window.scrollY));
 
 // ── Theme Toggle ──
 let isDark = true;

@@ -1,4 +1,5 @@
 """Tests for ha_server.py - HTTP API endpoints."""
+import asyncio
 import sys
 import json
 import time
@@ -185,4 +186,130 @@ class TestHandleLogLevel:
         request.json = AsyncMock(return_value={"level": "invalid"})
 
         result = await s.handle_log_level(request)
+        assert result.status == 400
+
+
+class TestHandleProtocol:
+    """Test /api/protocol endpoint."""
+
+    @pytest.fixture
+    def server(self):
+        """Create a Server instance with mocked BLE state."""
+        from ha_server import Server
+        from state import ChargerState
+
+        s = Server.__new__(Server)
+        s.ble = MagicMock()
+        s.ble.state = ChargerState()
+
+        async def init_state():
+            # Start with all protocols ON (c1/c2: 0x0F each, c3: 0x03, a: 0x03)
+            await s.ble.state.update_protocol_extend(0x03030F0F)
+
+        asyncio.run(init_state())
+        s.ble.send_command = AsyncMock(return_value={"ok": True})
+        return s
+
+    @pytest.mark.asyncio
+    async def test_protocol_toggle(self, server):
+        """Test toggling a protocol switch."""
+        request = AsyncMock()
+        request.json = AsyncMock(return_value={"port": "c1", "protocol": "pd"})
+
+        result = await server.handle_protocol(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        # PD was ON, now should be OFF (state synced locally)
+        assert server.ble.state.protocol_switches["c1"]["pd"] is False
+
+    @pytest.mark.asyncio
+    async def test_protocol_turn_on(self, server):
+        """Test explicitly turning on a protocol switch."""
+        # First turn it off
+        await server.ble.state.update_protocol_extend(0x03030F0F & ~(1 << 0))
+
+        request = AsyncMock()
+        request.json = AsyncMock(return_value={"port": "c1", "protocol": "pd", "action": "on"})
+
+        result = await server.handle_protocol(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert server.ble.state.protocol_switches["c1"]["pd"] is True
+
+    @pytest.mark.asyncio
+    async def test_protocol_turn_off(self, server):
+        """Test explicitly turning off a protocol switch."""
+        request = AsyncMock()
+        request.json = AsyncMock(return_value={"port": "c2", "protocol": "pps", "action": "off"})
+
+        result = await server.handle_protocol(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert server.ble.state.protocol_switches["c2"]["pps"] is False
+
+    @pytest.mark.asyncio
+    async def test_protocol_invalid_port(self, server):
+        """Test invalid port returns error."""
+        request = AsyncMock()
+        request.json = AsyncMock(return_value={"port": "c5", "protocol": "pd"})
+
+        result = await server.handle_protocol(request)
+        assert result.status == 400
+        body = json.loads(result.body)
+        assert body["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_protocol_invalid_protocol(self, server):
+        """Test invalid protocol returns error."""
+        request = AsyncMock()
+        request.json = AsyncMock(return_value={"port": "c1", "protocol": "invalid"})
+
+        result = await server.handle_protocol(request)
+        assert result.status == 400
+
+    @pytest.mark.asyncio
+    async def test_protocol_missing_params(self, server):
+        """Test missing parameters returns error."""
+        request = AsyncMock()
+        request.json = AsyncMock(return_value={})
+
+        result = await server.handle_protocol(request)
+        assert result.status == 400
+
+    @pytest.mark.asyncio
+    async def test_protocol_value_mode(self, server):
+        """Test setting raw value."""
+        request = AsyncMock()
+        request.json = AsyncMock(return_value={"value": 0})
+
+        result = await server.handle_protocol(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert server.ble.state.protocol_switches["c1"]["pd"] is False
+
+    @pytest.mark.asyncio
+    async def test_protocol_switches_mode(self, server):
+        """Test bulk switch setting."""
+        request = AsyncMock()
+        request.json = AsyncMock(return_value={
+            "switches": {
+                "c1": {"pd": False, "pps": False, "ufcs": False},
+                "c2": {"pd": False, "pps": False, "ufcs": False},
+                "c3": {"ufcs": False, "scp": False},
+                "a":  {"ufcs": False, "scp": False},
+            }
+        })
+
+        result = await server.handle_protocol(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_protocol_bad_json(self, server):
+        """Test invalid JSON returns error."""
+        import json as _json
+        request = AsyncMock()
+        request.json = AsyncMock(side_effect=_json.JSONDecodeError("bad", "", 0))
+
+        result = await server.handle_protocol(request)
         assert result.status == 400

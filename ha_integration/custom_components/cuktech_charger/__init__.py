@@ -28,6 +28,7 @@ from .const import (
     TOPIC_STATUS,
     TOPIC_SET,
     PORT_MAP,
+    PROTOCOL_BITS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -128,6 +129,44 @@ class CuktechMQTTCoordinator:
     def data(self) -> dict[str, Any]:
         """Return settings data (copy)."""
         return dict(self._settings)
+
+    @property
+    def protocol_switches(self) -> dict[str, dict[str, bool]]:
+        """Return decoded protocol switches from PIID 21."""
+        v = self._settings.get("21", 0)
+        result = {}
+        for port, protos in PROTOCOL_BITS.items():
+            result[port] = {}
+            for proto, bit in protos.items():
+                result[port][proto] = bool(v & (1 << bit))
+        return result
+
+    @staticmethod
+    def _encode_protocol_extend(switches: dict) -> int:
+        """Encode protocol switch dict to PIID 21 value."""
+        def _c1c2_flags(ps):
+            if not ps:
+                return 0
+            v = 0x08  # 保留位固定为 1
+            if ps.get("pd"):   v |= 0x01
+            if ps.get("pps"):  v |= 0x02
+            if ps.get("ufcs"): v |= 0x04
+            return v
+
+        c1 = _c1c2_flags(switches.get("c1"))
+        c2 = _c1c2_flags(switches.get("c2"))
+
+        def _c3a_flags(ps):
+            if not ps:
+                return 0
+            v = 0
+            if ps.get("ufcs"): v |= 0x01
+            if ps.get("scp"):  v |= 0x02
+            return v
+
+        c3 = _c3a_flags(switches.get("c3"))
+        a = _c3a_flags(switches.get("a"))
+        return (a << 24) | (c3 << 16) | (c2 << 8) | c1
 
     @property
     def device_info(self) -> dict[str, Any]:
@@ -413,4 +452,15 @@ class CuktechMQTTCoordinator:
             )
         except Exception as err:
             _LOGGER.error("Failed to publish MQTT command: %s", err)
+
+    async def async_set_protocol(self, port: str, protocol: str, on: bool) -> None:
+        """Set a protocol switch on/off via MQTT."""
+        async with self._ble_lock:
+            switches = self.protocol_switches
+            if port not in switches or protocol not in switches[port]:
+                _LOGGER.error("Unknown protocol switch: %s.%s", port, protocol)
+                return
+            switches[port][protocol] = on
+            value = self._encode_protocol_extend(switches)
+            await self.async_set_value(21, value)
 

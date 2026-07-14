@@ -42,9 +42,6 @@
                 <div class="usb-overlay" id="usbOverlay">
                     <!-- C1 -->
                     <div class="usb-module" id="usbModuleC1" style="top: 36px;">
-                        <div class="usb-protocol-icon" style="top: 8px; left:70px;">
-                            <img id="usbProtocolC1" src="static/plugin_imgs/main_charger_dark_power_on.png" alt="">
-                        </div>
                         <div class="usb-power-bg" style="top: 0px; left: 0px; width: 230px; height: 36px;">
                             <img src="static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width: 230px; height: 36px;">
                         </div>
@@ -52,9 +49,6 @@
                     </div>
                     <!-- C2 -->
                     <div class="usb-module" id="usbModuleC2" style="top: 68px;">
-                        <div class="usb-protocol-icon" style="top: 8px; left:70px;">
-                            <img id="usbProtocolC2" src="static/plugin_imgs/main_charger_dark_power_on.png" alt="">
-                        </div>
                         <div class="usb-power-bg" style="top: 0px; left: 0px; width: 230px; height: 36px;">
                             <img src="static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width: 230px; height: 36px;">
                         </div>
@@ -62,9 +56,6 @@
                     </div>
                     <!-- C3 -->
                     <div class="usb-module" id="usbModuleC3" style="top: 100px;">
-                        <div class="usb-protocol-icon" style="top: 8px; left:70px;">
-                            <img id="usbProtocolC3" src="static/plugin_imgs/main_charger_dark_power_on.png" alt="">
-                        </div>
                         <div class="usb-power-bg" style="top: 0px; left: 0px; width: 230px; height: 36px;">
                             <img src="static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width: 230px; height: 36px;">
                         </div>
@@ -72,9 +63,6 @@
                     </div>
                     <!-- A -->
                     <div class="usb-module" id="usbModuleA" style="top: 133px;">
-                        <div class="usb-protocol-icon" style="top: 11px; left:70px;">
-                            <img id="usbProtocolA" src="static/plugin_imgs/main_charger_dark_power_on.png" alt="">
-                        </div>
                         <div class="usb-power-bg" style="top: 0px; left: 3.35px; width: 235px; height: 40px;">
                             <img src="static/plugin_imgs/main_card_usb_a_rectangle.png" alt="" style="width: 235px; height: 40px;">
                         </div>
@@ -87,11 +75,13 @@
         <div class="bottom-spacer"></div>
     </div>
 
+    <div style="height:96px;background:var(--bg);"></div>
+
     <!-- Bottom Scrollable Content -->
     <div class="bottom-view">
 
         <!-- Connection Status Card -->
-        <div class="card" id="connectCard" style="margin-top:-40px;position:relative;z-index:10;-webkit-tap-highlight-color:transparent;">
+        <div class="card" id="connectCard" style="margin-top:0;position:relative;z-index:10;-webkit-tap-highlight-color:transparent;">
             <div style="display:flex;align-items:center;justify-content:space-between;">
                 <div style="display:flex;align-items:center;gap:10px;">
                     <div id="connectDot" style="width:10px;height:10px;border-radius:50%;background:#666;"></div>
@@ -138,24 +128,36 @@
             <div class="port-ctl-title">端口控制</div>
             <div class="port-ctl-items">
                 <div class="port-ctl-item">
-                    <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_c1_on.png" alt=""></div>
-                    <span class="port-ctl-label">C1</span>
-                    <label class="toggle"><input type="checkbox" checked id="toggleC1" onchange="togglePort('c1')"><span class="toggle-slider"></span></label>
+                    <div class="port-ctl-item-top">
+                        <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_c1_on.png" alt=""></div>
+                        <span class="port-ctl-label">C1</span>
+                        <label class="toggle"><input type="checkbox" checked id="toggleC1" onchange="togglePort('c1')"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="port-protos" id="portProtos_c1"></div>
                 </div>
                 <div class="port-ctl-item">
-                    <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_c2_on.png" alt=""></div>
-                    <span class="port-ctl-label">C2</span>
-                    <label class="toggle"><input type="checkbox" checked id="toggleC2" onchange="togglePort('c2')"><span class="toggle-slider"></span></label>
+                    <div class="port-ctl-item-top">
+                        <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_c2_on.png" alt=""></div>
+                        <span class="port-ctl-label">C2</span>
+                        <label class="toggle"><input type="checkbox" checked id="toggleC2" onchange="togglePort('c2')"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="port-protos" id="portProtos_c2"></div>
                 </div>
                 <div class="port-ctl-item">
-                    <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_c3_on.png" alt=""></div>
-                    <span class="port-ctl-label">C3</span>
-                    <label class="toggle"><input type="checkbox" checked id="toggleC3" onchange="togglePort('c3')"><span class="toggle-slider"></span></label>
+                    <div class="port-ctl-item-top">
+                        <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_c3_on.png" alt=""></div>
+                        <span class="port-ctl-label">C3</span>
+                        <label class="toggle"><input type="checkbox" checked id="toggleC3" onchange="togglePort('c3')"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="port-protos" id="portProtos_c3"></div>
                 </div>
                 <div class="port-ctl-item">
-                    <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_a_on.png" alt=""></div>
-                    <span class="port-ctl-label">USB-A</span>
-                    <label class="toggle"><input type="checkbox" checked id="toggleA" onchange="togglePort('a')"><span class="toggle-slider"></span></label>
+                    <div class="port-ctl-item-top">
+                        <div class="port-ctl-port-icon"><img src="static/plugin_imgs/main_card_port_a_on.png" alt=""></div>
+                        <span class="port-ctl-label">USB-A</span>
+                        <label class="toggle"><input type="checkbox" checked id="toggleA" onchange="togglePort('a')"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="port-protos" id="portProtos_a"></div>
                 </div>
             </div>
         </div>
@@ -173,7 +175,7 @@
         <!-- USB-A Trickle Card -->
         <div class="card trickle-card">
             <div class="trickle-card-header">
-                <span class="trickle-card-title">USB-A常通电</span>
+                <span class="trickle-card-title">USB-A小电流</span>
                 <label class="toggle"><input type="checkbox" id="toggleTrickle" onchange="toggleTrickle()"><span class="toggle-slider"></span></label>
             </div>
         </div>
@@ -195,13 +197,20 @@
                 </div>
 
 
-                <!-- Per-Port Charts -->
+                <!-- Port Power Info Grid -->
                 <div class="full-chart-title" style="margin-top:16px;">功率曲线</div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                    <div style="min-width:0;overflow:hidden;"><div id="portPowerC1Row" style="min-height:20px;"></div><div style="height:100px;position:relative;"><canvas id="chartC1"></canvas></div></div>
-                    <div style="min-width:0;overflow:hidden;"><div id="portPowerC2Row" style="min-height:20px;"></div><div style="height:100px;position:relative;"><canvas id="chartC2"></canvas></div></div>
-                    <div style="min-width:0;overflow:hidden;"><div id="portPowerC3Row" style="min-height:20px;"></div><div style="height:100px;position:relative;"><canvas id="chartC3"></canvas></div></div>
-                    <div style="min-width:0;overflow:hidden;"><div id="portPowerARow" style="min-height:20px;"></div><div style="height:100px;position:relative;"><canvas id="chartA"></canvas></div></div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+                    <div id="portPowerC1Row" style="min-height:18px;"></div>
+                    <div id="portPowerC2Row" style="min-height:18px;"></div>
+                    <div id="portPowerC3Row" style="min-height:18px;"></div>
+                    <div id="portPowerARow" style="min-height:18px;"></div>
+                </div>
+                <!-- Combined chart -->
+                <div style="margin-top:6px;height:130px;position:relative;">
+                    <canvas id="chartCombined"></canvas>
+                    <div id="chartLines0W" style="position:absolute;left:0;right:0;border-top:1px dashed rgba(255,255,255,0.2);pointer-events:none;display:none;"></div>
+                    <div id="chartLinesPeak" style="position:absolute;left:0;right:0;border-top:1px dashed rgba(70,180,255,0.5);pointer-events:none;display:none;"></div>
+                    <div id="chartLinesLabel" style="position:absolute;font-size:11px;font-weight:bold;color:rgba(70,180,255,0.9);pointer-events:none;display:none;">0W</div>
                 </div>
 
                 <!-- Power Distribution -->

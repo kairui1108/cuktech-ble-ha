@@ -26,7 +26,7 @@ MiOT Spec (SIID=2, charger service):
   PIID 9-12:  各端口倒计时(分钟) (read/write)
   PIID 13:    语言 0=EN,1=CN (read/write)
   PIID 14:    进入界面 1-5 (write only)
-  PIID 15:    USB-A常通电 (read/write)
+  PIID 15:    USB-A小电流 (read/write)
   PIID 16:    端口控制 (read/write)
   PIID 19:    空闲息屏 (read/write)
   PIID 20:    屏幕方向锁定 (read/write)
@@ -164,7 +164,7 @@ PIID_NAMES = {
     1: 'C1口数据', 2: 'C2口数据', 3: 'C3口数据', 4: 'A口数据',
     5: '场景模式', 6: '息屏时间', 7: '协议控制', 8: '倒计时设置',
     9: 'C1口倒计时', 10: 'C2口倒计时', 11: 'C3口倒计时', 12: 'A口倒计时',
-    13: '语言', 14: '进入界面', 15: 'USB-A常通电', 16: '端口控制',
+    13: '语言', 14: '进入界面', 15: 'USB-A小电流', 16: '端口控制',
     17: '未知-17', 18: '未知-18', 19: '空闲息屏', 20: '屏幕方向锁',
 }
 

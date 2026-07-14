@@ -139,3 +139,97 @@ class TestChargerState:
         # Port keys in to_dict are integers
         assert result["ports"][1]["voltage"] == 12.0
         assert result["ports"][1]["protocol"] == "PD"
+
+    def test_protocol_extend_default(self):
+        """Test protocol_extend starts at 0 and decode yields all False."""
+        state = ChargerState()
+        assert state.protocol_extend == 0
+        sw = state.protocol_switches
+        assert sw["c1"]["pd"] is False
+        assert sw["c1"]["pps"] is False
+        assert sw["c1"]["ufcs"] is False
+        assert sw["c2"]["pd"] is False
+        assert sw["c2"]["pps"] is False
+        assert sw["c2"]["ufcs"] is False
+        assert sw["c3"]["scp"] is False
+        assert sw["c3"]["ufcs"] is False
+        assert sw["a"]["scp"] is False
+        assert sw["a"]["ufcs"] is False
+
+    def test_update_protocol_extend(self):
+        """Test update_protocol_extend sets value and syncs to settings."""
+        state = ChargerState()
+
+        async def update():
+            # c1 PD=1, PPS=1, UFCS=1, reserved=1 => 0x0F
+            # c2 PD=1, PPS=1, UFCS=1, reserved=1 => 0x0F << 8 = 0x0F00
+            # c3 UFCS=1 => 0x01 << 16 = 0x10000
+            # a SCP=1 => 0x02 << 24 = 0x02000000
+            # total = 0x02010F0F
+            await state.update_protocol_extend(0x02010F0F)
+
+        asyncio.run(update())
+        assert state.protocol_extend == 0x02010F0F
+        assert state.settings.get("21") == 0x02010F0F
+        sw = state.protocol_switches
+        assert sw["c1"]["pd"] is True
+        assert sw["c1"]["pps"] is True
+        assert sw["c1"]["ufcs"] is True
+        assert sw["c2"]["pd"] is True
+        assert sw["c2"]["pps"] is True
+        assert sw["c2"]["ufcs"] is True
+        assert sw["c3"]["scp"] is False  # bit 17 not set in this value
+        assert sw["c3"]["ufcs"] is True  # bit 16 set
+        assert sw["a"]["scp"] is True    # bit 25 set
+        assert sw["a"]["ufcs"] is False  # bit 24 not set
+
+    def test_encode_protocol_extend_all_on(self):
+        """Test encoding: all protocols ON."""
+        switches = {
+            "c1": {"pd": True, "pps": True, "ufcs": True},
+            "c2": {"pd": True, "pps": True, "ufcs": True},
+            "c3": {"ufcs": True, "scp": True},
+            "a":  {"ufcs": True, "scp": True},
+        }
+        # c1=0x0F, c2=0x0F<<8=0x0F00, c3=0x03<<16=0x30000, a=0x03<<24=0x3000000
+        result = ChargerState.encode_protocol_extend(switches)
+        assert result == 0x03030F0F
+
+    def test_encode_protocol_extend_all_off(self):
+        """Test encoding: all protocols OFF (c1/c2 still have reserved bit)."""
+        switches = {
+            "c1": {"pd": False, "pps": False, "ufcs": False},
+            "c2": {"pd": False, "pps": False, "ufcs": False},
+            "c3": {"ufcs": False, "scp": False},
+            "a":  {"ufcs": False, "scp": False},
+        }
+        # c1=0x08, c2=0x08<<8=0x0800
+        result = ChargerState.encode_protocol_extend(switches)
+        assert result == 0x00000808  # only reserved bits set
+
+    def test_protocol_switches_roundtrip(self):
+        """Test decode(encode(switches)) == switches."""
+        state = ChargerState()
+        original = {
+            "c1": {"pd": True, "pps": False, "ufcs": True},
+            "c2": {"pd": False, "pps": True, "ufcs": False},
+            "c3": {"ufcs": True, "scp": False},
+            "a":  {"ufcs": False, "scp": True},
+        }
+        encoded = ChargerState.encode_protocol_extend(original)
+
+        async def update():
+            await state.update_protocol_extend(encoded)
+
+        asyncio.run(update())
+        decoded = state.protocol_switches
+        for port in ["c1", "c2", "c3", "a"]:
+            for proto in original[port]:
+                assert decoded[port][proto] == original[port][proto], \
+                    f"Mismatch for {port}.{proto}"
+
+    def test_lock_property(self):
+        """Test lock property returns the same lock instance."""
+        state = ChargerState()
+        assert state.lock is state._lock
+        assert isinstance(state.lock, asyncio.Lock)

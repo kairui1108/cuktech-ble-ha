@@ -16,7 +16,7 @@ from pathlib import Path
 from aiohttp import web
 
 from config import load_config, LOG_LEVELS
-from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS, PIID_RANGES
+from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS, PIID_RANGES, PROTOCOL_SWITCH_BITS
 from ble_manager import BLEManager, set_status_cache_invalidator
 from history import PortHistory
 
@@ -211,6 +211,80 @@ class Server:
         result = await self.ble.send_command("port", (port, action))
         self.invalidate_status_cache()
         return web.json_response(result)
+
+    async def handle_protocol(self, request):
+        """处理协议开关 (PIID 21)。
+
+        请求体:
+          {"port": "c1", "protocol": "pd"}           # toggle
+          {"port": "c1", "protocol": "pd", "action": "on"}   # 显式开关
+          {"switches": {"c1": {"pd": true, ...}}}     # 批量设置
+          {"value": 50532111}                         # 直接写原始值
+        """
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+
+        try:
+            state = self.ble.state
+            if "value" in body:
+                new_val = int(body["value"])
+                if not (0 <= new_val <= 0xFFFFFFFF):
+                    return web.json_response({"ok": False, "error": "value out of range (0-0xFFFFFFFF)"}, status=400)
+            elif "switches" in body:
+                new_val = ChargerState.encode_protocol_extend(body["switches"])
+            elif "port" in body and "protocol" in body:
+                port = body["port"].lower()
+                proto = body["protocol"].lower()
+                action = body.get("action", "toggle")
+
+                # 加锁确保 read-modify-write-send 原子性，防止竞态
+                async with state.lock:
+                    current_val = state.protocol_extend
+                    switches = dict(state.protocol_switches)
+
+                    if port not in switches or proto not in switches[port]:
+                        return web.json_response({"ok": False, "error": f"unknown {port}.{proto}"}, status=400)
+
+                    cur = switches[port][proto]
+                    if action == "toggle":
+                        new_state = not cur
+                    elif action == "on":
+                        new_state = True
+                    elif action == "off":
+                        new_state = False
+                    else:
+                        return web.json_response({"ok": False, "error": f"invalid action: {action}"}, status=400)
+
+                    _LOGGER.info("Protocol switch: %s.%s %s->%s (current 0x%08X)",
+                                 port, proto, cur, new_state, current_val)
+
+                    # 构建新的开关状态
+                    new_switches = dict(switches)
+                    new_switches[port] = dict(switches[port])
+                    new_switches[port][proto] = new_state
+
+                    new_val = ChargerState.encode_protocol_extend(new_switches)
+
+                # 锁外发送 SET (send_command 内部也有 async 操作)
+                result = await self.ble.send_command("set", (21, new_val))
+                # 同步本地状态，确保后续 GET 读到最新值
+                if result and result.get("ok"):
+                    await state.update_protocol_extend(new_val)
+                self.invalidate_status_cache()
+                return web.json_response(result)
+            else:
+                return web.json_response({"ok": False, "error": "missing port/protocol or value"}, status=400)
+
+            # 批量/原始值路径：锁外发送
+            result = await self.ble.send_command("set", (21, new_val))
+            if result and result.get("ok"):
+                await state.update_protocol_extend(new_val)
+            return web.json_response(result)
+        except Exception as e:
+            _LOGGER.error("Protocol switch error: %s", e)
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def handle_enable(self, request):
         try:
@@ -498,6 +572,7 @@ app.router.add_get("/api/status", lambda r: get_server().handle_status(r))
 app.router.add_post("/api/set", lambda r: get_server().handle_set(r))
 app.router.add_post("/api/port", lambda r: get_server().handle_port(r))
 app.router.add_post("/api/enable", lambda r: get_server().handle_enable(r))
+app.router.add_post("/api/protocol", lambda r: get_server().handle_protocol(r))
 app.router.add_get("/api/log-level", lambda r: get_server().handle_log_level(r))
 app.router.add_post("/api/log-level", lambda r: get_server().handle_log_level(r))
 app.router.add_get("/api/chart", lambda r: get_server().handle_chart(r))

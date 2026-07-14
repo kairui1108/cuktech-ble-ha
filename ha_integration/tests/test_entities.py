@@ -133,6 +133,93 @@ class TestSwitchEntities:
         switch.hass = MagicMock()
         assert switch.is_on is False
 
+    def test_protocol_switch_is_on(self, mock_hass, mock_entry):
+        from custom_components.cuktech_charger.switch import CuktechProtocolSwitch
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        coord._settings = {"21": 0x03030F0F}  # all ON
+        sw = CuktechProtocolSwitch(coord, mock_entry, "c1", "pd", "C1 PD")
+        sw.hass = MagicMock()
+        assert sw.is_on is True
+
+    def test_protocol_switch_is_off(self, mock_hass, mock_entry):
+        from custom_components.cuktech_charger.switch import CuktechProtocolSwitch
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        coord._settings = {"21": 0}  # all OFF (except c1/c2 reserved bits)
+        sw = CuktechProtocolSwitch(coord, mock_entry, "c1", "pd", "C1 PD")
+        sw.hass = MagicMock()
+        assert sw.is_on is False
+
+    def test_protocol_switch_pps_with_pd_on(self, mock_hass, mock_entry):
+        """Test C1 PPS is ON when PD is ON."""
+        from custom_components.cuktech_charger.switch import CuktechProtocolSwitch
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        # c1: PD=1, PPS=1, UFCS=1, reserved=1 => 0x0F
+        coord._settings = {"21": 0x0000000F}
+        sw = CuktechProtocolSwitch(coord, mock_entry, "c1", "pps", "C1 PPS")
+        sw.hass = MagicMock()
+        assert sw.is_on is True
+
+    def test_protocol_switch_pps_with_pd_off(self, mock_hass, mock_entry):
+        """Test C1 PPS is OFF when PD is OFF (even if PPS bit is set)."""
+        from custom_components.cuktech_charger.switch import CuktechProtocolSwitch
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        # c1: PD=0, PPS=1, UFCS=1, reserved=1 => 0x0E
+        coord._settings = {"21": 0x0000000E}
+        sw = CuktechProtocolSwitch(coord, mock_entry, "c1", "pps", "C1 PPS")
+        sw.hass = MagicMock()
+        assert sw.is_on is False  # PD off → PPS forced off
+
+    def test_protocol_switch_c3_no_pd_dependency(self, mock_hass, mock_entry):
+        """Test C3 UFCS doesn't have PD dependency."""
+        from custom_components.cuktech_charger.switch import CuktechProtocolSwitch
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        # c3: UFCS=1 => 0x01 << 16 = 0x10000
+        coord._settings = {"21": 0x00010000}
+        sw = CuktechProtocolSwitch(coord, mock_entry, "c3", "ufcs", "C3 UFCS")
+        sw.hass = MagicMock()
+        assert sw.is_on is True
+
+    def test_protocol_switch_unique_id(self, mock_hass, mock_entry):
+        from custom_components.cuktech_charger.switch import CuktechProtocolSwitch
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        sw = CuktechProtocolSwitch(coord, mock_entry, "c2", "pps", "C2 PPS")
+        assert sw._attr_unique_id == "test_entry_123_protocol_c2_pps"
+
+    def test_protocol_switch_multiple_ports(self, mock_hass, mock_entry):
+        """Test independent port protocol states."""
+        from custom_components.cuktech_charger.switch import CuktechProtocolSwitch
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        # c1: PD=1, c2: PD=0
+        coord._settings = {"21": 0x00000809}  # c1=0x09, c2=0x08
+        c1 = CuktechProtocolSwitch(coord, mock_entry, "c1", "pd", "C1 PD")
+        c1.hass = MagicMock()
+        assert c1.is_on is True
+        c2 = CuktechProtocolSwitch(coord, mock_entry, "c2", "pd", "C2 PD")
+        c2.hass = MagicMock()
+        assert c2.is_on is False
+
+    def test_protocol_switch_no_data(self, mock_hass, mock_entry):
+        """When settings has no data, all protocols default to False."""
+        from custom_components.cuktech_charger.switch import CuktechProtocolSwitch
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        coord._settings = {}
+        sw = CuktechProtocolSwitch(coord, mock_entry, "c1", "pd", "C1 PD")
+        sw.hass = MagicMock()
+        assert sw.is_on is False
+
+    @pytest.mark.asyncio
+    async def test_protocol_switch_turn_on_off(self, mock_hass, mock_entry):
+        """Test CuktechProtocolSwitch async_turn_on/off calls coordinator."""
+        from custom_components.cuktech_charger.switch import CuktechProtocolSwitch
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        coord.async_set_protocol = AsyncMock()
+        sw = CuktechProtocolSwitch(coord, mock_entry, "c1", "pd", "C1 PD")
+        sw.hass = MagicMock()
+        await sw.async_turn_on()
+        coord.async_set_protocol.assert_called_once_with("c1", "pd", True)
+        await sw.async_turn_off()
+        coord.async_set_protocol.assert_called_with("c1", "pd", False)
+
 
 class TestBinarySensorEntities:
     """Test binary sensor entity behavior."""

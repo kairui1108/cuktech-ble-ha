@@ -139,13 +139,14 @@
             { piid: 5, name: '场景模式', options: [{ value: 1, label: 'AI模式' }, { value: 2, label: '数码生态' }, { value: 3, label: '单口模式' }, { value: 4, label: '均衡模式' }] },
             { piid: 6, name: '息屏时间', options: [{ value: 0, label: '5分钟' }, { value: 1, label: '1分钟' }, { value: 2, label: '10分钟' }, { value: 3, label: '30分钟' }, { value: 4, label: '常亮' }, { value: 5, label: '1分钟' }] },
             { piid: 13, name: '语言', options: [{ value: 0, label: 'English' }, { value: 1, label: '中文' }] },
-            { piid: 15, name: 'USB-A常通电', options: [{ value: 0, label: '关闭' }, { value: 1, label: '开启' }] },
+            { piid: 15, name: 'USB-A小电流', options: [{ value: 0, label: '关闭' }, { value: 1, label: '开启' }] },
             { piid: 19, name: '空闲息屏', options: [{ value: 0, label: '关闭' }, { value: 1, label: '开启' }] },
             { piid: 20, name: '屏幕方向锁', options: [{ value: 0, label: '关闭' }, { value: 1, label: '开启' }] }
         ];
 
         let lastSettings = {};
         let powerChart = null, modalChart = null, currentModalPort = null, latestPorts = {};
+        let protocolSwitches = {}, protocolExtend = 0;
         let bleConnected = false;
         const portHistory = {
             1: { voltage: [], current: [], power: [], protocol: [] },
@@ -257,7 +258,57 @@
             document.getElementById('modalTitle').style.color = `var(--port-${PORT_KEY_MAP[portId]})`;
             initModalChart();
             updateModalChart();
+            renderModalProtocols();
             document.getElementById('portModal').classList.add('show');
+        }
+
+        function renderModalProtocols() {
+            const container = document.getElementById('modalProtocols');
+            if (!container) return;
+            const portKey = PORT_KEY_MAP[currentModalPort];
+            const sw = protocolSwitches[portKey];
+            if (!sw) {
+                container.innerHTML = '<div class="proto-title">协议开关 — 暂无数据</div>';
+                return;
+            }
+            const protoKeys = Object.keys(sw);
+            const labels = { pd: 'PD', pps: 'PPS', ufcs: 'UFCS', scp: 'SCP' };
+            let html = '<div class="proto-title">协议开关</div><div class="proto-btns">';
+            for (const pk of protoKeys) {
+                // PD 关闭时隐藏 PPS 按钮
+                if ((portKey === 'c1' || portKey === 'c2') && pk === 'pps' && !sw.pd) continue;
+                const on = sw[pk];
+                const cls = on ? 'proto-btn on' : 'proto-btn';
+                html += `<button class="${cls}" data-port="${portKey}" data-proto="${pk}" onclick="toggleProtocol(this)">${labels[pk] || pk}</button>`;
+            }
+            html += '</div>';
+            if (portKey === 'c1' || portKey === 'c2') {
+                html += '<div style="font-size:10px;color:var(--text-dim);margin-top:6px;">关闭PD后PPS也将关闭</div>';
+            } else {
+                html += '<div style="font-size:10px;color:var(--text-dim);margin-top:6px;">需重新插拔端口设备生效</div>';
+            }
+            container.innerHTML = html;
+        }
+
+        async function toggleProtocol(btn) {
+            if (btn.disabled) return;
+            btn.disabled = true;
+            const port = btn.dataset.port;
+            const proto = btn.dataset.proto;
+            try {
+                const res = await fetch(`${API_BASE}/api/protocol`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ port, protocol: proto })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    // Toggle local state optimistically
+                    const key = PORT_KEY_TO_ID[port];
+                    if (protocolSwitches[port]) protocolSwitches[port][proto] = !protocolSwitches[port][proto];
+                    renderModalProtocols();
+                }
+            } catch (e) { console.error('Protocol toggle error:', e); }
+            finally { btn.disabled = false; }
         }
 
         function closeModal() { document.getElementById('portModal').classList.remove('show'); currentModalPort = null; }
@@ -296,6 +347,8 @@
         function updateUI(data) {
             bleConnected = data.connected && data.authenticated;
             latestPorts = data.ports || {};
+            if (data.protocol_switches) protocolSwitches = data.protocol_switches;
+            if (data.protocol_extend !== undefined) protocolExtend = data.protocol_extend;
             updateStatusBadge(data.connected, data.authenticated, data.mqtt_connected);
             updateBleButton();
             renderPorts(data.ports);

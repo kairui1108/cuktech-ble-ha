@@ -270,3 +270,103 @@ class TestCuktechMQTTCoordinator:
         """Test port_data property returns _port_data."""
         coordinator._port_data = {"1": {"voltage": 20.0}}
         assert coordinator.port_data == {"1": {"voltage": 20.0}}
+
+    def test_protocol_switches_default(self, coordinator):
+        """Test protocol_switches returns all False when no setting."""
+        sw = coordinator.protocol_switches
+        for port in ["c1", "c2", "c3", "a"]:
+            for proto_val in sw[port].values():
+                assert proto_val is False
+
+    def test_protocol_switches_decoding(self, coordinator):
+        """Test protocol_switches decodes PIID 21 correctly."""
+        # c1 PD=1, PPS=1, UFCS=1, reserved=1 => 0x0F
+        # c2 all off (reserved only) => 0x08 << 8 = 0x0800
+        # c3 UFCS=1 => 0x01 << 16 = 0x10000
+        # a SCP=1 => 0x02 << 24 = 0x02000000
+        # total = 0x0201080F
+        coordinator._settings = {"21": 0x0201080F}
+        sw = coordinator.protocol_switches
+        assert sw["c1"]["pd"] is True
+        assert sw["c1"]["pps"] is True
+        assert sw["c1"]["ufcs"] is True
+        assert sw["c2"]["pd"] is False
+        assert sw["c2"]["pps"] is False
+        assert sw["c2"]["ufcs"] is False
+        assert sw["c3"]["ufcs"] is True
+        assert sw["c3"]["scp"] is False
+        assert sw["a"]["scp"] is True
+        assert sw["a"]["ufcs"] is False
+
+    def test_encode_protocol_extend_all_on(self, coordinator):
+        """Test _encode_protocol_extend: all ON."""
+        switches = {
+            "c1": {"pd": True, "pps": True, "ufcs": True},
+            "c2": {"pd": True, "pps": True, "ufcs": True},
+            "c3": {"ufcs": True, "scp": True},
+            "a":  {"ufcs": True, "scp": True},
+        }
+        result = coordinator._encode_protocol_extend(switches)
+        assert result == 0x03030F0F
+
+    def test_encode_protocol_extend_single(self, coordinator):
+        """Test _encode_protocol_extend: single protocol."""
+        switches = {
+            "c1": {"pd": True, "pps": False, "ufcs": False},
+            "c2": {"pd": False, "pps": False, "ufcs": False},
+            "c3": {"ufcs": False, "scp": False},
+            "a":  {"ufcs": False, "scp": False},
+        }
+        result = coordinator._encode_protocol_extend(switches)
+        assert result == 0x00000809  # c1=0x09 (PD=1 + reserved), c2=0x08 (reserved only)
+
+    def test_protocol_switches_roundtrip(self, coordinator):
+        """Test encode then decode roundtrip."""
+        original = {
+            "c1": {"pd": True, "pps": False, "ufcs": True},
+            "c2": {"pd": False, "pps": True, "ufcs": False},
+            "c3": {"ufcs": True, "scp": False},
+            "a":  {"ufcs": False, "scp": True},
+        }
+        encoded = coordinator._encode_protocol_extend(original)
+        coordinator._settings = {"21": encoded}
+        decoded = coordinator.protocol_switches
+        for port in ["c1", "c2", "c3", "a"]:
+            for proto in original[port]:
+                assert decoded[port][proto] == original[port][proto]
+
+    def test_protocol_switches_no_data(self, coordinator):
+        """Test protocol_switches returns all False when settings has no 21."""
+        coordinator._settings = {"5": 1}
+        sw = coordinator.protocol_switches
+        for port in ["c1", "c2", "c3", "a"]:
+            for proto_val in sw[port].values():
+                assert proto_val is False
+
+    @pytest.mark.asyncio
+    async def test_async_set_protocol(self, coordinator):
+        """Test async_set_protocol publishes encoded value."""
+        from unittest.mock import patch, AsyncMock
+        coordinator._settings = {"21": 0x03030F0F}  # all ON
+        with patch('custom_components.cuktech_charger.mqtt') as mock_mqtt:
+            mock_mqtt.async_publish = AsyncMock()
+            await coordinator.async_set_protocol("c1", "pd", False)
+            mock_mqtt.async_publish.assert_called_once()
+            call_args = mock_mqtt.async_publish.call_args
+            payload = json.loads(call_args[0][2])
+            assert payload["piid"] == 21
+            # c1 PD turned OFF: c1 goes from 0x0F to 0x0E (PD=0, PPS=1, UFCS=1)
+            # c1 byte=0x0E, c2 byte=0x0F, c3 byte=0x03, a byte=0x03 → 0x03030F0E
+            assert payload["value"] == 0x03030F0E
+
+    @pytest.mark.asyncio
+    async def test_async_set_protocol_unknown(self, coordinator):
+        """Test async_set_protocol with unknown port/protocol does nothing."""
+        from unittest.mock import patch, MagicMock
+        coord = coordinator
+        coord._settings = {"21": 0}
+        with patch('custom_components.cuktech_charger.mqtt') as mock_mqtt:
+            mock_mqtt.async_publish = MagicMock()
+            await coord.async_set_protocol("invalid", "pd", True)
+            mock_mqtt.async_publish.assert_not_called()
+            assert coord._settings["21"] == 0
