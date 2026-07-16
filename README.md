@@ -88,6 +88,7 @@ cuktech-ble-ha/
 │   │   ├── index.html             # 桌面端 Web 界面
 │   │   ├── phone.html             # 移动端 Web 界面
 │   │   └── static/                # 前端资源 (JS/CSS/图片)
+│   ├── docker/                    # Docker 部署文件
 │   ├── tests/                     # 单元测试 (135 tests)
 │   └── systemd/                   # systemd 服务配置
 │
@@ -118,6 +119,70 @@ cuktech-ble-ha/
 ├── README.md
 ├── RELEASE_NOTES.md
 └── bump-version.sh
+```
+
+## Docker 部署
+
+Docker 部署无需安装 Python 依赖，只需确保宿主机已安装 Docker 和蓝牙适配器。
+
+**拉取镜像直接运行：**
+
+```bash
+# 创建配置文件
+cat > config.yaml << EOF
+ble:
+  mac: "XX:XX:XX:XX:XX:XX"
+  token: "your_token_12bytes_hex"
+  ble_key: "your_ble_key_16bytes_hex"
+mqtt:
+  # 设置为 true 启用 MQTT（用于 Home Assistant 集成），false 则作为独立 web 服务运行
+  enabled: true
+  host: ""
+  port: 1883
+  username: ""
+  password: ""
+  keepalive: 60
+  topic_prefix: "cuktech/charger"
+
+server:
+  host: "0.0.0.0"
+  port: 8199
+  command_timeout: 10.0
+  reconnect_base_delay: 1.0
+  reconnect_max_delay: 300.0
+  settings_refresh_interval: 60.0
+  log_level: "error"
+  history_retention_days: 2
+  history_db_path: ""
+
+EOF
+
+# 运行容器
+docker run -d \
+  --name cuktech-ble \
+  --network host \
+  --privileged \
+  --restart unless-stopped \
+  -v $(pwd)/config.yaml:/app/config.yaml:ro \
+  -v $(pwd)/data:/data \
+  -v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro \
+  -e CUKTECH_HISTORY_DB_PATH=/data/port_history.db \
+  ghcr.io/kairui1108/cuktech-ble-server:latest
+
+# 查看日志
+docker logs -f cuktech-ble
+```
+
+**本地构建运行：**
+
+```bash
+cd ble_server
+# 使用配置文件的方式运行，编辑 config.yaml 填入你的设备信息
+cp config.yaml.example config.yaml
+docker compose -f docker/docker-compose.yml up -d
+
+# 使用环境变量的方式运行，修改 docker-compose.env.yml 填入你的设备信息
+docker compose -f docker/docker-compose.env.yml up -d
 ```
 
 ## 安装步骤

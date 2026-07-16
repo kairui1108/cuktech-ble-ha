@@ -1,0 +1,25 @@
+services:
+  cuktech-ble:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: cuktech-ble
+    network_mode: host
+    privileged: true
+    volumes:
+      - ../config.yaml:/app/config.yaml:ro
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro
+      - cuktech-data:/data
+    environment:
+      - CONFIG_FILE=/app/config.yaml
+      - CUKTECH_HISTORY_DB_PATH=/data/port_history.db
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  cuktech-data:

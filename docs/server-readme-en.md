@@ -18,12 +18,87 @@ Standalone BLE server for connecting CUKTECH chargers and pushing real-time data
 
 ## Requirements
 
+### Docker
+- Linux with Bluetooth adapter
+- Docker + Docker Compose
+
+### Native
 - Python 3.10+
 - Linux with Bluetooth adapter
 - BlueZ 5.66+ (5.71 recommended)
 - MQTT Broker (EMQX, Mosquitto, etc.)
 
-## Quick Start
+## Docker (Recommended)
+
+### Pull and run
+
+```bash
+# 1. Create config file
+cat > config.yaml << EOF
+ble:
+  mac: "XX:XX:XX:XX:XX:XX"
+  token: "your_token_12bytes_hex"
+  ble_key: "your_ble_key_16bytes_hex"
+mqtt:
+  # Set to true to enable MQTT (for Home Assistant integration), false to run as standalone web server
+  enabled: true
+  host: ""
+  port: 1883
+  username: ""
+  password: ""
+  keepalive: 60
+  topic_prefix: "cuktech/charger"
+
+server:
+  host: "0.0.0.0"
+  port: 8199
+  command_timeout: 10.0
+  reconnect_base_delay: 1.0
+  reconnect_max_delay: 300.0
+  settings_refresh_interval: 60.0
+  log_level: "error"
+  history_retention_days: 2
+  history_db_path: ""
+EOF
+
+# 2. Run container
+docker run -d \
+  --name cuktech-ble \
+  --network host \
+  --privileged \
+  --restart unless-stopped \
+  -v $(pwd)/config.yaml:/app/config.yaml:ro \
+  -v $(pwd)/data:/data \
+  -v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro \
+  -e CUKTECH_HISTORY_DB_PATH=/data/port_history.db \
+  ghcr.io/kairui1108/cuktech-ble-server:latest
+
+# 3. Check logs
+docker logs -f cuktech-ble
+```
+
+### Build locally
+
+```bash
+git clone https://github.com/kairui1108/cuktech-ble-ha.git
+cd cuktech-ble-ha/ble_server
+cd ble_server
+# use config file to run, edit config.yaml with your device info
+cp config.yaml.example config.yaml
+docker compose -f docker/docker-compose.yml up -d
+
+# use env file to run, edit docker/docker-compose.env.yml with your device info
+docker compose -f docker/docker-compose.env.yml up -d
+```
+
+### Notes on Bluetooth
+
+- Container uses `--network host` to share host network
+- Host D-Bus socket is mounted for BlueZ access
+- `--privileged` is required for BLE hardware access
+- Other Bluetooth applications on host are unaffected
+
+## Quick Start (Native)
 
 ### 1. Get Device Token
 

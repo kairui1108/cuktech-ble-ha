@@ -116,7 +116,7 @@ def load_config() -> Config:
         username=os.environ.get("MQTT_USER", mqtt_cfg.get("username", "")),
         password=os.environ.get("MQTT_PASS", mqtt_cfg.get("password", "")),
         keepalive=mqtt_cfg.get("keepalive", 60),
-        topic_prefix=mqtt_cfg.get("topic_prefix", "cuktech/charger"),
+        topic_prefix=os.environ.get("MQTT_TOPIC_PREFIX", mqtt_cfg.get("topic_prefix", "cuktech/charger")),
     )
 
     try:
