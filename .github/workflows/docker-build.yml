@@ -1,9 +1,14 @@
-name: Build and Push Docker Image
+name: CI / CD
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 env:
@@ -13,7 +18,41 @@ env:
   DOCKERHUB_IMAGE: kairui1108/cuktech-ble-server
 
 jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Python dependencies
+        working-directory: ./ble_server
+        run: |
+          pip install --upgrade pip
+          pip install aiohttp>=3.9 paho-mqtt>=2.0 bleak>=0.21 cryptography>=41 pyyaml>=6.0
+          pip install pytest pytest-asyncio
+
+      - name: Run unit tests
+        working-directory: ./ble_server
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: Run HA integration tests
+        working-directory: ./ha_integration
+        run: python -m pytest tests/ -v --tb=short
+
   build-and-push:
+    name: Build and Push Docker Image
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
