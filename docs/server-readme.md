@@ -88,7 +88,7 @@ docker run -d \
   --restart unless-stopped \
   -v $(pwd)/data:/data \
   -v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro \
-  -e CUKTECH_DEVICE_MAC="3C:CD:73:34:AE:59" \
+  -e CUKTECH_DEVICE_MAC="xx:xx:xx:xx:xx:xx" \
   -e CUKTECH_DEVICE_TOKEN="your_token_12bytes_hex" \
   -e CUKTECH_DEVICE_BLE_KEY="your_ble_key_16bytes_hex" \
   -e MQTT_ENABLED="false" \
@@ -96,12 +96,23 @@ docker run -d \
   ghcr.io/kairui1108/cuktech-ble-server:latest
 ```
 
-### 本地构建
+### Docker Compose 拉取运行（推荐）
 
 ```bash
 git clone https://github.com/kairui1108/cuktech-ble-ha.git
-cd cuktech-ble-ha/ble_server
+cd cuktech-ble-ha
 
+# 编辑配置，填入你的设备信息
+vim ble_server/docker/docker-compose.pull.yml
+
+# 直接拉取镜像并启动（无需本地构建）
+docker compose -f ble_server/docker/docker-compose.pull.yml up -d
+```
+
+### 本地构建
+
+```bash
+cd ble_server
 # 使用配置文件的方式运行，编辑 config.yaml 填入你的设备信息
 cp config.yaml.example config.yaml
 docker compose -f docker/docker-compose.yml up -d

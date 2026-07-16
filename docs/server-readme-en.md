@@ -77,11 +77,22 @@ docker run -d \
 docker logs -f cuktech-ble
 ```
 
-### Build locally
+### Docker Compose pull & run (recommended)
 
 ```bash
 git clone https://github.com/kairui1108/cuktech-ble-ha.git
-cd cuktech-ble-ha/ble_server
+cd cuktech-ble-ha
+
+# edit config, fill in your device info
+vim ble_server/docker/docker-compose.pull.yml
+
+# pull image and start (no local build needed)
+docker compose -f ble_server/docker/docker-compose.pull.yml up -d
+```
+
+### Build locally
+
+```bash
 cd ble_server
 # use config file to run, edit config.yaml with your device info
 cp config.yaml.example config.yaml

@@ -173,6 +173,16 @@ docker run -d \
 docker logs -f cuktech-ble
 ```
 
+**Docker Compose 拉取运行（推荐）：**
+
+```bash
+# 编辑配置，填入你的设备信息
+vim ble_server/docker/docker-compose.pull.yml
+
+# 直接拉取镜像并启动（无需本地构建）
+sudo docker compose -f ble_server/docker/docker-compose.pull.yml up -d
+```
+
 **本地构建运行：**
 
 ```bash

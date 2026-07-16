@@ -134,7 +134,7 @@ def load_config() -> Config:
 
     server = ServerConfig(
         host=server_cfg.get("host", "0.0.0.0"),
-        port=server_cfg.get("port", 8199),
+        port=int(os.environ.get("CUKTECH_SERVER_PORT", server_cfg.get("port", 8199))),
         command_timeout=server_cfg.get("command_timeout", 10.0),
         settings_refresh_interval=server_cfg.get("settings_refresh_interval", 60.0),
         log_level=os.environ.get("CUKTECH_LOG_LEVEL", server_cfg.get("log_level", "info")),
