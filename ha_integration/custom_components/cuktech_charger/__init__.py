@@ -402,7 +402,7 @@ class CuktechMQTTCoordinator:
             self._available = self._mqtt_connected
 
     async def async_enable_ble(self, enable: bool) -> bool:
-        """Enable or disable BLE connection via HTTP API."""
+        """Enable or disable BLE connection via MQTT + HTTP API."""
         async with self._ble_lock:
             self._ble_enabled = enable
             self._ble_pending = True
@@ -418,22 +418,31 @@ class CuktechMQTTCoordinator:
 
             timeout_task = self.hass.async_create_task(_clear_pending_after_delay())
 
-            session = async_get_clientsession(self.hass)
             try:
+                # MQTT (ESP32)
+                await mqtt.async_publish(
+                    self.hass, f"{TOPIC_PREFIX}/ble",
+                    json.dumps({"enabled": enable})
+                )
+                _LOGGER.info("BLE %s published via MQTT", "enable" if enable else "disable")
+            except Exception as err:
+                _LOGGER.debug("MQTT BLE publish failed: %s", err)
+
+            try:
+                # HTTP (ble_server)
+                session = async_get_clientsession(self.hass)
                 url = f"{self.server_url}/api/enable"
                 async with session.post(url, json={"enabled": enable}, timeout=30) as resp:
                     if resp.status == 200:
-                        _LOGGER.info("BLE connection %s", "enabled" if enable else "disabled")
-                        return True
-                    _LOGGER.error("Failed to %s BLE: HTTP %d", "enable" if enable else "disable", resp.status)
+                        _LOGGER.info("BLE connection %s via HTTP", "enabled" if enable else "disabled")
             except Exception as err:
-                _LOGGER.error("Failed to %s BLE: %s", "enable" if enable else "disable", err)
+                _LOGGER.debug("HTTP BLE control not available: %s", err)
             finally:
                 self._ble_pending = False
                 self._notify_callbacks()
                 if not timeout_task.done():
                     timeout_task.cancel()
-            return False
+            return True
 
     async def async_set_value(self, piid: int, value: Any) -> None:
         """Set a PIID value via MQTT."""
