@@ -299,8 +299,10 @@ function renderCharts() {
         if (p.enabled) totalW += p.w;
     }
     if (!state._totalHistory) state._totalHistory = [];
-    state._totalHistory.push(totalW);
-    if (state._totalHistory.length > 30) state._totalHistory.shift();
+    if (totalW > 0 || state._totalHistory.length > 0) {
+        state._totalHistory.push(totalW);
+        if (state._totalHistory.length > 30) state._totalHistory.shift();
+    }
 
     // Mini bar chart
     const miniChart = document.getElementById('miniChart');
@@ -314,19 +316,26 @@ function renderCharts() {
         miniChart.innerHTML = miniHtml;
     }
 
-    // Update port history
+    // Update port history (skip until first real data arrives)
+    let hasData = false;
     for (const key of PORT_KEYS) {
         const p = state.ports[key];
-        const w = (p.enabled && p.w > 0) ? p.w : 0;
-        state.history[key].push(w);
-        if (state.history[key].length > 30) state.history[key].shift();
+        if (p.enabled && p.w > 0) hasData = true;
+    }
+    if (hasData || state.history.c1.length > 0) {
+        for (const key of PORT_KEYS) {
+            const p = state.ports[key];
+            const w = (p.enabled && p.w > 0) ? p.w : 0;
+            state.history[key].push(w);
+            if (state.history[key].length > 30) state.history[key].shift();
+        }
     }
 
     // Combined chart: all 4 ports
     const combinedCanvas = document.getElementById('chartCombined');
     if (combinedCanvas) {
         if (portCharts.combined) portCharts.combined.destroy();
-        // 计算动态峰值 (当前可见数据的最大值)
+        // 计算动态峰值
         let currentPeak = 0;
         for (const key of PORT_KEYS) {
             for (const v of state.history[key]) {
@@ -359,10 +368,52 @@ function renderCharts() {
                 }
             }
         });
-        // Set peak data and update HTML overlays
-        var chart = portCharts.combined;
-        chart._peakData = { peakPower: peakPower, currentPeak: currentPeak, isDark: isDark };
-        drawPeakLines(chart);
+        portCharts.combined._peakData = { peakPower, currentPeak, isDark };
+        drawPeakLines(portCharts.combined);
+    }
+        }
+        const peakPower = currentPeak > 0 ? currentPeak * 1.18 : 60;
+
+        if (portCharts.combined) {
+            // Update existing chart in place (no flicker)
+            const chart = portCharts.combined;
+            chart.data.labels = state.history.c1.map((_, i) => i);
+            PORT_KEYS.forEach((key, i) => {
+                chart.data.datasets[i].data = state.history[key];
+            });
+            chart.options.scales.y.max = peakPower;
+            chart.update('none');
+            chart._peakData = { peakPower, currentPeak, isDark };
+            drawPeakLines(chart);
+        } else {
+            // First render: create chart
+            portCharts.combined = new Chart(combinedCanvas, {
+                type: 'line',
+                data: {
+                    labels: state.history.c1.map((_, i) => i),
+                    datasets: PORT_KEYS.map(key => ({
+                        label: PORT_NAMES[key],
+                        data: state.history[key],
+                        borderColor: PORT_COLORS[key],
+                        borderWidth: 1.5,
+                        tension: 0.4,
+                        pointRadius: 0,
+                        fill: false,
+                    }))
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+                    interaction: { intersect: false, mode: 'index' },
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { display: false },
+                        y: { display: false, min: 0, max: peakPower },
+                    }
+                }
+            });
+            portCharts.combined._peakData = { peakPower, currentPeak, isDark };
+            drawPeakLines(portCharts.combined);
+        }
     }
 }
 

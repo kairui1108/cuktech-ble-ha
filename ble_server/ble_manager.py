@@ -108,6 +108,7 @@ class BLEManager:
                     # 1. 设备端 session 未清除 (需等待设备自然超时)
                     # 2. BlueZ GATT 缓存损坏 (需 power cycle 本地适配器)
                     # 因此 auth 失败也应重置本地适配器，避免陷入永久失败
+                    self._reconnect_attempts = 0  # reset: auth failure has its own counter
                     self._auth_fail_count += 1
                     await self._force_disconnect_bluetooth()
                     if self._auth_fail_count >= 5:
@@ -163,7 +164,8 @@ class BLEManager:
         _LOGGER.info("Scanning for charger...")
         from bleak import BleakScanner
         try:
-            found = await BleakScanner.find_device_by_address(self.mac, timeout=10)
+            found = await BleakScanner.find_device_by_address(
+                self.mac, timeout=self.config.ble.scan_timeout)
         except Exception as e:
             _LOGGER.error("BLE scan failed: %s", e)
             raise ConnectionError(f"BLE scan failed: {e}")
@@ -175,11 +177,7 @@ class BLEManager:
         await self.ctrl.connect()
 
         _LOGGER.info("Connected, waiting for device to settle...")
-        await asyncio.sleep(1)
-
-        # 验证 GATT 读取能力（power cycle 后 BlueZ D-Bus 可能未完全就绪）
-        # 静默等待适配器完全初始化，不做激进的 GATT 检查
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
         await self.ctrl.read_device_info()
         _LOGGER.info("Connected, authenticating...")
@@ -198,6 +196,7 @@ class BLEManager:
             await asyncio.sleep(3)
             raise AuthConnectionError("Auth failed")
 
+        self._auth_fail_count = 0  # reset on successful auth
         await self.state.set_connection(True, True)
         _invalidate()
         _LOGGER.info("Authenticated!")
@@ -310,6 +309,7 @@ class BLEManager:
 
     async def _connect_and_run(self):
         await self._connect()
+        self._keepalive_fails = 0
         last_refresh = time.time()
         last_notify = time.time()
         last_keepalive = time.time()
@@ -331,17 +331,19 @@ class BLEManager:
                 if now - last_refresh > self.config.server.settings_refresh_interval:
                     await self._refresh_settings()
                     last_refresh = now
+                    last_notify = now  # prevent false disconnect during long refresh
                 if now - last_keepalive > 10:
                     if self.ctrl and self.ctrl.client and self.ctrl.client.is_connected:
                         try:
-                            await self.ctrl.client.read_gatt_char(CHAR_FW_VERSION)
+                            await self.ctrl.client.write_gatt_char(
+                                CHAR_CMD_RECV, bytes([0x00, 0x00, 0x00, 0x00]), response=False)
                             last_keepalive = now
+                            self._keepalive_fails = 0
                         except Exception:
-                            pass
-                    else:
-                        if self.ctrl is None or not self.ctrl.client or not self.ctrl.client.is_connected:
-                            if now - last_keepalive > 30:
-                                raise ConnectionError('BLE disconnected via keepalive')
+                            self._keepalive_fails += 1
+                            if self._keepalive_fails >= 3:
+                                _LOGGER.warning("Keepalive failed 3 times, reconnecting")
+                                raise ConnectionError("BLE keepalive failed")
                 if now - last_notify > 60:
                     client = self.ctrl.client if self.ctrl else None
                     if not client or not client.is_connected:
@@ -378,7 +380,6 @@ class BLEManager:
             except Exception as e:
                 fail_count += 1
                 _LOGGER.debug("Failed to read PIID %d: %s", piid, e)
-            await asyncio.sleep(0.1)
         if fail_count >= len(READABLE_SETTINGS_PIIDS):
             _LOGGER.warning("All %d PIID reads failed, BLE channel may be broken", fail_count)
         await self.state.update_settings(settings)

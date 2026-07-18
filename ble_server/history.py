@@ -161,10 +161,19 @@ class PortHistory:
                     AVG(power) as avg_power,
                     MAX(power) as max_power,
                     SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) as active_count,
-                    AVG(power) * (MAX(timestamp) - MIN(timestamp)) / 3600 as energy_wh
+                    COALESCE(
+                        (SELECT SUM(p.power * (p.timestamp - p.prev_ts)) / 3600.0
+                         FROM (
+                             SELECT timestamp, power,
+                                    LAG(timestamp) OVER (ORDER BY timestamp) as prev_ts
+                             FROM port_history
+                             WHERE port = ? AND timestamp >= ? AND active = 1
+                         ) p
+                         WHERE p.prev_ts IS NOT NULL),
+                    0) as energy_wh
                 FROM port_history
                 WHERE port = ? AND timestamp >= ?""",
-                (port, cutoff)
+                (port, cutoff, port, cutoff)
             ).fetchone()
 
         if not row or row["samples"] == 0:

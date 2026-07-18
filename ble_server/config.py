@@ -36,6 +36,7 @@ class BLEConfig:
     mac: str = ""
     token: str = ""
     ble_key: str = ""
+    scan_timeout: int = 10
 
     def __post_init__(self):
         if not self.mac or self.mac == "XX:XX:XX:XX:XX:XX":
@@ -99,6 +100,7 @@ def load_config() -> Config:
         mac=os.environ.get("CUKTECH_DEVICE_MAC", ble_cfg.get("mac", "")),
         token=os.environ.get("CUKTECH_DEVICE_TOKEN", ble_cfg.get("token", "")),
         ble_key=os.environ.get("CUKTECH_DEVICE_BLE_KEY", ble_cfg.get("ble_key", "")),
+        scan_timeout=ble_cfg.get("scan_timeout", 10),
     )
 
     try:

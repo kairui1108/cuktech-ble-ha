@@ -57,7 +57,7 @@ class Server:
         if self.mqtt_client and self.mqtt_client.is_connected():
             self.mqtt_client.publish(topic, json.dumps(payload, ensure_ascii=False), retain=retain)
 
-    def setup_mqtt(self):
+    async def setup_mqtt(self):
         if not self.config.mqtt.enabled:
             _LOGGER.info("MQTT disabled, running in standalone web server mode")
             return
@@ -87,13 +87,19 @@ class Server:
             retain=True, qos=1
         )
 
-        try:
-            self.mqtt_client.connect(self.config.mqtt.host, self.config.mqtt.port, self.config.mqtt.keepalive)
-            self.mqtt_client.loop_start()
-            _LOGGER.info("MQTT connecting to %s:%s", self.config.mqtt.host, self.config.mqtt.port)
-        except Exception:
-            _LOGGER.error("MQTT connection failed: %s:%s", self.config.mqtt.host, self.config.mqtt.port)
-            self.mqtt_client = None
+        for attempt in range(3):
+            try:
+                self.mqtt_client.connect(self.config.mqtt.host, self.config.mqtt.port, self.config.mqtt.keepalive)
+                self.mqtt_client.loop_start()
+                _LOGGER.info("MQTT connecting to %s:%s", self.config.mqtt.host, self.config.mqtt.port)
+                break
+            except Exception:
+                _LOGGER.error("MQTT connection failed (attempt %d/3): %s:%s",
+                              attempt + 1, self.config.mqtt.host, self.config.mqtt.port)
+                if attempt < 2:
+                    await asyncio.sleep(3)
+                else:
+                    self.mqtt_client = None
 
         if self.mqtt_client:
             self.ble.set_mqtt_publisher(self.mqtt_publish)
@@ -588,7 +594,7 @@ async def on_startup(app_):
         set_status_cache_invalidator(s.invalidate_status_cache)
         s.history.connect()
         s.ble.set_history(s.history)
-        s.setup_mqtt()
+        await s.setup_mqtt()
         if s.mqtt_client:
             s.setup_mqtt_subscriptions()
         app_["ble_task"] = asyncio.create_task(s.ble.start())

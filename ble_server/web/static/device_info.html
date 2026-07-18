@@ -40,7 +40,8 @@
         .device-wrap-inner { position: relative; width: 100%; overflow: hidden; }
         .unconnected-img { width: 100%; display: none; margin: 0 auto; object-fit: contain; }
         .unconnected-img.show { display: block; }
-        .device-charger { position: relative; width: 160px; margin: 0 auto; display: block; }
+        .device-charger { position: relative; width: 160px; margin: 0 auto; display: none; }
+        .device-charger.show { display: block; }
         .device-charger.charging { animation: deviceFloat 3s ease-in-out infinite; }
         @keyframes deviceFloat {
             0%, 100% { transform: translateY(0); }
@@ -301,6 +302,7 @@
             }
             if (totalW > 0) {
                 unconnected.classList.remove('show');
+                charger.classList.add('show');
                 charger.classList.add('charging');
                 if (glow) glow.classList.add('active');
                 ['c1','c2','c3','a'].forEach(k => {
@@ -313,6 +315,7 @@
                 });
             } else {
                 unconnected.classList.add('show');
+                charger.classList.remove('show');
                 charger.classList.remove('charging');
                 if (glow) glow.classList.remove('active');
                 ['c1','c2','c3','a'].forEach(k => {

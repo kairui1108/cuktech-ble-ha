@@ -5,6 +5,7 @@ ble:
   mac: "XX:XX:XX:XX:XX:XX"
   token: ""
   ble_key: ""
+  scan_timeout: 15  # BLE 扫描超时（秒），弱信号环境可增大
 
 mqtt:
   # 设置为 true 启用 MQTT（用于 Home Assistant 集成），false 则作为独立 web 服务运行

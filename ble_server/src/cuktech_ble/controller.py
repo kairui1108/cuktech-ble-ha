@@ -66,7 +66,7 @@ class CuktechBLEController:
     def _make_notify_handler(self, name):
         """创建通知回调函数 (基于队列，避免竞态条件)。"""
         if name not in self._notify_queues:
-            self._notify_queues[name] = asyncio.Queue()
+            self._notify_queues[name] = asyncio.Queue(maxsize=1024)
 
         queue = self._notify_queues[name]
 
@@ -143,8 +143,7 @@ class CuktechBLEController:
         try:
             await self.client._acquire_mtu()
         except (AttributeError, Exception):
-            pass
-        _LOGGER.info("Connected! MTU=%d", self.client.mtu_size)
+            _LOGGER.warning("MTU negotiation failed, using default MTU=%d", self.client.mtu_size)
 
         # 清理可能残留的通知队列
         for q in self._notify_queues.values():
@@ -304,13 +303,20 @@ class CuktechBLEController:
             _LOGGER.warning("  [!] 设备状态不同步 (key_data=%d bytes, byte[2]=0x%02x), 等待设备恢复...",
                             len(key_data), key_data[2])
             # 等待设备发完 key exchange 数据（可能在后续通知中）
+            # 使用 deadline 而非独立 timeout，避免第一次超时就 break
+            deadline = asyncio.get_running_loop().time() + 12
             for _ in range(3):
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
                 try:
-                    extra = await self.wait_notify("auth_data", timeout=3.0)
+                    extra = await self.wait_notify("auth_data", timeout=remaining)
                     if extra and len(extra) >= 20 and extra[2] == 0x04:
                         _LOGGER.info("  收到延迟的 key exchange 数据: %d bytes", len(extra))
                         key_data = extra
                         break
+                except asyncio.TimeoutError:
+                    continue  # retry until deadline
                 except Exception:
                     break
             else:
@@ -815,7 +821,7 @@ class CuktechBLEController:
             pt = self.decrypt(encrypted_payload)
             return (pt, None) if pt and len(pt) >= 8 else (None, None)
         elif data[2] == 0x00 and len(data) >= 6:
-            frame_count = data[4] + 0x100 * data[5]
+            frame_count = min(data[4] + 0x100 * data[5], 100)
             await self.client.write_gatt_char(
                 CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
             for _ in range(frame_count):
@@ -827,15 +833,20 @@ class CuktechBLEController:
 
     async def get_properties(self, props):
         """批量获取属性。props = [(siid, piid), ...]"""
+        async def fetch_one(siid, piid):
+            result = await self.send_miot_command(siid, piid)
+            return (siid, piid), result.get('value') if result else None
+
+        tasks = [fetch_one(siid, piid) for siid, piid in props]
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
+
         results = {}
         failed = 0
-        for siid, piid in props:
-            result = await self.send_miot_command(siid, piid)
-            if result and 'value' in result:
-                results[(siid, piid)] = result['value']
-            else:
+        for (siid, piid), value in results_list:
+            if isinstance(value, Exception) or value is None:
                 failed += 1
-            await asyncio.sleep(0.1)
+            else:
+                results[(siid, piid)] = value
         if failed > 0:
             _LOGGER.warning("get_properties: %d/%d properties failed", failed, len(props))
         return results

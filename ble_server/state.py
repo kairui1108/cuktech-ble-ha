@@ -151,7 +151,11 @@ class ChargerState:
         async with self._lock:
             # 过滤掉 V2 内部调试字段（以 _ 开头），只保留 PortState 需要的字段
             clean_data = {k: v for k, v in data.items() if not k.startswith('_')}
-            self.ports[piid] = PortState(**clean_data)
+            try:
+                self.ports[piid] = PortState(**clean_data)
+            except TypeError as e:
+                _LOGGER.error("update_port piid=%d: invalid fields %s", piid, e)
+                return
             self._invalidate_cache()
 
     async def update_settings(self, settings: dict):
