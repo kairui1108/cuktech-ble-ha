@@ -837,7 +837,11 @@ static void _reconnect(void) {
 }
 
 static void _keepalive(void) {
-    _wru_nr(_auth_ctrl_handle, (uint8_t[]){0,0,0,0}, 4);
+    // Write Command (no response) to cmd_recv — most reliable keepalive
+    // No device response needed, won't block, won't trigger disconnect
+    if (_connected) {
+        _wru_nr(_cmd_recv_handle, (uint8_t[]){0,0,0,0}, 4);
+    }
     _last_keepalive = esp_timer_get_time() / 1000;
 }
 

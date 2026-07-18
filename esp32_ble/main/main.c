@@ -939,7 +939,14 @@ void app_main(void) {
     result_queue = xQueueCreate(32, sizeof(BleResult));
     state_mutex = xSemaphoreCreateMutex();
 
-    // Start tasks (BLE on Core 1, App on Core 0)
+    // Start tasks
+    // C3 is single-core, use un-pinned tasks.
+    // ESP32 / S3: pin BLE to core 1, app to core 0 for better cache isolation.
+#if CONFIG_IDF_TARGET_ESP32C3
+    xTaskCreate(ble_task, "ble", 16384, NULL, 2, NULL);
+    xTaskCreate(app_task,  "app", 8192,  NULL, 1, NULL);
+#else
     xTaskCreatePinnedToCore(ble_task, "ble", 16384, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(app_task, "app", 8192, NULL, 1, NULL, 0);
+    xTaskCreatePinnedToCore(app_task,  "app", 8192,  NULL, 1, NULL, 0);
+#endif
 }

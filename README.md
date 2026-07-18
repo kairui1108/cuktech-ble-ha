@@ -9,10 +9,12 @@
 
 通过 BLE（低功耗蓝牙）将 CUKTECH 10 GaN Charger Ultra 充电器接入 Home Assistant，实现实时功率监控、端口控制和自动化。
 
+支持两种网关方案：**Python BLE Server**（运行在 Linux/Docker）或 **ESP32 BLE Bridge**（独立硬件）。
+
 
 ## 功能特性
 
-### BLE Server
+### BLE Server（Python）
 - **实时功率监控**：通过 MQTT 推送电压、电流、功率数据
 - **功率曲线图**：Web UI 实时显示各端口及总功率曲线
 - **端口控制**：远程开关 C1/C2/C3/A 端口
@@ -23,11 +25,22 @@
 - **MQTT LWT**：崩溃时自动通知 HA 设备离线
 - **SQLite 历史数据**：端口数据持久化存储，支持统计和导出
 
+### ESP32 固件
+- **独立硬件**：ESP32 直连充电器，无需主机
+- **Web 配置**：首次启动 AP 配网模式，浏览器配置凭据
+- **Web 仪表盘**：实时端口电压/电流/功率
+- **端口控制**：Web 或 MQTT 控制各端口
+- **协议开关**：独立开关 PD / PPS / UFCS / SCP
+- **场景模式切换**
+- **HTTP OTA 更新**
+- **支持芯片**：ESP32 / ESP32-S3 / ESP32-C3
+- 👉 **[cuktech-ble-esp32](https://github.com/kairui1108/cuktech-ble-esp32)** — 固件下载
+
 ### HA Integration
 - **BLE 连接控制**：开关实体控制 BLE 连接/断开，二进制传感器显示连接状态
 - **端口传感器**：电压、电流、功率、协议类型
 - **端口控制**：开关控制 C1/C2/C3/A 端口
-- **协议开关控制**：10 个开关实体，独立控制各端口 PD/PPS/UFCS/SCP 协议（C1/C2 PPS 自动跟随 PD 状态）
+- **协议开关控制**：10 个开关实体，独立控制各端口 PD/PPS/UFCS/SCP 协议
 - **设置管理**：场景模式、息屏时间、语言等选择器
 - **倒计时设置**：数字实体控制各端口充电倒计时
 - **设备信息同步**：型号、固件版本从 BLE 服务器实时同步
@@ -42,29 +55,28 @@
 
 ### 已知限制
 
-- **单设备**：当前架构仅支持同时连接一个充电器，多设备支持将在后续版本更新
-- **协议检测**：充电协议（PD/QC/USB-A 等）基于端口电压和 PDO 数据推断，仅供参考，可能与实际协议不完全一致
-- **平台支持**：开发与测试均基于 Linux 环境，其他平台（macOS、Windows）的稳定性未经验证，使用风险自行承担
+- **单设备**：当前架构仅支持同时连接一个充电器
+- **协议检测**：充电协议基于端口电压和 PDO 数据推断，仅供参考
+- **平台支持（Python BLE Server）**：开发与测试基于 Linux 环境
 
 ## 架构说明
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  CUKTECH 10 GaN │───▶│   BLE Server    │───▶│  Home Assistant │
-│     Charger     │ BLE │  (Port 8199)    │ MQTT│    Integration  │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                              │                         │
-                              │ HTTP API / Web UI       │ MQTT
-                              ▼                         ▼
-                        ┌─────────────┐         ┌─────────────┐
-                        │  Web 界面   │         │   Dashboard  │
-                        │  + Shell API│         │   Buttons   │
-                        └─────────────┘         └─────────────┘
+┌─────────────────┐     ┌─────────────────────┐     ┌─────────────────┐
+│  CUKTECH 10 GaN │───▶│   BLE Gateway       │───▶│  Home Assistant │
+│     Charger     │ BLE │  (Python / ESP32)   │ MQTT│    Integration  │
+└─────────────────┘     └─────────────────────┘     └─────────────────┘
+                              │
+                              │ HTTP API / Web UI
+                              ▼
+                        ┌─────────────┐
+                        │  Web 界面   │
+                        └─────────────┘
 ```
 
-- **BLE Server**：运行在主机上，负责 BLE 连接、数据采集、MQTT 推送和 Web 界面
-- **HA Integration**：订阅 MQTT 数据，在 HA 中创建实体
-- **Web UI**：内置管理界面，支持实时监控、端口控制、倒计时设置
+- **BLE Server**（Python）：运行在 Linux/Docker 主机上，功能完整（含历史数据）
+- **ESP32 固件**：独立运行在 ESP32 上，低功耗、低成本
+- **HA Integration**：订阅 MQTT 数据，两条路径通用
 
 ## 目录结构
 
@@ -108,11 +120,19 @@ cuktech-ble-ha/
 │       ├── brand/                 # HACS 品牌图标
 │       └── icon.png
 │
+├── esp32_ble/                     # ESP32 固件
+│   ├── main/
+│       ├── main.c                 # WiFi/MQTT/HTTP/OTA
+│       ├── ble_manager.c          # BLE 状态机 + 异步命令
+│       └── ...
+│
 ├── docs/                          # 文档
 │   ├── server-readme.md
 │   ├── server-readme-en.md
 │   ├── integration-readme.md
 │   ├── integration-readme-en.md
+│   ├── esp32-readme.md
+│   ├── esp32-readme-en.md
 │   └── tools/                     # CLI 测试工具
 │
 ├── LICENSE

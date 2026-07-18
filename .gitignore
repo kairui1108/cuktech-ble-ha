@@ -92,3 +92,5 @@ sync.sh
 *.lock
 .log_level
 baksmali.jar
+
+esp32_ble/.github/

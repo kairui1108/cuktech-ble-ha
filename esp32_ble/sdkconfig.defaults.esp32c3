@@ -1,0 +1,4 @@
+# ESP32-C3 overrides (single core)
+CONFIG_BT_NIMBLE_PINNED_TO_CORE=-1
+# Disable 4.1 compat — C3 is BLE 5.0
+# CONFIG_BT_NIMBLE_4_1_COMPAT is not set
