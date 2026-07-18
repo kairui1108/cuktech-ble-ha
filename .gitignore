@@ -62,6 +62,7 @@ docs/smali_out3
 docs/tmp
 docs/tools
 docs/bug.md
+docs/async.md
 
 
 # Environment variables
