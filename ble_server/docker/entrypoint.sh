@@ -19,6 +19,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
         echo "[INFO] Configuring from environment variables..."
         export CUKTECH_DEVICE_MAC CUKTECH_DEVICE_TOKEN CUKTECH_DEVICE_BLE_KEY
         export MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASS MQTT_ENABLED
+        export BEMFA_ENABLED BEMFA_UID
     else
         echo "[WARN] No config file and no environment variables set."
         echo "[INFO] Please mount config.yaml or set environment variables."

@@ -123,7 +123,7 @@ static void _register_task(void *arg) {
 
 static void _send_ping(void) {
     if (!_client) return;
-    esp_mqtt_client_publish(_client, TOPIC_PING, "ping", 0, 1, 1);
+    esp_mqtt_client_publish(_client, TOPIC_PING, "ping", 0, 0, 1);
     _ping_send_time = esp_timer_get_time() / 1000000;
     _ping_waiting = true;
     ESP_LOGD(TAG, "Ping sent");
@@ -316,7 +316,7 @@ void bemfa_loop(void) {
         _ping_waiting = false;
         ESP_LOGW(TAG, "Ping lost (%d/%d)", _ping_lost, MAX_PING_LOST);
 
-        if (_ping_lost >= MAX_PING_LOST) {
+        if (_ping_lost == MAX_PING_LOST) {
             ESP_LOGW(TAG, "Max ping lost, reconnecting...");
             _ping_lost = 0;
             // Disconnect and let esp_mqtt_client auto-reconnect

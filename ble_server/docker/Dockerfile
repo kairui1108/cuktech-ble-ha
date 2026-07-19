@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir \
 
 COPY src/ src/
 COPY web/ web/
-COPY state.py state_protocol_v2.py history.py config.py ble_manager.py ha_server.py .
+COPY state.py state_protocol_v2.py history.py config.py ble_manager.py ha_server.py bemfa_client.py .
 
 RUN mkdir -p /data
 
