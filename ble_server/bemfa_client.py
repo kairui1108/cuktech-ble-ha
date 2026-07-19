@@ -105,7 +105,7 @@ class BemfaClient:
 
         # Start ping/pong keepalive (aligned with HA integration)
         self._ping_lost = 0
-        self._ping_publish_task = asyncio.create_task(self._ping_publish_loop())
+        self._start_ping_cycle()
         _LOGGER.info("Bemfa client started")
 
     async def stop(self):
@@ -203,12 +203,10 @@ class BemfaClient:
 
         # Handle ping pong (aligned with HA integration)
         if topic == TOPIC_PING:
-            if self._ping_receive_task is not None and not self._ping_receive_task.done():
-                # Pong arrived while waiting — cancel timer, reset lost count
+            if self._ping_receive_task is not None:
                 self._ping_receive_task.cancel()
                 self._ping_receive_task = None
                 self._ping_lost = 0
-            # Ignore late pong (task already completed, lost count already incremented)
             return
 
         # Find device by topic
@@ -267,31 +265,53 @@ class BemfaClient:
 
     # ---- Ping/Pong Keepalive (aligned with HA integration) ----
 
-    async def _ping_publish_loop(self):
-        """Send ping every 30s, aligned with HA integration's _ping()."""
-        while True:
+    def _start_ping_cycle(self):
+        """Start a ping cycle. Recursive: each cycle schedules the next.
+        
+        Matches official HA integration's _ping() pattern exactly.
+        Only ONE receive task exists at any time.
+        """
+        async def _publish_job():
             await asyncio.sleep(INTERVAL_PING_SEND)
             with self._lock:
                 if not self._client or not self._connected:
-                    continue
-                self._client.publish(TOPIC_PING, "ping", qos=1)
-            # Start receive timer
-            self._ping_receive_task = asyncio.create_task(self._ping_receive_loop())
+                    # Not connected yet — retry next cycle
+                    self._start_ping_cycle()
+                    return
+                self._client.publish(TOPIC_PING, "ping")  # QoS 0 (matches official)
+            # Start receive monitor for THIS cycle
+            self._ping_receive_task = asyncio.create_task(_receive_job())
+            # Schedule next cycle (recursive, ensures one-at-a-time)
+            self._start_ping_cycle()
 
-    async def _ping_receive_loop(self):
-        """Wait 20s for pong. If not received, increment lost count."""
-        await asyncio.sleep(INTERVAL_PING_RECEIVE)
-        self._ping_lost += 1
-        _LOGGER.warning("Bemfa ping lost (%d/%d)", self._ping_lost, MAX_PING_LOST)
-        if self._ping_lost >= MAX_PING_LOST:
-            self._ping_lost = 0
-            _LOGGER.warning("Bemfa max ping lost, reconnecting...")
-            await self._reconnect()
+        async def _receive_job():
+            await asyncio.sleep(INTERVAL_PING_RECEIVE)
+            self._ping_lost += 1
+            _LOGGER.warning("Bemfa ping lost (%d/%d)", self._ping_lost, MAX_PING_LOST)
+            if self._ping_lost == MAX_PING_LOST:  # == (matches official)
+                self._ping_lost = 0
+                _LOGGER.warning("Bemfa max ping lost, reconnecting...")
+                await self._reconnect()
+
+        self._ping_publish_task = asyncio.create_task(_publish_job())
 
     async def _reconnect(self):
-        """Disconnect and reconnect MQTT, re-subscribe all topics."""
+        """Disconnect and reconnect MQTT, restart ping cycle."""
+        self._ping_lost = 0
+        # Cancel publish chain only (future cycles), not _ping_receive_task
+        if self._ping_publish_task and not self._ping_publish_task.done():
+            self._ping_publish_task.cancel()
+            try:
+                await self._ping_publish_task
+            except asyncio.CancelledError:
+                pass
+        self._ping_publish_task = None
+        self._ping_receive_task = None
+        # Disconnect MQTT
         loop = asyncio.get_event_loop()
         if self._client:
             await loop.run_in_executor(None, self._disconnect_mqtt)
-        # Reconnect
+        # Reconnect MQTT
         await loop.run_in_executor(None, self._connect_mqtt)
+        # Restart ping cycle (fresh chain, no duplicate tasks)
+        self._start_ping_cycle()
