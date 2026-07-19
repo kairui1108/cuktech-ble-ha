@@ -15,6 +15,8 @@ typedef struct {
     char mqtt_pass[65];
     char mqtt_topic_prefix[64];
     bool mqtt_enable;
+    bool bemfa_enable;
+    char bemfa_uid[33];
     bool valid;
 } DeviceConfig;
 

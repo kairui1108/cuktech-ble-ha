@@ -2,12 +2,13 @@
 
 [English](esp32-readme-en.md)
 
-将酷态科充电器通过 ESP32 接入 Home Assistant。
+将酷态科充电器通过 ESP32 接入 Home Assistant 和巴法云。
 
 ```
 充电器 ←BLE→ ESP32 ──MQTT──→ Home Assistant
-                         ├── HTTP（配置页 / 仪表盘 / OTA）
-                         └── NVS（配置持久化）
+         │            ├──巴法云──→ 小爱同学 / 小度
+         │            ├── HTTP（配置页 / 仪表盘 / OTA）
+         │            └── NVS（配置持久化）
 ```
 
 ## Home Assistant 集成
@@ -22,6 +23,25 @@
 - 协议开关（PD / PPS / UFCS / SCP）
 - 场景模式切换
 - BLE 连接状态监控
+
+## 巴法云接入（小爱同学 / 小度）
+
+固件内置巴法云支持，无需 Home Assistant 即可通过语音控制充电器。
+
+### 使用步骤
+
+1. 注册 [巴法云](https://www.bemfa.com)，获取 **UID**（32 位私钥）
+2. 打开 ESP32 Web 配置页，找到「巴法云（接入小爱、小度）」区域
+3. 填入 UID，启用巴法云，保存重启
+4. 设备自动注册 5 个开关到巴法云：
+   - C口1开关、C口2开关、C口3开关、USB-A开关、蓝牙开关
+5. 打开小爱 APP → 自动发现设备
+6. 语音控制：「小爱同学，打开C口1开关」
+
+### 注意事项
+
+- 设备名已自动设置为中文，小爱可直接识别
+- 端口开关通过 BLE 实时同步，状态变化自动更新到巴法云
 
 ## 快速开始
 
@@ -84,6 +104,7 @@ esp32_ble/
 │   ├── miot_protocol.c/.h # 协议常量 + TLV 编解码
 │   ├── config.h           # 编译时默认值
 │   ├── config_store.c/.h  # NVS 配置持久化
+│   ├── bemfa.c/.h         # 巴法云 MQTT + HTTP API
 │   ├── http_server.c/.h   # Web 配置页 + REST API
 │   ├── ota_update.c/.h    # HTTP OTA 更新
 │   └── queue_msg.h        # 跨任务消息定义

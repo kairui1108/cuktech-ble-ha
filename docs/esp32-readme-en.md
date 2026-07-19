@@ -2,12 +2,13 @@
 
 [中文](esp32-readme.md)
 
-Bridge your CUKTECH charger to Home Assistant via ESP32.
+Bridge your CUKTECH charger to Home Assistant and Bemfa cloud via ESP32.
 
 ```
 Charger ←BLE→ ESP32 ──MQTT──→ Home Assistant
-                         ├── HTTP (Config page / Dashboard / OTA)
-                         └── NVS (Persistent config storage)
+         │            ├──Bemfa──→ XiaoAi / XiaoDu
+         │            ├── HTTP (Config page / Dashboard / OTA)
+         │            └── NVS (Persistent config storage)
 ```
 
 ## Home Assistant Integration
@@ -22,6 +23,26 @@ Features:
 - Protocol switching (PD / PPS / UFCS / SCP)
 - Scene mode selection
 - BLE connection status monitoring
+
+## Bemfa Cloud (XiaoAi / XiaoDu Voice Control)
+
+Built-in Bemfa cloud support — control your charger with voice commands, no Home Assistant required.
+
+### Setup
+
+1. Register at [Bemfa](https://www.bemfa.com) and get your **UID** (32-char private key)
+2. Open the ESP32 web config page, find the "巴法云（接入小爱、小度）" section
+3. Enter your UID, enable Bemfa, save and reboot
+4. 5 switches are automatically registered:
+   - C口1开关 (C-Port 1), C口2开关 (C-Port 2), C口3开关 (C-Port 3)
+   - USB-A开关 (USB-A), 蓝牙开关 (BLE)
+5. Open XiaoAi APP → devices appear automatically
+6. Voice control: "Hey XiaoAi, turn on C-Port 1 switch"
+
+### Notes
+
+- Device names are pre-set in Chinese for XiaoAi recognition
+- Port states sync in real-time via BLE
 
 ## Quick Start
 
@@ -84,6 +105,7 @@ esp32_ble/
 │   ├── miot_protocol.c/.h # Protocol constants & TLV encoding
 │   ├── config.h           # Compile-time defaults
 │   ├── config_store.c/.h  # NVS config persistence
+│   ├── bemfa.c/.h         # Bemfa cloud MQTT + HTTP API
 │   ├── http_server.c/.h   # Web config page + REST API
 │   ├── ota_update.c/.h    # HTTP OTA update
 │   └── queue_msg.h        # Cross-task message types

@@ -44,6 +44,8 @@ static void _json_cfg(cJSON *root) {
     cJSON_AddStringToObject(root, "mqtt_pass", _cfg->mqtt_pass);
     cJSON_AddStringToObject(root, "mqtt_topic_prefix", _cfg->mqtt_topic_prefix);
     cJSON_AddBoolToObject(root, "mqtt_enable", _cfg->mqtt_enable);
+    cJSON_AddBoolToObject(root, "bemfa_enable", _cfg->bemfa_enable);
+    cJSON_AddStringToObject(root, "bemfa_uid", _cfg->bemfa_uid);
 }
 
 static int _get_config_handler(httpd_req_t *req) {
@@ -71,9 +73,12 @@ static int _post_config_handler(httpd_req_t *req) {
     SET_STR(device_ble_key, "device_ble_key"); SET_STR(mqtt_broker, "mqtt_broker");
     SET_STR(mqtt_user, "mqtt_user"); SET_STR(mqtt_pass, "mqtt_pass");
     SET_STR(mqtt_topic_prefix, "mqtt_topic_prefix");
+    SET_STR(bemfa_uid, "bemfa_uid");
 
     cJSON *je = cJSON_GetObjectItem(root, "mqtt_enable");
     if (je && cJSON_IsBool(je)) _cfg->mqtt_enable = cJSON_IsTrue(je);
+    cJSON *jb = cJSON_GetObjectItem(root, "bemfa_enable");
+    if (jb && cJSON_IsBool(jb)) _cfg->bemfa_enable = cJSON_IsTrue(jb);
     cJSON *jp = cJSON_GetObjectItem(root, "mqtt_port");
     if (jp && cJSON_IsNumber(jp)) _cfg->mqtt_port = (uint16_t)cJSON_GetNumberValue(jp);
     _cfg->valid = (_cfg->wifi_ssid[0] != '\0' && _cfg->device_mac[0] != '\0');
@@ -526,6 +531,10 @@ static const char _CFG_HTML[] =
 "<label>Username</label><input id='mqtt_user'>"
 "<label>Password</label><input id='mqtt_pass' type='password'>"
 "<label>Topic Prefix</label><input id='mqtt_topic_prefix' value='cuktech/charger'>"
+"<div class='section'>巴法云（接入小爱、小度）</div>"
+"<div class='toggle'><input type='checkbox' id='bemfa_enable'><label class='sl' for='bemfa_enable'></label><span>启用巴法云</span></div>"
+"<label>私钥（UID）</label><input id='bemfa_uid' placeholder='注册巴法云获取'>"
+"<p style='color:#888;font-size:12px'>设备名自动注册，支持小爱/小度语音控制</p>"
 "<button type='submit'>Save & Reboot</button>"
 "</form></div>"
 "<script>"
@@ -535,9 +544,11 @@ static const char _CFG_HTML[] =
 "document.getElementById('f').onsubmit=function(e){"
 "e.preventDefault();var d={};"
 "['wifi_ssid','wifi_pass','device_mac','device_token','device_ble_key',"
-"'mqtt_broker','mqtt_user','mqtt_pass','mqtt_topic_prefix'].forEach(function(k){d[k]=document.getElementById(k).value});"
+"'mqtt_broker','mqtt_user','mqtt_pass','mqtt_topic_prefix',"
+"'bemfa_uid'].forEach(function(k){d[k]=document.getElementById(k).value});"
 "d.mqtt_port=parseInt(document.getElementById('mqtt_port').value)||1883;"
 "d.mqtt_enable=document.getElementById('mqtt_enable').checked;"
+"d.bemfa_enable=document.getElementById('bemfa_enable').checked;"
 "fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})"
 ".then(function(r){return r.json()}).then(function(d){alert(d.message);setTimeout(function(){window.location='/'},2000)});"
 "};</script></body></html>";

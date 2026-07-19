@@ -19,6 +19,7 @@
 #include "config_store.h"
 #include "http_server.h"
 #include "ota_update.h"
+#include "bemfa.h"
 
 #if ENABLE_MQTT
 #include "mqtt_client.h"
@@ -722,8 +723,11 @@ static void app_task(void* pvParameters) {
                         res.protocol, res.status,
                         res.status != 0 || res.voltage > 0.5f, true
                     };
+                    bool a = port_data[idx].active;
                     UNLOCK_STATE();
                     publish_port(idx);
+                    // Always update Bemfa state regardless of main MQTT
+                    bemfa_publish_port(idx, res.voltage, res.current, res.power, a);
                 }
                 break;
             }
@@ -814,6 +818,8 @@ static void app_task(void* pvParameters) {
                 ble_ready_flag = res.value != 0;
                 UNLOCK_STATE();
                 publish_status();
+                // Always update Bemfa BLE state regardless of main MQTT
+                bemfa_publish_status(res.value != 0);
                 if (res.value) {
                     // BLE connected — fetch key settings from device
                     // Only GET essential PIIDs to avoid 120s+ blocking
@@ -836,6 +842,9 @@ static void app_task(void* pvParameters) {
                      (int)(now / 1000));
             last_status_print = now;
         }
+
+        // Bemfa keepalive
+        bemfa_loop();
 
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -938,6 +947,9 @@ void app_main(void) {
     urgent_queue = xQueueCreate(4, sizeof(BleCommand));
     result_queue = xQueueCreate(32, sizeof(BleResult));
     state_mutex = xSemaphoreCreateMutex();
+
+    // Bemfa (小爱同学) — after queues and MQTT are ready
+    bemfa_init(&g_cfg, handle_port_control, handle_ble_control);
 
     // Start tasks
     // C3 is single-core, use un-pinned tasks.

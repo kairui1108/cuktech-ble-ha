@@ -37,6 +37,7 @@ void config_store_apply_defaults(DeviceConfig *cfg) {
         .mqtt_pass = DEFAULT_MQTT_PASS,
         .mqtt_topic_prefix = DEFAULT_MQTT_TOPIC_PREFIX,
         .mqtt_enable = DEFAULT_MQTT_ENABLE,
+        .bemfa_enable = false,
         .valid = false,
     };
 }
@@ -63,10 +64,16 @@ bool config_store_load(DeviceConfig *cfg) {
     if (nvs_get_u8(h, "mqtt_en", &en) == ESP_OK) cfg->mqtt_enable = (en != 0);
     else cfg->mqtt_enable = DEFAULT_MQTT_ENABLE;
 
+    uint8_t bemfa_en = 0;
+    if (nvs_get_u8(h, "bemfa_en", &bemfa_en) == ESP_OK) cfg->bemfa_enable = (bemfa_en != 0);
+    _str(h, "bemfa_uid", cfg->bemfa_uid, sizeof(cfg->bemfa_uid));
+    // bemfa_token and bemfa_topic removed — only UID is needed
+
     cfg->valid = (cfg->wifi_ssid[0] != '\0' && cfg->device_mac[0] != '\0');
     nvs_close(h);
-    ESP_LOGI(TAG, "Config loaded: wifi=%s mqtt=%s:%d device=%s",
-             cfg->wifi_ssid, cfg->mqtt_broker, cfg->mqtt_port, cfg->device_mac);
+    ESP_LOGI(TAG, "Config loaded: wifi=%s mqtt=%s:%d device=%s bemfa=%s",
+             cfg->wifi_ssid, cfg->mqtt_broker, cfg->mqtt_port, cfg->device_mac,
+             cfg->bemfa_enable ? "on" : "off");
     return cfg->valid;
 }
 
@@ -87,6 +94,8 @@ bool config_store_save(const DeviceConfig *cfg) {
     nvs_set_str(h, "mqtt_pass", cfg->mqtt_pass);
     nvs_set_str(h, "mqtt_topic", cfg->mqtt_topic_prefix);
     nvs_set_u8(h, "mqtt_en", cfg->mqtt_enable ? 1 : 0);
+    nvs_set_u8(h, "bemfa_en", cfg->bemfa_enable ? 1 : 0);
+    nvs_set_str(h, "bemfa_uid", cfg->bemfa_uid);
     esp_err_t err = nvs_commit(h);
     nvs_close(h);
     if (err != ESP_OK) {
