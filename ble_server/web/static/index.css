@@ -16,6 +16,7 @@
         .status-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 500; }
         .status-badge.connected { background: rgba(var(--success-rgb), 0.12); color: var(--success); box-shadow: 0 0 20px rgba(var(--success-rgb), 0.1); }
         .status-badge.disconnected { background: rgba(var(--danger-rgb), 0.12); color: var(--danger); }
+        .status-badge.connecting { background: rgba(var(--warning-rgb), 0.12); color: var(--warning); }
         .status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: pulse 2s infinite; }
         .status-badge.disconnected .status-dot { animation: none; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }

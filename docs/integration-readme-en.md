@@ -7,12 +7,6 @@
 
 Connect CUKTECH charger to Home Assistant via MQTT for real-time monitoring, port control, and automation.
 
-## Preview
-
-![HA Integration](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_integration.png)
-
-![HA Lovelace](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_lovelace.png)
-
 ## Prerequisites
 
 BLE Server must be deployed first: [BLE Server](https://github.com/kairui1108/cuktech-ble-server)
@@ -115,6 +109,12 @@ Re-authentication supported when server URL changes.
 | `number.cuktech_charger_c2_countdown` | C2 countdown | 0-1440 min |
 | `number.cuktech_charger_c3_countdown` | C3 countdown | 0-1440 min |
 | `number.cuktech_a_countdown` | A countdown | 0-1440 min |
+
+## 效果预览
+
+![HA Integration](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_integration.png)
+
+![HA Lovelace](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_lovelace.png)
 
 ### Known Limitations
 

@@ -364,7 +364,8 @@
                 }
             }
             document.getElementById('totalPower').textContent = totalPower.toFixed(1);
-            document.getElementById('activePorts').textContent = activeCount;
+            const apEl = document.getElementById('activePorts');
+            if (apEl) apEl.textContent = activeCount;
             document.getElementById('maxVoltage').textContent = maxV.toFixed(1);
             if (data.firmware_version) {
                 document.getElementById('firmwareVersion').textContent = '固件版本：' + data.firmware_version;
@@ -614,6 +615,22 @@
             finally { btn.disabled = false; }
         }
 
+        async function fetchBemfaStatus() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/bemfa`);
+                const data = await resp.json();
+                const badge = document.getElementById('bemfaBadge');
+                if (!badge) return;
+                if (data.enabled && data.connected) {
+                    badge.className = 'status-badge connected';
+                } else if (data.enabled) {
+                    badge.className = 'status-badge connecting';
+                } else {
+                    badge.className = 'status-badge disconnected';
+                }
+            } catch (e) { console.error('Bemfa status error:', e); }
+        }
+
         // Set initial active button
         document.querySelectorAll('.time-btn').forEach(btn => {
             const minutes = btn.textContent === '24小时' ? 1440 : parseInt(btn.textContent);
@@ -625,6 +642,7 @@
                 initChart();
                 fetchChartData();
                 pollStatus();
+                fetchBemfaStatus();
             } catch (e) {
                 console.error('Init error:', e);
                 pollStatus();

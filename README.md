@@ -23,6 +23,7 @@
 - **设置管理**：场景模式、息屏时间、语言等设置
 - **BLE 自动重连**：断开后自动重连，指数退避策略
 - **MQTT LWT**：崩溃时自动通知 HA 设备离线
+- **巴法云 (Bemfa) 接入**：支持小爱同学/小度音箱语音控制充电器端口
 - **SQLite 历史数据**：端口数据持久化存储，支持统计和导出
 
 ### ESP32 固件
@@ -33,6 +34,7 @@
 - **协议开关**：独立开关 PD / PPS / UFCS / SCP
 - **场景模式切换**
 - **HTTP OTA 更新**
+- **巴法云 (Bemfa) 接入**：支持小爱同学/小度音箱语音控制
 - **支持芯片**：ESP32 / ESP32-S3 / ESP32-C3
 - 👉 **[cuktech-ble-esp32](https://github.com/kairui1108/cuktech-ble-esp32)** — 固件下载
 
@@ -93,6 +95,7 @@ cuktech-ble-ha/
 │   ├── state_protocol_v2.py       # 协议检测引擎 V2
 │   ├── history.py                 # SQLite 历史数据
 │   ├── config.py                  # 配置（支持 YAML）
+│   ├── bemfa_client.py            # 巴法云 MQTT 客户端（小爱/小度）
 │   ├── config.yaml.example        # 配置模板
 │   ├── check_env.sh               # 环境检查脚本
 │   ├── cuktech_ctl.sh             # 服务控制脚本

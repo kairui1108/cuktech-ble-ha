@@ -7,12 +7,6 @@
 
 通过 MQTT 将 CUKTECH 充电器数据接入 Home Assistant，提供实时监控、端口控制和自动化支持。
 
-## 效果预览
-
-![HA Integration](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_integration.png)
-
-![HA Lovelace](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_lovelace.png)
-
 ## 前置条件
 
 需要先部署 [BLE Server](https://github.com/kairui1108/cuktech-ble-server)
@@ -142,6 +136,13 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 | FCP | Huawei Fast Charge Protocol |
 | SCP | Huawei Super Charge Protocol |
 | UFCS | Universal Fast Charging Specification |
+
+## 效果预览
+
+![HA Integration](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_integration.png)
+
+![HA Lovelace](https://raw.githubusercontent.com/kairui1108/cuktech-ble-ha/main/docs/ha_lovelace.png)
+
 
 ## 故障排除
 

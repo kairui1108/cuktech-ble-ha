@@ -334,43 +334,12 @@ function renderCharts() {
     // Combined chart: all 4 ports
     const combinedCanvas = document.getElementById('chartCombined');
     if (combinedCanvas) {
-        if (portCharts.combined) portCharts.combined.destroy();
         // 计算动态峰值
         let currentPeak = 0;
         for (const key of PORT_KEYS) {
             for (const v of state.history[key]) {
                 if (v > currentPeak) currentPeak = v;
             }
-        }
-        const peakPower = currentPeak > 0 ? currentPeak * 1.18 : 60;
-
-        portCharts.combined = new Chart(combinedCanvas, {
-            type: 'line',
-            data: {
-                labels: state.history.c1.map((_, i) => i),
-                datasets: PORT_KEYS.map(key => ({
-                    label: PORT_NAMES[key],
-                    data: state.history[key],
-                    borderColor: PORT_COLORS[key],
-                    borderWidth: 1.5,
-                    tension: 0.4,
-                    pointRadius: 0,
-                    fill: false,
-                }))
-            },
-            options: {
-                responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
-                interaction: { intersect: false, mode: 'index' },
-                plugins: { legend: { display: false } },
-                scales: {
-                    x: { display: false },
-                    y: { display: false, min: 0, max: peakPower },
-                }
-            }
-        });
-        portCharts.combined._peakData = { peakPower, currentPeak, isDark };
-        drawPeakLines(portCharts.combined);
-    }
         }
         const peakPower = currentPeak > 0 ? currentPeak * 1.18 : 60;
 

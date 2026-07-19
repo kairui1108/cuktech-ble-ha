@@ -28,3 +28,7 @@ server:
   log_level: "info"                    # debug, info, warning, error
   history_retention_days: 2            # 保留最近N天的历史数据
   history_db_path: ""    # SQLite 数据库文件路径 
+
+bemfa:
+  enabled: false # 是否启用巴法云，接入小爱同学/小度音箱
+  uid: ""  # 填入巴法云控制台的私钥

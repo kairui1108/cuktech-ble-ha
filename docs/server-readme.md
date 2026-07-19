@@ -11,9 +11,10 @@
 - **实时数据推送**：通过 MQTT 发布电压、电流、功率、协议等数据
 - **协议检测**：自动识别 PD / PD Fixed / PD PPS / QC / USB-A 充电协议
 - **协议开关控制**：通过 API 独立控制各端口 PD/PPS/UFCS/SCP 协议开关
-- **Web 管理界面**：实时功率曲线图、端口控制、协议控制、设备设置，支持 6 种主题
+- **Web 管理界面**：实时功率曲线图、端口控制、协议控制、设备设置、巴法云启停，支持 6 种主题
 - **HTTP API**：提供 RESTful 接口供外部系统调用
 - **MQTT LWT**：崩溃时自动通知 HA 设备离线
+- **巴法云 (Bemfa) 接入**：支持小爱同学/小度音箱语音控制充电器端口
 - **SQLite 历史数据**：端口数据持久化存储，支持统计和导出
 - **环境检查**：`check_env.sh` 一键检查系统兼容性
 
@@ -279,6 +280,7 @@ cd systemd && ./install-service.sh
 | `/api/statistics/{port}` | GET | 统计分析 |
 | `/api/export/{port}` | GET | CSV 导出 |
 | `/api/log-level` | GET/POST | 日志级别管理 |
+| `/api/bemfa` | GET/POST | 巴法云状态查询与启停控制 |
 
 ## 架构
 

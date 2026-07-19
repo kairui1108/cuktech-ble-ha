@@ -19,6 +19,7 @@ from config import load_config, LOG_LEVELS
 from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS, PIID_RANGES, PROTOCOL_SWITCH_BITS
 from ble_manager import BLEManager, set_status_cache_invalidator
 from history import PortHistory
+from bemfa_client import BemfaClient, MSG_ON, MSG_OFF
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +46,7 @@ class Server:
             db_path=self.config.server.history_db_path,
             retention_days=self.config.server.history_retention_days,
         )
+        self.bemfa: BemfaClient | None = None
         log_file = Path(__file__).parent / ".log_level"
         log_level = self.config.server.log_level
         if log_file.exists():
@@ -54,8 +56,99 @@ class Server:
         logging.getLogger().setLevel(LOG_LEVELS.get(log_level, logging.INFO))
 
     def mqtt_publish(self, topic, payload, retain=False):
+        """Publish to all enabled MQTT clients (multiplex)."""
+        # HA MQTT
         if self.mqtt_client and self.mqtt_client.is_connected():
             self.mqtt_client.publish(topic, json.dumps(payload, ensure_ascii=False), retain=retain)
+        # Bemfa
+        if self.bemfa and self.bemfa.is_connected:
+            self._bemfa_publish(topic, payload)
+
+    def _bemfa_publish(self, topic, payload):
+        """Map HA MQTT topics to Bemfa device states."""
+        topic_prefix = self.config.mqtt.topic_prefix
+        # Port state: {prefix}/port/{port_name}
+        if topic.startswith(f"{topic_prefix}/port/"):
+            port_name = topic.split("/")[-1]
+            entity_map = {
+                "c1": "cuktech_c1",
+                "c2": "cuktech_c2",
+                "c3": "cuktech_c3",
+                "a": "cuktech_usb_a",
+            }
+            entity_id = entity_map.get(port_name)
+            if entity_id and isinstance(payload, dict):
+                state = MSG_ON if payload.get("active") else MSG_OFF
+                self.bemfa.publish_state(entity_id, state)
+        # BLE status: {prefix}/status
+        elif topic == f"{topic_prefix}/status":
+            if isinstance(payload, dict):
+                connected = payload.get("connected", False)
+                self.bemfa.publish_state("cuktech_ble", MSG_ON if connected else MSG_OFF)
+
+    async def setup_bemfa(self):
+        """Initialize Bemfa client if enabled."""
+        if not self.config.bemfa.enabled or not self.config.bemfa.uid:
+            _LOGGER.info("Bemfa disabled or UID not configured")
+            return
+
+        # Cleanup old client if exists
+        if self.bemfa:
+            await self.bemfa.stop()
+
+        self.bemfa = BemfaClient(self.config.bemfa.uid)
+
+        # Register devices
+        self.bemfa.add_device("cuktech_c1", "C口1开关")
+        self.bemfa.add_device("cuktech_c2", "C口2开关")
+        self.bemfa.add_device("cuktech_c3", "C口3开关")
+        self.bemfa.add_device("cuktech_usb_a", "USB-A开关")
+        self.bemfa.add_device("cuktech_ble", "蓝牙开关")
+
+        # Register command callbacks
+        def _port_cmd(port, on):
+            _LOGGER.info("Bemfa command: %s %s", port, "on" if on else "off")
+            try:
+                self.loop.call_soon_threadsafe(
+                    self.ble.cmd_queue.put_nowait,
+                    ("port", (port, "on" if on else "off"), None))
+                return True
+            except Exception as e:
+                _LOGGER.error("Bemfa port cmd failed: %s", e)
+                return False
+
+        def _ble_cmd(on):
+            _LOGGER.info("Bemfa BLE command: %s", "on" if on else "off")
+            try:
+                if on:
+                    asyncio.run_coroutine_threadsafe(self.ble.start(), self.loop)
+                else:
+                    asyncio.run_coroutine_threadsafe(self.ble.request_stop(), self.loop)
+                return True
+            except Exception as e:
+                _LOGGER.error("Bemfa BLE cmd failed: %s", e)
+                return False
+
+        self.bemfa.on_command("cuktech_c1", lambda on: _port_cmd("c1", on))
+        self.bemfa.on_command("cuktech_c2", lambda on: _port_cmd("c2", on))
+        self.bemfa.on_command("cuktech_c3", lambda on: _port_cmd("c3", on))
+        self.bemfa.on_command("cuktech_usb_a", lambda on: _port_cmd("a", on))
+        self.bemfa.on_command("cuktech_ble", _ble_cmd)
+
+        await self.bemfa.start()
+
+    async def handle_bemfa(self, request):
+        """GET /api/bemfa - get Bemfa status."""
+        enabled = self.bemfa is not None
+        connected = self.bemfa is not None and self.bemfa.is_connected
+        uid = self.config.bemfa.uid
+        uid_display = f"{uid[:4]}****" if len(uid) > 4 else uid
+        return web.json_response({
+            "enabled": enabled,
+            "connected": connected,
+            "uid": uid_display,
+            "configured": bool(uid),
+        })
 
     async def setup_mqtt(self):
         if not self.config.mqtt.enabled:
@@ -584,6 +677,7 @@ app.router.add_post("/api/log-level", lambda r: get_server().handle_log_level(r)
 app.router.add_get("/api/chart", lambda r: get_server().handle_chart(r))
 app.router.add_get("/api/statistics/{port}", lambda r: get_server().handle_statistics(r))
 app.router.add_get("/api/export/{port}", lambda r: get_server().handle_export(r))
+app.router.add_get("/api/bemfa", lambda r: get_server().handle_bemfa(r))
 app.router.add_static("/static", WEB_DIR / "static", show_index=False)
 
 
@@ -597,12 +691,16 @@ async def on_startup(app_):
         await s.setup_mqtt()
         if s.mqtt_client:
             s.setup_mqtt_subscriptions()
+        if s.config.bemfa.enabled:
+            await s.setup_bemfa()
         app_["ble_task"] = asyncio.create_task(s.ble.start())
 
 
 async def on_shutdown(app_):
     _LOGGER.info("Shutting down...")
     s = get_server()
+    if s.bemfa:
+        await s.bemfa.stop()
     await s.ble.stop()
     ble_task = app_.get("ble_task")
     if ble_task:

@@ -70,10 +70,17 @@ class ServerConfig:
 
 
 @dataclass
+class BemfaConfig:
+    enabled: bool = False
+    uid: str = ""
+
+
+@dataclass
 class Config:
     ble: BLEConfig = field(default_factory=BLEConfig)
     mqtt: MQTTConfig = field(default_factory=MQTTConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    bemfa: BemfaConfig = field(default_factory=BemfaConfig)
 
     @property
     def topic_port(self):
@@ -146,4 +153,12 @@ def load_config() -> Config:
         reconnect_max_delay=reconnect_max_delay,
     )
 
-    return Config(ble=ble, mqtt=mqtt, server=server)
+    bemfa_cfg = ycfg.get("bemfa", {})
+    bemfa_enabled_env = os.environ.get("BEMFA_ENABLED", "").lower()
+    bemfa_enabled = bemfa_enabled_env in ("1", "true", "yes") or bemfa_cfg.get("enabled", False)
+    bemfa = BemfaConfig(
+        enabled=bemfa_enabled,
+        uid=os.environ.get("BEMFA_UID", bemfa_cfg.get("uid", "")),
+    )
+
+    return Config(ble=ble, mqtt=mqtt, server=server, bemfa=bemfa)

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.6] - 2026-07-19
+
+### Added
+- Compatible with ESP32 firmware and BLE Server 
+
 ## [1.0.5] - 2026-07-14
 
 ### Added

@@ -10,9 +10,10 @@ Standalone BLE server for connecting CUKTECH chargers and pushing real-time data
 - **BLE Stability**: LL disconnect confirmation, GATT ready wait, exponential backoff
 - **Real-time Data**: MQTT publish voltage, current, power, protocol per port
 - **Protocol Detection**: Auto-detect PD / PD Fixed / PD PPS / QC / USB-A
-- **Web UI**: Real-time charts, port control, settings, 6 themes
+- **Web UI**: Real-time charts, port control, settings, Bemfa toggle, 6 themes
 - **HTTP API**: RESTful endpoints for external systems
 - **MQTT LWT**: Auto-notify HA on crash
+- **Bemfa Cloud**: XiaoAi / DuerOS voice control for charger ports
 - **SQLite History**: Persistent port data with statistics and CSV export
 - **Environment Check**: `check_env.sh` for system compatibility
 
@@ -190,6 +191,7 @@ Access at `http://<SERVER_IP>:8199/`
 | `/api/statistics/{port}` | GET | Statistics |
 | `/api/export/{port}` | GET | CSV export |
 | `/api/log-level` | GET/POST | Log level management |
+| `/api/bemfa` | GET/POST | Bemfa status & toggle control |
 
 ## Tests
 
