@@ -331,6 +331,9 @@ static const char _DASH[] =
 "<div class='sec'>端口控制</div>"
 "<div class='card' id='portctl'></div>"
 
+"<div class='sec'>倒计时</div>"
+"<div class='card' id='cd'></div>"
+
 "<div class='sec'>协议控制</div>"
 "<div class='card' id='protos'></div>"
 
@@ -415,6 +418,24 @@ static const char _DASH[] =
 "document.getElementById('s20').checked=!!d['20'];"
 "document.getElementById('bleEn').checked=!!d['ble_enabled'];"
 
+"var cd = document.getElementById('cd');"
+"if (cd) {"
+"var pn=['C1','C2','C3','USB-A'],pi=[9,10,11,12];"
+"var h='';"
+"for(var i=0;i<4;i++){"
+"var v=d[pi[i]]||0;"
+"h+='<div class=\"row\">';"
+"h+='<span class=\"rl\">'+pn[i]+'</span>';"
+"h+='<div style=\"display:flex;align-items:center;gap:4px;flex-wrap:wrap\">';"
+"h+='<span class=\"rv\" id=\"cdv'+pi[i]+'\" style=\"min-width:40px\">'+(v>0?v+'分钟':'--')+'</span>';"
+"h+='<button class=\"btn\" onclick=\"setCd('+pi[i]+',30)\" style=\"font-size:11px;padding:2px 6px\">30分</button>';"
+"h+='<button class=\"btn\" onclick=\"setCd('+pi[i]+',60)\" style=\"font-size:11px;padding:2px 6px\">60分</button>';"
+"h+='<input id=\"cdi'+pi[i]+'\" type=\"number\" min=\"0\" max=\"1440\" placeholder=\"分\" style=\"width:36px;font-size:11px;padding:2px 4px;background:var(--card);border:1px solid var(--card-b);border-radius:4px;color:var(--text);text-align:center\">';"
+"h+='<button class=\"btn\" onclick=\"setCdInput('+pi[i]+')\" style=\"font-size:11px;padding:2px 6px\">设置</button>';"
+"h+='<button onclick=\"setCd('+pi[i]+',0)\" style=\"background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px\">✕</button>';"
+"h+='</div></div>';}"
+"cd.innerHTML=h;}"
+
 "SCENES.forEach(function(s){"
 "var el=document.getElementById('sc'+s.v);"
 "if(el)el.className='scb'+(d['5']==s.v?' active':'');});"
@@ -446,6 +467,14 @@ static const char _DASH[] =
 "function setS(piid,v){"
 "fetch('/api/setting',{method:'POST',headers:{'Content-Type':'application/json'},"
 "body:JSON.stringify({piid:piid,value:v})}).then(function(){setTimeout(upd,500);});}"
+
+"function setCd(piid,v){"
+"var val=parseInt(v);if(isNaN(val)||val<0)val=0;if(val>1440)val=1440;"
+"setS(piid,val);}"
+
+"function setCdInput(piid){"
+"var v=document.getElementById('cdi'+piid).value;"
+"setCd(piid,v);}"
 
 "function toggleTheme(){"
 "var b=document.body;var isLight=b.classList.contains('light');"

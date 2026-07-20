@@ -792,6 +792,8 @@ bool ble_manager_miot_set(uint8_t piid, uint32_t value) {
  * ============================================================ */
 static void _scan(void) {
     xSemaphoreTake(_connected_sem, 0);
+    ble_gap_disc_cancel();
+    vTaskDelay(pdMS_TO_TICKS(100));
     struct ble_gap_disc_params dp = {}; dp.itvl = 0x60; dp.window = 0x60;
     ESP_LOGI(TAG, "Scanning for %s...", _mac_str);
     int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, 10 * 100, &dp, _gap_event, NULL);
@@ -942,6 +944,7 @@ void ble_manager_init(const char *device_mac, const char *device_token, const ch
     for (int i = 0; i < 12; i++) { char hex[3] = {device_token[i*2], device_token[i*2+1], 0}; _token[i] = (uint8_t)strtol(hex, NULL, 16); }
 
     ESP_LOGI(TAG, "Init NimBLE...");
+    vTaskDelay(pdMS_TO_TICKS(500));
     nimble_port_init();
     ble_hs_cfg.gatts_register_cb = NULL;
     ble_hs_cfg.sync_cb = _nimble_on_sync;
