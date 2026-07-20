@@ -327,26 +327,3 @@ void bemfa_loop(void) {
     }
 }
 
-    }
-
-    // Send ping every 30s
-    if (now - _last_ping_time >= INTERVAL_PING_SEND) {
-        _last_ping_time = now;
-        _send_ping();
-    }
-
-    // Check pong timeout (20s after ping sent)
-    if (_ping_waiting && (now - _ping_send_time >= INTERVAL_PING_RECV)) {
-        _ping_lost++;
-        _ping_waiting = false;
-        ESP_LOGW(TAG, "Ping lost (%d/%d)", _ping_lost, MAX_PING_LOST);
-
-        if (_ping_lost == MAX_PING_LOST) {
-            ESP_LOGW(TAG, "Max ping lost, restarting Bemfa MQTT...");
-            _ping_lost = 0;
-            esp_mqtt_client_stop(_client);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            if (!_circuit_open) esp_mqtt_client_start(_client);
-        }
-    }
-}
