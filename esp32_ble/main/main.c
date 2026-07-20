@@ -79,6 +79,7 @@ static bool ble_ready_flag = false;
 static uint64_t last_set16_time = 0;
 static uint64_t last_set_time = 0;   // any SET command (used for push/GET debounce during transitions)
 static uint8_t last_set_piid = 0;    // piid of last SET — distinguish port control from protocol change
+static bool mqtt_connected = false;  // MQTT connection state (check before publish to avoid outbox overflow)
 
 #define LOCK_STATE()   do { if (state_mutex) xSemaphoreTake(state_mutex, portMAX_DELAY); } while(0)
 #define UNLOCK_STATE() do { if (state_mutex) xSemaphoreGive(state_mutex); } while(0)
@@ -314,7 +315,7 @@ static bool handle_ble_control(bool enable) {
 }
 
 static void publish_port(int idx) {
-    if (!mqtt_client) return;
+    if (!mqtt_client || !mqtt_connected) return;
     LOCK_STATE();
     if (!port_data[idx].valid) { UNLOCK_STATE(); return; }
     float v = port_data[idx].voltage;
@@ -337,7 +338,7 @@ static void publish_port(int idx) {
 }
 
 static void publish_settings(void) {
-    if (!mqtt_client) return;
+    if (!mqtt_client || !mqtt_connected) return;
     LOCK_STATE();
     char payload[512];
     int pos = snprintf(payload, sizeof(payload), "{");
@@ -369,7 +370,7 @@ static void publish_settings(void) {
 }
 
 static void publish_status(void) {
-    if (!mqtt_client) return;
+    if (!mqtt_client || !mqtt_connected) return;
     LOCK_STATE();
     bool ready = ble_ready_flag;
     UNLOCK_STATE();
@@ -386,12 +387,14 @@ static void mqtt_event_handler(void* arg, esp_event_base_t base, int32_t id, voi
     switch (event->event_id) {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT connected");
+        mqtt_connected = true;
         esp_mqtt_client_subscribe(mqtt_client, _topic_set, 1);
         esp_mqtt_client_subscribe(mqtt_client, _topic_port_cmd, 1);
         esp_mqtt_client_subscribe(mqtt_client, _topic_ble, 1);
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "MQTT disconnected");
+        mqtt_connected = false;
         break;
     case MQTT_EVENT_DATA: {
         // Parse topic to determine command type
@@ -695,19 +698,27 @@ static void ble_task(void *pvParameters) {
 static void app_task(void* pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(100));
     uint64_t last_status_print = 0;
+    uint64_t last_cd_fetch = 0;
+    uint64_t last_mqtt_restart = 0;
+    int mqtt_restart_count = 0;
 
     while (1) {
         uint64_t now = esp_timer_get_time() / 1000;
 
 #if ENABLE_MQTT
-        // MQTT health check
+        // MQTT health check with exponential backoff
         if (now - last_mqtt_ok > 60000 && last_mqtt_ok > 0) {
-            ESP_LOGW(TAG, "MQTT no activity 60s, restarting...");
-            esp_mqtt_client_stop(mqtt_client);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            esp_mqtt_client_start(mqtt_client);
-            last_mqtt_ok = now;
+            uint32_t interval = (mqtt_restart_count < 3) ? 60 : (mqtt_restart_count < 6) ? 300 : 600;
+            if (now - last_mqtt_restart >= interval) {
+                ESP_LOGW(TAG, "MQTT no activity %lus, restarting (attempt %d)...", (unsigned long)(now - last_mqtt_ok) / 1000, mqtt_restart_count + 1);
+                esp_mqtt_client_stop(mqtt_client);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                esp_mqtt_client_start(mqtt_client);
+                last_mqtt_restart = now;
+                mqtt_restart_count++;
+            }
         }
+        if (now - last_mqtt_ok < 60000) mqtt_restart_count = 0;
 #endif
 
         // Process BLE results
@@ -823,7 +834,7 @@ static void app_task(void* pvParameters) {
                 if (res.value) {
                     // BLE connected — fetch key settings from device
                     // Only GET essential PIIDs to avoid 120s+ blocking
-                    static const uint8_t READABLE_PIIDS[] = {16, 21};
+                    static const uint8_t READABLE_PIIDS[] = {6, 16, 21};
                     for (int i = 0; i < sizeof(READABLE_PIIDS); i++) {
                         BleCommand c = {CMD_GET, READABLE_PIIDS[i], 0, 0};
                         xQueueSend(cmd_queue, &c, 0);
@@ -832,6 +843,16 @@ static void app_task(void* pvParameters) {
                 break;
             }
             default: break;
+            }
+        }
+
+        // Periodically GET countdown values (PIID 9-12) + port control (PIID 16)
+        if (ble_ready_flag && (now - last_cd_fetch >= 30000)) {
+            last_cd_fetch = now;
+            static const uint8_t CD_PIIDS[] = {9, 10, 11, 12, 16};
+            for (int i = 0; i < sizeof(CD_PIIDS); i++) {
+                BleCommand c = {CMD_GET, CD_PIIDS[i], 0, 0};
+                xQueueSend(cmd_queue, &c, 0);
             }
         }
 

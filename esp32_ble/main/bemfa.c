@@ -17,6 +17,12 @@ static uint64_t _connect_time = 0;
 static portMUX_TYPE _state_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool _port_state[4] = {false, false, false, false};
 static bool _ble_state = false;
+static bool _connected = false;      // Bemfa MQTT connection state
+static int _connect_fail_count = 0;
+static bool _circuit_open = false;
+static uint64_t _circuit_open_time = 0;
+#define MAX_CONNECT_FAILS 5
+#define CIRCUIT_RESET_SEC 300
 static const DeviceConfig *_cfg = NULL;
 
 // Ping/pong keepalive (aligned with HA integration)
@@ -142,6 +148,9 @@ static void _mqtt_event_handler(void *arg, esp_event_base_t base, int32_t id, vo
     switch (event->event_id) {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "Bemfa MQTT connected");
+        _connected = true;
+        _connect_fail_count = 0;
+        _circuit_open = false;
         _connect_time = esp_timer_get_time() / 1000000;
         _ping_lost = 0;
         _ping_waiting = false;
@@ -175,8 +184,16 @@ static void _mqtt_event_handler(void *arg, esp_event_base_t base, int32_t id, vo
 
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Bemfa MQTT disconnected");
+        _connected = false;
         _ping_waiting = false;
-        _grace_active = true;  // re-enable grace on next connect
+        _grace_active = true;
+        _connect_fail_count++;
+        if (_connect_fail_count >= MAX_CONNECT_FAILS) {
+            ESP_LOGE(TAG, "Circuit breaker open: %d fails, stopping Bemfa MQTT", _connect_fail_count);
+            _circuit_open = true;
+            _circuit_open_time = esp_timer_get_time() / 1000000;
+            esp_mqtt_client_stop(_client);
+        }
         break;
 
     case MQTT_EVENT_DATA: {
@@ -280,7 +297,7 @@ void bemfa_disconnect(void) {
 // ---- Publish state ----
 
 void bemfa_publish_port(int idx, float voltage, float current, float power, bool active) {
-    if (!_enabled || !_client || idx < 0 || idx >= 4) return;
+    if (!_enabled || !_client || !_connected || idx < 0 || idx >= 4) return;
     portENTER_CRITICAL(&_state_mux);
     _port_state[idx] = active;
     portEXIT_CRITICAL(&_state_mux);
@@ -289,7 +306,7 @@ void bemfa_publish_port(int idx, float voltage, float current, float power, bool
 }
 
 void bemfa_publish_status(bool connected) {
-    if (!_enabled || !_client) return;
+    if (!_enabled || !_client || !_connected) return;
     portENTER_CRITICAL(&_state_mux);
     _ble_state = connected;
     portEXIT_CRITICAL(&_state_mux);
@@ -304,6 +321,16 @@ void bemfa_loop(void) {
 
     uint64_t now = esp_timer_get_time() / 1000000;
 
+    if (_circuit_open) {
+        if (now - _circuit_open_time >= CIRCUIT_RESET_SEC) {
+            ESP_LOGI(TAG, "Circuit breaker half-open, retrying Bemfa MQTT...");
+            _circuit_open = false;
+            _connect_fail_count = 0;
+            esp_mqtt_client_start(_client);
+        }
+        return;
+    }
+
     // Send ping every 30s
     if (now - _last_ping_time >= INTERVAL_PING_SEND) {
         _last_ping_time = now;
@@ -317,12 +344,11 @@ void bemfa_loop(void) {
         ESP_LOGW(TAG, "Ping lost (%d/%d)", _ping_lost, MAX_PING_LOST);
 
         if (_ping_lost == MAX_PING_LOST) {
-            ESP_LOGW(TAG, "Max ping lost, reconnecting...");
+            ESP_LOGW(TAG, "Max ping lost, restarting Bemfa MQTT...");
             _ping_lost = 0;
-            // Disconnect and let esp_mqtt_client auto-reconnect
             esp_mqtt_client_stop(_client);
             vTaskDelay(pdMS_TO_TICKS(1000));
-            esp_mqtt_client_start(_client);
+            if (!_circuit_open) esp_mqtt_client_start(_client);
         }
     }
 }

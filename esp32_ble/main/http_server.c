@@ -223,6 +223,51 @@ static int _post_protocol_handler(httpd_req_t *req) {
     return 0;
 }
 
+/* ==================== Sleep API ==================== */
+
+static const char *SCR_LABELS[] = {"5分钟", "1分钟", "10分钟", "30分钟", "常亮"};
+#define SCR_COUNT 5
+
+static int _get_sleep_handler(httpd_req_t *req) {
+    if (!_settings_cb) { httpd_resp_send_500(req); return -1; }
+    cJSON *root = _settings_cb();
+    int val = 0;
+    cJSON *j6 = cJSON_GetObjectItem(root, "6");
+    if (j6 && cJSON_IsNumber(j6)) val = (int)cJSON_GetNumberValue(j6);
+    cJSON_Delete(root);
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resp, "value", val);
+    cJSON_AddStringToObject(resp, "label", (val >= 0 && val < SCR_COUNT) ? SCR_LABELS[val] : "?");
+    char *json = cJSON_PrintUnformatted(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+    cJSON_free(json); cJSON_Delete(resp);
+    return 0;
+}
+
+static int _post_sleep_handler(httpd_req_t *req) {
+    char buf[128];
+    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (len <= 0) { httpd_resp_send_500(req); return -1; }
+    buf[len] = '\0';
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON"); return -1; }
+    cJSON *jv = cJSON_GetObjectItem(root, "value");
+    bool ok = false;
+    if (jv && cJSON_IsNumber(jv) && _setting_set_cb) {
+        int val = (int)cJSON_GetNumberValue(jv);
+        if (val >= 0 && val < SCR_COUNT) ok = _setting_set_cb(6, val);
+    }
+    cJSON_Delete(root);
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", ok);
+    char *rjson = cJSON_PrintUnformatted(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, rjson);
+    cJSON_free(rjson); cJSON_Delete(resp);
+    return 0;
+}
+
 /* ==================== OTA Upload ==================== */
 
 static int _post_ota_handler(httpd_req_t *req) {
@@ -303,7 +348,7 @@ static const char _DASH[] =
 ".scb .sn{font-size:11px;color:var(--dim);margin-top:4px}"
 ".scb.active .sn{color:#4CAF50}"
 ".pg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:6px}"
-".pcb{background:var(--card);border:2px solid var(--card-b);border-radius:10px;padding:8px 4px;text-align:center;cursor:pointer;transition:.2s;font-size:12px;color:var(--dim)}"
+".pcb{background:var(--card);border:1px solid var(--card-b);border-radius:6px;padding:3px 7px;text-align:center;cursor:pointer;transition:.2s;font-size:11px;color:var(--dim)}"
 ".pcb.on{border-color:#4CAF50;color:#81C784}"
 ".ph{font-size:12px;color:var(--dim);font-weight:600;margin:8px 0 4px}"
 ".ota{margin:20px 16px 40px}"
@@ -334,13 +379,10 @@ static const char _DASH[] =
 "<div class='sec'>倒计时</div>"
 "<div class='card' id='cd'></div>"
 
-"<div class='sec'>协议控制</div>"
-"<div class='card' id='protos'></div>"
-
 "<div class='sec'>设置</div>"
 "<div class='card'>"
 "<div class='row'><span class='rl'>场景模式</span><span class='rv' id='v5'>--</span></div>"
-"<div class='row'><span class='rl'>息屏时间</span><span class='rv' id='v6'>--</span></div>"
+"<div class='row'><span class='rl'>息屏时间</span><select id='v6' onchange='setSleep(this.value)' style='background:var(--card);border:1px solid var(--card-b);border-radius:8px;padding:4px 8px;font-size:13px;color:var(--text);-webkit-appearance:auto'><option value='0'>5分钟</option><option value='1'>1分钟</option><option value='2'>10分钟</option><option value='3'>30分钟</option><option value='4'>常亮</option></select></div>"
 "<div class='row'><span class='rl'>语言</span><span class='rv' id='v13'>--</span></div>"
 "<div class='row'><span class='rl'>USB-A小电流</span><label class='tg'><input type='checkbox' id='s15' onchange='setS(15,this.checked?1:0)'><span class='sl'></span></label></div>"
 "<div class='row'><span class='rl'>空闲息屏</span><label class='tg'><input type='checkbox' id='s19' onchange='setS(19,this.checked?1:0)'><span class='sl'></span></label></div>"
@@ -368,14 +410,21 @@ static const char _DASH[] =
 "var SCR={0:'5分钟',1:'1分钟',2:'10分钟',3:'30分钟',4:'常亮'};"
 "var LNG={0:'English',1:'中文'};"
 "var PM2={};"
+"var CDPI=[9,10,11,12];"
 
 "var PMAP=[{p:'c1',n:'C1',ps:[{n:'PD',b:0},{n:'PPS',b:1},{n:'UFCS',b:2}]},{p:'c2',n:'C2',ps:[{n:'PD',b:8},{n:'PPS',b:9},{n:'UFCS',b:10}]},{p:'c3',n:'C3',ps:[{n:'UFCS',b:16},{n:'SCP',b:17}]},{p:'a',n:'USB-A',ps:[{n:'UFCS',b:24},{n:'SCP',b:25}]}];"
 
 "function init(){"
 "var h='';"
-"['c1','c2','c3','a'].forEach(function(p,i){"
-"h+='<div class=\"row\"><span class=\"rl\">'+PN[i]+'</span>'"
-"+'<label class=\"tg\"><input type=\"checkbox\" id=\"pc_'+p+'\" onchange=\"setPort(\\''+p+'\\',this.checked?\\'on\\':\\'off\\')\"><span class=\"sl\"></span></label></div>';});"
+"PMAP.forEach(function(pg){"
+"h+='<div style=\"margin-bottom:10px\">';"
+"h+='<div class=\"row\" style=\"padding:4px 0\">';"
+"h+='<span class=\"rl\">'+pg.n+'</span>';"
+"h+='<div style=\"display:flex;align-items:center;gap:6px\">';"
+"pg.ps.forEach(function(pr){"
+"h+='<div class=\"pcb\" id=\"pb_'+pg.p+'_'+pr.n.toLowerCase()+'\" onclick=\"setProto(\\''+pg.p+'\\',\\''+pr.n.toLowerCase()+'\\')\">'+pr.n+'</div>';});"
+"h+='<label class=\"tg\"><input type=\"checkbox\" id=\"pc_'+pg.p+'\" onchange=\"setPort(\\''+pg.p+'\\',this.checked?\\'on\\':\\'off\\')\"><span class=\"sl\"></span></label>';"
+"h+='</div></div></div>';});"
 "document.getElementById('portctl').innerHTML=h;"
 
 "h='';SCENES.forEach(function(s){"
@@ -383,14 +432,20 @@ static const char _DASH[] =
 "+'<div class=\"si\">'+s.i+'</div><div class=\"sn\">'+s.n+'</div></div>';});"
 "document.getElementById('scenes').innerHTML=h;"
 
-"h='';PMAP.forEach(function(pg){"
-"h+='<div class=\"ph\">'+pg.n+'</div><div class=\"pg\">';"
-"pg.ps.forEach(function(pr){"
-"h+='<div class=\"pcb\" id=\"pb_'+pg.p+'_'+pr.n.toLowerCase()+'\" onclick=\"setProto(\\''+pg.p+'\\',\\''+pr.n.toLowerCase()+'\\')\">'+pr.n+'</div>';});"
-"h+='</div>';});"
-"document.getElementById('protos').innerHTML=h;"
+"h='';var CDPN=['C1','C2','C3','USB-A'];"
+"for(var i=0;i<4;i++){"
+"h+='<div class=\"row\"><span class=\"rl\">'+CDPN[i]+'</span>';"
+"h+='<div style=\"display:flex;align-items:center;gap:4px;flex-wrap:wrap\">';"
+"h+='<span class=\"rv\" id=\"cdv'+CDPI[i]+'\" style=\"min-width:40px\">--</span>';"
+"h+='<button onclick=\"setCd('+CDPI[i]+',30)\" style=\"font-size:11px;padding:2px 5px;border:1px solid var(--card-b);border-radius:4px;background:var(--card);color:var(--text);cursor:pointer\">30分</button>';"
+"h+='<button onclick=\"setCd('+CDPI[i]+',60)\" style=\"font-size:11px;padding:2px 5px;border:1px solid var(--card-b);border-radius:4px;background:var(--card);color:var(--text);cursor:pointer\">60分</button>';"
+"h+='<input id=\"cdi'+CDPI[i]+'\" type=\"number\" min=\"0\" max=\"1440\" placeholder=\"分\" style=\"width:44px;font-size:11px;padding:2px 4px;background:var(--card);border:1px solid var(--card-b);border-radius:4px;color:var(--text);text-align:center\">';"
+"h+='<button onclick=\"setCdInput('+CDPI[i]+')\" style=\"font-size:11px;padding:2px 5px;border:1px solid var(--card-b);border-radius:4px;background:var(--card);color:var(--text);cursor:pointer\">设置</button>';"
+"h+='<button onclick=\"setCd('+CDPI[i]+',0)\" style=\"background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px\">✕</button>';"
+"h+='</div></div>';}"
+"document.getElementById('cd').innerHTML=h;"
 "}"
-"init();"
+"init();upd();setInterval(upd,2000);"
 
 "function upd(){"
 "fetch('/api/ports').then(function(r){return r.json()}).then(function(d){"
@@ -411,30 +466,17 @@ static const char _DASH[] =
 "var el=document.getElementById('pc_'+p);"
 "if(el)el.checked=!!(d['16']&(1<<(i==3?3:i)));});"
 "document.getElementById('v5').textContent=SN[d['5']]||'--';"
-"document.getElementById('v6').textContent=SCR[d['6']]||'--';"
+"document.getElementById('v6').value=d['6']||0;"
 "document.getElementById('v13').textContent=LNG[d['13']]||'--';"
 "document.getElementById('s15').checked=!!d['15'];"
 "document.getElementById('s19').checked=!!d['19'];"
 "document.getElementById('s20').checked=!!d['20'];"
 "document.getElementById('bleEn').checked=!!d['ble_enabled'];"
 
-"var cd = document.getElementById('cd');"
-"if (cd) {"
-"var pn=['C1','C2','C3','USB-A'],pi=[9,10,11,12];"
-"var h='';"
 "for(var i=0;i<4;i++){"
-"var v=d[pi[i]]||0;"
-"h+='<div class=\"row\">';"
-"h+='<span class=\"rl\">'+pn[i]+'</span>';"
-"h+='<div style=\"display:flex;align-items:center;gap:4px;flex-wrap:wrap\">';"
-"h+='<span class=\"rv\" id=\"cdv'+pi[i]+'\" style=\"min-width:40px\">'+(v>0?v+'分钟':'--')+'</span>';"
-"h+='<button class=\"btn\" onclick=\"setCd('+pi[i]+',30)\" style=\"font-size:11px;padding:2px 6px\">30分</button>';"
-"h+='<button class=\"btn\" onclick=\"setCd('+pi[i]+',60)\" style=\"font-size:11px;padding:2px 6px\">60分</button>';"
-"h+='<input id=\"cdi'+pi[i]+'\" type=\"number\" min=\"0\" max=\"1440\" placeholder=\"分\" style=\"width:36px;font-size:11px;padding:2px 4px;background:var(--card);border:1px solid var(--card-b);border-radius:4px;color:var(--text);text-align:center\">';"
-"h+='<button class=\"btn\" onclick=\"setCdInput('+pi[i]+')\" style=\"font-size:11px;padding:2px 6px\">设置</button>';"
-"h+='<button onclick=\"setCd('+pi[i]+',0)\" style=\"background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px\">✕</button>';"
-"h+='</div></div>';}"
-"cd.innerHTML=h;}"
+"var v=parseInt(d[CDPI[i]]);if(isNaN(v))v=0;"
+"var el=document.getElementById('cdv'+CDPI[i]);"
+"if(el)el.textContent=v>0?v+'分钟':'--';}"
 
 "SCENES.forEach(function(s){"
 "var el=document.getElementById('sc'+s.v);"
@@ -468,6 +510,10 @@ static const char _DASH[] =
 "fetch('/api/setting',{method:'POST',headers:{'Content-Type':'application/json'},"
 "body:JSON.stringify({piid:piid,value:v})}).then(function(){setTimeout(upd,500);});}"
 
+"function setSleep(v){"
+"fetch('/api/sleep',{method:'POST',headers:{'Content-Type':'application/json'},"
+"body:JSON.stringify({value:parseInt(v)})}).then(function(){setTimeout(upd,500);});}"
+
 "function setCd(piid,v){"
 "var val=parseInt(v);if(isNaN(val)||val<0)val=0;if(val>1440)val=1440;"
 "setS(piid,val);}"
@@ -486,8 +532,6 @@ static const char _DASH[] =
 "if(t==='light'){document.body.classList.add('light');"
 "document.getElementById('thBtn').textContent='\u{1F319}';}"
 "else{document.getElementById('thBtn').textContent='\u2600\uFE0F';}})();"
-
-"setInterval(upd,2000);upd();"
 
 "function updBle(){"
 "fetch('/api/settings').then(function(r){return r.json()}).then(function(d){"
@@ -616,6 +660,8 @@ void http_server_start(DeviceConfig *cfg, http_config_cb on_save) {
         { .uri = "/api/protocol", .method = HTTP_POST, .handler = _post_protocol_handler },
         { .uri = "/api/ble",      .method = HTTP_POST, .handler = _post_ble_handler },
         { .uri = "/api/ota",      .method = HTTP_POST, .handler = _post_ota_handler },
+        { .uri = "/api/sleep",    .method = HTTP_GET,  .handler = _get_sleep_handler },
+        { .uri = "/api/sleep",    .method = HTTP_POST, .handler = _post_sleep_handler },
         { .uri = "/",             .method = HTTP_GET,  .handler = _get_dash_handler },
         { .uri = "/dashboard",    .method = HTTP_GET,  .handler = _get_dash_handler },
         { .uri = "/config",       .method = HTTP_GET,  .handler = _get_config_page_handler },

@@ -94,3 +94,4 @@ sync.sh
 baksmali.jar
 
 esp32_ble/.github/
+esp32_ble/sdkconfig.old
