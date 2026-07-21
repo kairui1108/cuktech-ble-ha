@@ -365,7 +365,7 @@ class PortHistory:
                      limit: int = 10, offset: int = 0) -> tuple:
         """Query charge sessions."""
         if not self._conn:
-            return []
+            return [], 0
 
         now = time.time()
         if period == "today":
