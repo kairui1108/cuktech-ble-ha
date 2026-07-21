@@ -461,11 +461,12 @@ class BLEManager:
                 # BLE handler already recorded if last_time < 2s ago
                 idle = es.last_time is None or (now - es.last_time > 2)
                 if idle:
-                    if es.is_charging:
+                    # Only integrate if current > 0 (no power transfer at 0A)
+                    if es.is_charging and ps.current > 0:
                         self._energy_integrator.update(
                             es, ps.voltage, ps.current, now)
                         det = self._charge_detectors[piid]
-                        det.update(ps.current, now)
+                        det.update(ps.voltage * ps.current, now)
                         # Check if session should end (gradual power decline)
                         if det.should_end_session(es, now):
                             self._low_current_count[piid] = 0
@@ -655,7 +656,7 @@ class BLEManager:
 
                 # Accumulate energy (trapezoidal integration needs continuous timestamps)
                 self._energy_integrator.update(es, voltage, current, timestamp)
-                det.update(current, timestamp)
+                det.update(voltage * current, timestamp)
 
                 # Check gradual power decline on every push (not just low-current)
                 if es.is_charging and det.should_end_session(es, timestamp):
@@ -679,6 +680,7 @@ class BLEManager:
                     es.session_wh = 0
                     es.session_start = timestamp
                     es.max_power = voltage * current
+                    es.max_current = current
                     if self._history:
                         loop = asyncio.get_running_loop()
                         protocol = port_info.get("protocol", "")

@@ -58,18 +58,18 @@ def test_multiple_accumulation():
 
 
 def test_charge_end_detection():
-    """Low power for 10+ minutes should trigger end."""
+    """Average power < 1W for 10+ minutes should trigger end."""
     det = ChargeEndDetector()
-    state = PortEnergyState(max_power=20.0)
+    state = PortEnergyState()
     base = 1000000.0
-    # Fill window with low-power data
+    # Fill window with low-power data (0.4W avg, below 1W threshold)
     for i in range(400):
-        det.update(0.02, base + i)
+        det.update(0.4, base + i)
     # First call: sets _low_power_start
     det.should_end_session(state, base + 400)
     # Add more data 600s later
     for i in range(400, 1000):
-        det.update(0.02, base + i)
+        det.update(0.4, base + i)
     # Second call: 600+ seconds of low power → trigger end (need >600)
     assert det.should_end_session(state, base + 1001), "Should detect charge complete"
     print("PASS: test_charge_end_detection")
@@ -77,13 +77,13 @@ def test_charge_end_detection():
 
 def test_cooldown():
     det = ChargeEndDetector()
-    state = PortEnergyState(max_power=20.0)
+    state = PortEnergyState()
     base = 1000000.0
     for i in range(400):
-        det.update(0.02, base + i)
+        det.update(0.4, base + i)
     det.should_end_session(state, base + 400)
     for i in range(400, 1001):
-        det.update(0.02, base + i)
+        det.update(0.4, base + i)
     assert det.should_end_session(state, base + 1001)
     det.on_session_end(base + 1001)
     assert not det.should_end_session(state, base + 1001 + 10)
@@ -97,6 +97,5 @@ if __name__ == "__main__":
     test_overshoot_protection()
     test_multiple_accumulation()
     test_charge_end_detection()
-    test_behavior_classification()
     test_cooldown()
     print("\nAll tests passed!")
