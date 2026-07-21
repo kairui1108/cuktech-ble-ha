@@ -293,3 +293,58 @@ body.light .port-protos { background: rgba(0,0,0,0.03); }
     }
     .phone::-webkit-scrollbar { width: 0; }
 }
+
+/* ── Charge History ── */
+select, .charge-select {
+    background: var(--card-bg, transparent);
+    color: var(--text-dim);
+    border-color: var(--card-border, rgba(255,255,255,0.15));
+}
+select option {
+    background: var(--card-bg, #252525);
+    color: var(--text-dim);
+}
+.mini-stat {
+    text-align: center;
+    padding: 8px 4px;
+    background: var(--card-bg, rgba(255,255,255,0.03));
+    border-radius: 8px;
+}
+.mini-stat-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+}
+.mini-stat-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* ── Charge History ── */
+select, .charge-select {
+    background: var(--card-bg, transparent);
+    color: var(--text-dim);
+    border-color: var(--card-border, rgba(255,255,255,0.15));
+}
+select option {
+    background: var(--card-bg, #252525);
+    color: var(--text-dim);
+}
+.mini-stat {
+    text-align: center;
+    padding: 8px 4px;
+    background: var(--card-bg, rgba(255,255,255,0.03));
+    border-radius: 8px;
+}
+.mini-stat-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+}
+.mini-stat-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+}

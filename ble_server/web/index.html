@@ -8,6 +8,7 @@
     <link rel="preload" href="/static/chart.umd.min.js" as="script">
     <link rel="preload" href="/static/charger.png" as="image">
     <script src="/static/chart.umd.min.js"></script>
+    <script src="/static/charge_history.js?v=2"></script>
     <script src="/static/chart-loader.js"></script>
     <script src="/static/chart-config.js"></script>
     <link rel="stylesheet" href="static/index.css">
@@ -101,6 +102,49 @@
         <div class="card">
             <div class="card-title">端口监控 <span style="font-size:10px;color:var(--text-dim);text-transform:none;letter-spacing:0">(点击查看详情)</span></div>
             <div class="port-grid" id="portGrid"></div>
+        </div>
+
+        <!-- Charge History Card -->
+        <div class="card">
+            <div class="card-title">充电记录
+                <select id="chargePeriod" onchange="startChargeHistoryAutoRefresh('chargeSessionList','chargeStats',this.value,30000)" style="margin-left:auto;background:var(--card-bg);border:1px solid var(--card-border);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--text-dim);">
+                    <option value="today">今日</option>
+                    <option value="yesterday">昨日</option>
+                    <option value="week">本周</option>
+                    <option value="month">本月</option>
+                    <option value="all">全部</option>
+                </select>
+            </div>
+            <div id="chargeStats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;text-align:center;justify-items:center;"></div>
+            <div id="chargeSessionList"></div>
+            <!-- Session Detail -->
+            <div id="sessionDetail" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--card-border);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span id="sdTitle" style="font-size:15px;font-weight:600;color:var(--text);"></span>
+                    <span id="sdDuration" style="font-size:13px;color:var(--text-dim);"></span>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:8px;">
+                    <span style="font-size:11px;color:var(--text-dim);">精度</span>
+                    <select onchange="setDownsample(this.value)" style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:6px;padding:2px 8px;font-size:11px;color:var(--text-dim);">
+                        <option value="0">全部</option>
+                        <option value="100">100点</option>
+                        <option value="200">200点</option>
+                        <option value="300" selected>300点</option>
+                        <option value="600">600点</option>
+                    </select>
+                </div>
+                <div style="height:160px;"><canvas id="sessionChart"></canvas></div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;">
+                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdEnergy">0</div><div style="font-size:11px;color:var(--text-dim);">电量 Wh</div></div>
+                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgP">0</div><div style="font-size:11px;color:var(--text-dim);">均功率 W</div></div>
+                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdPeakP">0</div><div style="font-size:11px;color:var(--text-dim);">峰功率 W</div></div>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;">
+                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgV">0</div><div style="font-size:11px;color:var(--text-dim);">均电压 V</div></div>
+                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgI">0</div><div style="font-size:11px;color:var(--text-dim);">均电流 A</div></div>
+                    <div style="text-align:center;padding-top:6px;"><button onclick="closeSessionDetail()" style="background:rgba(255,59,48,0.1);border:1px solid rgba(255,59,48,0.3);color:#FF3B30;border-radius:8px;padding:8px 20px;font-size:12px;cursor:pointer;">关闭</button></div>
+                </div>
+            </div>
         </div>
 
         <div class="card">

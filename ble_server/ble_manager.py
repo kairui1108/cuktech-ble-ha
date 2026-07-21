@@ -45,6 +45,7 @@ class BLEManager:
         self.ctrl = None
         self.cmd_queue = asyncio.Queue()
         self._stop_event = asyncio.Event()
+        self._port_timer_task = None
         self._mqtt_publish = None
         self._reconnect_attempts = 0
         self._decrypt_failures = 0
@@ -52,6 +53,18 @@ class BLEManager:
         self._base_reconnect_delay = config.server.reconnect_base_delay
         self._max_reconnect_delay = config.server.reconnect_max_delay
         self._history = None
+        # Energy tracking
+        from energy import AdaptiveEnergyIntegrator, PortEnergyState, ChargeEndDetector
+        self._energy_integrator = AdaptiveEnergyIntegrator()
+        self._energy_states = {i: PortEnergyState() for i in range(1, 5)}
+        self._charge_detectors = {i: ChargeEndDetector() for i in range(1, 5)}
+        self._active_sessions = {}  # port -> session_id
+        # Protocol debounce: track consecutive protocol readings per port
+        self._proto_buf = {i: [] for i in range(1, 5)}  # port -> [last N protocols]
+        self._PROTO_DEBOUNCE_N = 2
+        # Session end debounce: consecutive low-current count per port
+        self._low_current_count = {i: 0 for i in range(1, 5)}
+        self._LOW_CURRENT_N = 10  # consecutive readings below threshold to end session
 
     def set_mqtt_publisher(self, publisher):
         self._mqtt_publish = publisher
@@ -64,9 +77,62 @@ class BLEManager:
         """是否正在运行 (不处于停止状态)。"""
         return not self._stop_event.is_set()
 
+    def get_live_session_data(self) -> dict:
+        """Get real-time energy data for active charging sessions.
+        Returns dict mapping port (1-4) to {session_id, session_wh, max_power, start_time}.
+        """
+        result = {}
+        for port, es in self._energy_states.items():
+            if es.is_charging and port in self._active_sessions:
+                result[port] = {
+                    "session_id": self._active_sessions[port],
+                    "session_wh": round(es.session_wh, 4),
+                    "max_power": round(es.max_power, 2),
+                    "start_time": es.session_start,
+                }
+        return result
+
     async def request_stop(self):
         """请求停止 BLE 循环 (设置 _stop_event，不直接断开)。"""
+        self._close_active_sessions()
         self._stop_event.set()
+
+    def _close_active_sessions(self):
+        """Gracefully close all active charge sessions on shutdown."""
+        now = time.time()
+        for port, es in self._energy_states.items():
+            if es.is_charging and port in self._active_sessions and self._history:
+                sid = self._active_sessions.pop(port)
+                duration = int(now - (es.session_start or now))
+                if duration > 0 and es.session_wh > 0:
+                    _LOGGER.info("Closing session %d (port %d, %.1fWh, %ds)", sid, port, es.session_wh, duration)
+                    self._history.end_session(sid, es.session_wh, es.max_power, 0, 0, duration)
+                es.is_charging = False
+
+    def _close_session(self, piid, timestamp, voltage=0, current=0):
+        """Close a charge session: cleanup state and write to DB.
+        Synchronous — no await, safe to call from any non-async context.
+        Returns sid if a session was closed, None otherwise.
+        """
+        det = self._charge_detectors[piid]
+        es = self._energy_states[piid]
+        det.on_session_end(timestamp)
+        es.is_charging = False
+        es.last_end_time = timestamp
+        sid = self._active_sessions.pop(piid, None)
+        if sid and self._history:
+            duration = int(timestamp - (es.session_start or timestamp))
+            if es.session_wh < 0.05:
+                task = asyncio.get_running_loop().run_in_executor(
+                    None, self._history.delete_session, sid)
+            else:
+                task = asyncio.get_running_loop().run_in_executor(
+                    None, self._history.end_session, sid,
+                    round(es.session_wh, 4), round(es.max_power, 2),
+                    round(voltage, 2), round(current, 2), duration)
+            task.add_done_callback(
+                lambda t, _sid=sid: _LOGGER.error("Close session %d failed: %s", _sid, t.exception()) if t.exception() else None)
+        return sid
 
     def _get_reconnect_delay(self):
         """Calculate exponential backoff delay."""
@@ -141,6 +207,7 @@ class BLEManager:
                     pass
 
     async def stop(self):
+        self._close_active_sessions()
         self._stop_event.set()
         await self._disconnect()
         if _has_bluetoothctl():
@@ -230,6 +297,8 @@ class BLEManager:
             except Exception:
                 pass
             self.ctrl = None
+            # Close active charge sessions on disconnect
+            self._close_active_sessions()
             if was_connected and not self._stop_event.is_set():
                 _LOGGER.error("BLE device disconnected unexpectedly")
         await self.state.set_connection(False, False)
@@ -314,53 +383,112 @@ class BLEManager:
         last_notify = time.time()
         last_keepalive = time.time()
 
-        while not self._stop_event.is_set():
-            await self._process_commands()
+        # Start 1-second background timer for port_history + energy accumulation
+        self._port_timer_task = asyncio.ensure_future(self._port_timer())
 
-            if not self.ctrl:
-                break
+        try:
+            while not self._stop_event.is_set():
+                await self._process_commands()
 
-            try:
-                data = await asyncio.wait_for(
-                    self.ctrl.wait_notify("cmd_recv"), timeout=2.0)
                 if not self.ctrl:
                     break
-                last_notify = time.time()
-            except asyncio.TimeoutError:
-                now = time.time()
-                if now - last_refresh > self.config.server.settings_refresh_interval:
-                    await self._refresh_settings()
-                    last_refresh = now
-                    last_notify = now  # prevent false disconnect during long refresh
-                if now - last_keepalive > 10:
-                    if self.ctrl and self.ctrl.client and self.ctrl.client.is_connected:
-                        try:
-                            await self.ctrl.client.write_gatt_char(
-                                CHAR_CMD_RECV, bytes([0x00, 0x00, 0x00, 0x00]), response=False)
-                            last_keepalive = now
-                            self._keepalive_fails = 0
-                        except Exception:
-                            self._keepalive_fails += 1
-                            if self._keepalive_fails >= 3:
-                                _LOGGER.warning("Keepalive failed 3 times, reconnecting")
-                                raise ConnectionError("BLE keepalive failed")
-                if now - last_notify > 60:
-                    client = self.ctrl.client if self.ctrl else None
-                    if not client or not client.is_connected:
-                        _LOGGER.warning("BLE connection lost, triggering reconnect")
-                        raise ConnectionError("BLE disconnected")
-                continue
-            except Exception as e:
-                _LOGGER.warning("BLE notification error: %s", e)
-                raise
 
-            if not data or len(data) < 4:
-                continue
+                try:
+                    data = await asyncio.wait_for(
+                        self.ctrl.wait_notify("cmd_recv"), timeout=2.0)
+                    if not self.ctrl:
+                        break
+                    last_notify = time.time()
+                except asyncio.TimeoutError:
+                    now = time.time()
+                    if now - last_refresh > self.config.server.settings_refresh_interval:
+                        await self._refresh_settings()
+                        last_refresh = now
+                        last_notify = now
+                    if now - last_keepalive > 10:
+                        if self.ctrl and self.ctrl.client and self.ctrl.client.is_connected:
+                            try:
+                                await self.ctrl.client.write_gatt_char(
+                                    CHAR_CMD_RECV, bytes([0x00, 0x00, 0x00, 0x00]), response=False)
+                                last_keepalive = now
+                                self._keepalive_fails = 0
+                            except Exception:
+                                self._keepalive_fails += 1
+                                if self._keepalive_fails >= 3:
+                                    _LOGGER.warning("Keepalive failed 3 times, reconnecting")
+                                    raise ConnectionError("BLE keepalive failed")
+                    if now - last_notify > 60:
+                        client = self.ctrl.client if self.ctrl else None
+                        if not client or not client.is_connected:
+                            _LOGGER.warning("BLE connection lost, triggering reconnect")
+                            raise ConnectionError("BLE disconnected")
+                    continue
+                except Exception as e:
+                    _LOGGER.warning("BLE notification error: %s", e)
+                    raise
 
-            if data[2] == 0x02 and len(data) >= 4:
-                await self._handle_inline_data(data)
-            elif data[2] == 0x00 and len(data) >= 6:
-                await self._handle_multiframe(data)
+                if not data or len(data) < 4:
+                    continue
+
+                if data[2] == 0x02 and len(data) >= 4:
+                    await self._handle_inline_data(data)
+                elif data[2] == 0x00 and len(data) >= 6:
+                    await self._handle_multiframe(data)
+                else:
+                    await self._try_process_inline_frame(data)
+        finally:
+            if self._port_timer_task:
+                self._port_timer_task.cancel()
+                try:
+                    await self._port_timer_task
+                except asyncio.CancelledError:
+                    pass
+
+    async def _port_timer(self):
+        """1-second timer: write port_history + energy + charge_points for ports
+        that are NOT receiving BLE pushes (stable V/I)."""
+        while not self._stop_event.is_set():
+            await asyncio.sleep(1)
+            if not self._history or self._stop_event.is_set():
+                continue
+            now = time.time()
+            loop = asyncio.get_running_loop()
+            for piid in range(1, 5):
+                ps = self.state.ports.get(piid)
+                if not ps or (ps.voltage <= 0 and ps.current <= 0):
+                    continue
+                es = self._energy_states[piid]
+                # BLE handler already recorded if last_time < 2s ago
+                idle = es.last_time is None or (now - es.last_time > 2)
+                if idle:
+                    if es.is_charging:
+                        self._energy_integrator.update(
+                            es, ps.voltage, ps.current, now)
+                        det = self._charge_detectors[piid]
+                        det.update(ps.current, now)
+                        # Check if session should end (gradual power decline)
+                        if det.should_end_session(es, now):
+                            self._low_current_count[piid] = 0
+                            sid = self._close_session(piid, now, ps.voltage, ps.current)
+                            if sid:
+                                _LOGGER.info("Timer ended session %d (port %d, %.1fWh)",
+                                             sid, piid, es.session_wh)
+                        else:
+                            sid = self._active_sessions.get(piid)
+                            if sid:
+                                task = loop.run_in_executor(
+                                    None, self._history.record_charge_point,
+                                    sid, ps.voltage, ps.current,
+                                    round(ps.voltage * ps.current, 1),
+                                    ps.protocol or "")
+                                task.add_done_callback(
+                                    lambda t: _LOGGER.error("Timer record_charge_point failed: %s", t.exception()) if t.exception() else None)
+                    # port_history: always write for chart continuity
+                    task = loop.run_in_executor(
+                        None, self._history.record_port_data,
+                        piid, ps.to_dict())
+                    task.add_done_callback(
+                        lambda t: _LOGGER.error("Timer record_port_data failed: %s", t.exception()) if t.exception() else None)
 
     async def _fetch_settings(self, update_existing=False):
         settings = dict(self.state.settings) if update_existing else {}
@@ -495,16 +623,107 @@ class BLEManager:
             port_info = decode_port(piid, pt, pdo_data,
                                     protocol_switches=self.state.protocol_switches)
             if port_info:
+                # Protocol debounce: only update protocol after N consecutive same readings
+                new_proto = port_info.get("protocol", "")
+                buf = self._proto_buf[piid]
+                buf.append(new_proto)
+                if len(buf) > self._PROTO_DEBOUNCE_N:
+                    buf.pop(0)
                 old = self.state.ports.get(piid)
+                if old and len(buf) >= self._PROTO_DEBOUNCE_N:
+                    if len(set(buf)) == 1:
+                        # All N readings are the same — stable, use new protocol
+                        pass
+                    else:
+                        # Not stable yet — keep old protocol
+                        port_info["protocol"] = old.protocol
+                # Port idle → clear protocol immediately (don't let debounce block it)
+                if not port_info.get("active", True):
+                    port_info["protocol"] = ""
+                    self._proto_buf[piid].clear()
                 await self.state.update_port(piid, port_info)
                 if old is None or old.to_dict() != port_info:
                     _invalidate()
                     self._publish_port(PORT_NAMES[piid], port_info, retain=True)
-                    if self._history and port_info.get("active", False):
+
+                # ── Data processing: runs on EVERY push, not gated by change detection ──
+                voltage = port_info.get("voltage", 0)
+                current = port_info.get("current", 0)
+                timestamp = time.time()
+                es = self._energy_states[piid]
+                det = self._charge_detectors[piid]
+
+                # Accumulate energy (trapezoidal integration needs continuous timestamps)
+                self._energy_integrator.update(es, voltage, current, timestamp)
+                det.update(current, timestamp)
+
+                # Check gradual power decline on every push (not just low-current)
+                if es.is_charging and det.should_end_session(es, timestamp):
+                    self._low_current_count[piid] = 0
+                    sid = self._close_session(piid, timestamp, voltage, current)
+                    if sid:
+                        _LOGGER.info("Det ended session %d (port %d, %.1fWh)",
+                                     sid, piid, es.session_wh)
+                    return  # Session ended by detector, skip normal session management
+
+                # Session management
+                active = port_info.get("active", False)
+                start_threshold = 0.1
+                if es.last_end_time and (timestamp - es.last_end_time) < 60:
+                    start_threshold = 0.3
+
+                if active and current > start_threshold and not es.is_charging:
+                    # Start new session
+                    self._low_current_count[piid] = 0
+                    es.is_charging = True
+                    es.session_wh = 0
+                    es.session_start = timestamp
+                    es.max_power = voltage * current
+                    if self._history:
                         loop = asyncio.get_running_loop()
-                        task = loop.run_in_executor(None, self._history.record_port_data, piid, port_info)
+                        protocol = port_info.get("protocol", "")
+                        task = loop.run_in_executor(None, self._history.start_session, piid, protocol)
+                        def _on_session_start(t, p=piid):
+                            if not t.exception():
+                                self._active_sessions[p] = t.result()
+                        task.add_done_callback(_on_session_start)
+
+                elif not active and es.is_charging and piid in self._active_sessions:
+                    # Port closed — end session immediately (no debounce needed)
+                    self._low_current_count[piid] = 0
+                    self._close_session(piid, timestamp, voltage, current)
+
+                elif current <= 0.1 and es.is_charging:
+                    # Current dropped — debounce before ending
+                    self._low_current_count[piid] += 1
+                    # Also check ChargeEndDetector for gradual power decline
+                    if self._low_current_count[piid] >= self._LOW_CURRENT_N or det.should_end_session(es, timestamp):
+                        self._low_current_count[piid] = 0
+                        self._close_session(piid, timestamp, voltage, current)
+                # Catch missed end_session: port turns off but session not tracked
+                elif current <= 0.1 and not es.is_charging and piid in self._active_sessions:
+                    sid = self._close_session(piid, timestamp)
+                    if sid:
+                        _LOGGER.warning("Closing stale session %d on port %d", sid, piid)
+
+                # Record charge points (every push during active session)
+                if self._history and es.is_charging and piid in self._active_sessions:
+                    sid = self._active_sessions.get(piid)
+                    if sid:
+                        loop = asyncio.get_running_loop()
+                        proto = port_info.get("protocol", "")
+                        task = loop.run_in_executor(
+                            None, self._history.record_charge_point,
+                            sid, voltage, current, voltage * current, proto)
                         task.add_done_callback(
-                            lambda t: _LOGGER.error("History write failed: %s", t.exception()) if t.exception() else None)
+                            lambda t: _LOGGER.error("Record point failed: %s", t.exception()) if t.exception() else None)
+
+                # Record to history (existing)
+                if self._history and port_info.get("active", False):
+                    loop = asyncio.get_running_loop()
+                    task = loop.run_in_executor(None, self._history.record_port_data, piid, port_info)
+                    task.add_done_callback(
+                        lambda t: _LOGGER.error("History write failed: %s", t.exception()) if t.exception() else None)
 
     async def _handle_multiframe(self, data):
         """Handle multi-frame BLE data. ACK protocol + attempt inline processing.

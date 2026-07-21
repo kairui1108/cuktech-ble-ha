@@ -214,13 +214,21 @@
         }
 
         function updateChart(data) {
-            powerChart.data.labels = data.labels;
+            let labels = data.labels;
             const power = data.datasets.power;
+            // Trim trailing epoch(s) where all ports have 0 power (bucket not yet populated)
+            while (labels.length > 1) {
+                const last = labels.length - 1;
+                const allZero = power.every(ds => ds.data[last] === 0);
+                if (!allZero) break;
+                labels = labels.slice(0, last);
+                for (const ds of power) ds.data = ds.data.slice(0, last);
+                for (const ds of data.datasets.voltage) ds.data = ds.data.slice(0, last);
+                for (const ds of data.datasets.current) ds.data = ds.data.slice(0, last);
+            }
+            powerChart.data.labels = labels;
             for (let i = 0; i < power.length; i++) {
                 powerChart.data.datasets[i].data = power[i].data;
-            }
-            if (power.length >= 5) {
-                powerChart.data.datasets[4].data = power[4].data;
             }
             for (let port = 1; port <= 4; port++) {
                 portHistory[port].power = power[port - 1].data.slice();
@@ -321,9 +329,11 @@
             modalChart.data.datasets[1].data = [...h.current];
             modalChart.data.datasets[2].data = [...h.power];
             modalChart.update('none');
-            document.getElementById('modalVoltage').textContent = (h.voltage[h.voltage.length - 1] || 0).toFixed(1);
-            document.getElementById('modalCurrent').textContent = (h.current[h.current.length - 1] || 0).toFixed(1);
-            document.getElementById('modalPower').textContent = (h.power[h.power.length - 1] || 0).toFixed(1);
+            // Use real-time data if chart history is empty
+            const rt = latestPorts[currentModalPort];
+            document.getElementById('modalVoltage').textContent = (rt ? rt.voltage : (h.voltage[h.voltage.length - 1] || 0)).toFixed(1);
+            document.getElementById('modalCurrent').textContent = (rt ? rt.current : (h.current[h.current.length - 1] || 0)).toFixed(2);
+            document.getElementById('modalPower').textContent = (rt ? rt.power : (h.power[h.power.length - 1] || 0)).toFixed(1);
             const protocolEl = document.getElementById('modalProtocol');
             if (protocolEl) {
                 const portData = latestPorts[currentModalPort];
@@ -703,4 +713,9 @@
             initApp();
         } else {
             window.onChartReady = initApp;
+        }
+
+        // Charge History auto-refresh
+        if (typeof startChargeHistoryAutoRefresh === 'function') {
+            startChargeHistoryAutoRefresh('chargeSessionList', 'chargeStats', 'today', 2000);
         }

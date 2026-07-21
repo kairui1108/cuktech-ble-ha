@@ -45,7 +45,7 @@ class PortHistory:
             self._conn = None
 
     def _create_tables(self):
-        """Create database tables."""
+        """Create database tables and run migrations."""
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS port_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,7 +60,42 @@ class PortHistory:
             CREATE INDEX IF NOT EXISTS idx_port_history_port ON port_history(port);
             CREATE INDEX IF NOT EXISTS idx_port_history_timestamp ON port_history(timestamp);
             CREATE INDEX IF NOT EXISTS idx_port_history_port_time ON port_history(port, timestamp);
+
+            CREATE TABLE IF NOT EXISTS charge_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                port INTEGER NOT NULL,
+                start_time REAL NOT NULL,
+                end_time REAL,
+                total_wh REAL DEFAULT 0,
+                avg_power_w REAL DEFAULT 0,
+                peak_power_w REAL DEFAULT 0,
+                avg_voltage REAL DEFAULT 0,
+                avg_current REAL DEFAULT 0,
+                duration_sec INTEGER DEFAULT 0,
+                protocol TEXT DEFAULT '',
+                created_at REAL DEFAULT (strftime('%s','now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_charge_sessions_port ON charge_sessions(port);
+            CREATE INDEX IF NOT EXISTS idx_charge_sessions_start ON charge_sessions(start_time);
+
+            CREATE TABLE IF NOT EXISTS charge_points (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                timestamp REAL NOT NULL,
+                voltage REAL,
+                current REAL,
+                power REAL,
+                protocol TEXT DEFAULT '',
+                FOREIGN KEY (session_id) REFERENCES charge_sessions(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_charge_points_session ON charge_points(session_id);
         """)
+        # Migration: add protocol column to charge_points if missing
+        try:
+            self._conn.execute("SELECT protocol FROM charge_points LIMIT 1")
+        except sqlite3.OperationalError:
+            self._conn.execute("ALTER TABLE charge_points ADD COLUMN protocol TEXT DEFAULT ''")
+            self._conn.commit()
 
     def _cleanup_old_data(self):
         """Remove data older than retention period."""
@@ -256,3 +291,211 @@ class PortHistory:
         ).fetchall()
 
         return [dict(row) for row in rows]
+
+    # ── Charge Session Management ──
+
+    def start_session(self, port: int, protocol: str = "") -> int:
+        """Start a new charge session, return session_id."""
+        if not self._conn:
+            return 0
+        with self._db_lock:
+            try:
+                cursor = self._conn.execute(
+                    """INSERT INTO charge_sessions (port, start_time, protocol)
+                       VALUES (?, ?, ?)""",
+                    (port, time.time(), protocol),
+                )
+                self._conn.commit()
+                return cursor.lastrowid
+            except Exception as e:
+                _LOGGER.error("Failed to start session: %s", e)
+                return 0
+
+    def record_charge_point(self, session_id: int, voltage: float,
+                            current: float, power: float, protocol: str = ""):
+        """Record a single data point for a charge session."""
+        if not self._conn or not session_id:
+            return
+        with self._db_lock:
+            try:
+                self._conn.execute(
+                    """INSERT INTO charge_points (session_id, timestamp, voltage, current, power, protocol)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (session_id, time.time(), voltage, current, power, protocol),
+                )
+                self._conn.commit()
+            except Exception as e:
+                _LOGGER.error("Failed to record charge point: %s", e)
+
+    def end_session(self, session_id: int, total_wh: float, peak_power_w: float,
+                    avg_voltage: float, avg_current: float, duration_sec: int):
+        """End a charge session with final stats."""
+        if not self._conn or not session_id:
+            return
+        avg_power = total_wh / (duration_sec / 3600.0) if duration_sec > 0 else 0
+        with self._db_lock:
+            try:
+                self._conn.execute(
+                    """UPDATE charge_sessions SET
+                       end_time = ?, total_wh = ?, avg_power_w = ?,
+                       peak_power_w = ?, avg_voltage = ?, avg_current = ?,
+                       duration_sec = ?
+                       WHERE id = ?""",
+                    (time.time(), round(total_wh, 4), round(avg_power, 2),
+                     round(peak_power_w, 2), round(avg_voltage, 2),
+                     round(avg_current, 2), duration_sec, session_id),
+                )
+                self._conn.commit()
+            except Exception as e:
+                _LOGGER.error("Failed to end session: %s", e)
+
+    def delete_session(self, session_id: int):
+        """Delete a session and its points (for 0Wh sessions)."""
+        if not self._conn or not session_id:
+            return
+        with self._db_lock:
+            try:
+                self._conn.execute("DELETE FROM charge_points WHERE session_id = ?", (session_id,))
+                self._conn.execute("DELETE FROM charge_sessions WHERE id = ?", (session_id,))
+                self._conn.commit()
+            except Exception as e:
+                _LOGGER.error("Failed to delete session: %s", e)
+
+    def get_sessions(self, port: Optional[int] = None, period: str = "today",
+                     limit: int = 10, offset: int = 0) -> tuple:
+        """Query charge sessions."""
+        if not self._conn:
+            return []
+
+        now = time.time()
+        if period == "today":
+            from datetime import datetime
+            cutoff = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
+        elif period == "yesterday":
+            from datetime import datetime
+            today_start = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
+            cutoff = today_start - 86400
+            limit_end = today_start
+        elif period == "week":
+            cutoff = now - 7 * 86400
+        elif period == "month":
+            cutoff = now - 30 * 86400
+        else:
+            cutoff = 0
+
+        query = """SELECT id, port, start_time, end_time, total_wh, avg_power_w,
+                   peak_power_w, avg_voltage, avg_current, duration_sec, protocol
+                   FROM charge_sessions WHERE start_time >= ? AND total_wh > 0"""
+        params = [cutoff]
+
+        if port is not None:
+            query += " AND port = ?"
+            params.append(port)
+
+        if period == "yesterday":
+            query += " AND start_time < ?"
+            params.append(limit_end)
+
+        query += " ORDER BY end_time IS NULL DESC, start_time DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._db_lock:
+            rows = self._conn.execute(query, params).fetchall()
+            # Get total count for pagination
+            count_query = f"SELECT COUNT(*) as cnt FROM charge_sessions WHERE start_time >= ? AND total_wh > 0"
+            count_params = [cutoff]
+            if port is not None:
+                count_query += " AND port = ?"
+                count_params.append(port)
+            if period == "yesterday":
+                count_query += " AND start_time < ?"
+                count_params.append(limit_end)
+            total = self._conn.execute(count_query, count_params).fetchone()["cnt"]
+
+        return [dict(row) for row in rows], total
+
+    def get_session_points(self, session_id: int) -> list[dict]:
+        """Get all data points for a charge session."""
+        if not self._conn:
+            return []
+        with self._db_lock:
+            rows = self._conn.execute(
+                """SELECT timestamp, voltage, current, power, protocol
+                   FROM charge_points WHERE session_id = ?
+                   ORDER BY timestamp""",
+                (session_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_energy_stats(self, period: str = "today") -> dict:
+        """Get aggregated energy statistics."""
+        if not self._conn:
+            return {"period": period, "total_wh": 0, "session_count": 0}
+
+        now = time.time()
+        if period == "today":
+            from datetime import datetime
+            cutoff = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
+        elif period == "yesterday":
+            from datetime import datetime
+            today_start = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
+            cutoff = today_start - 86400
+            limit_end = today_start
+        elif period == "week":
+            cutoff = now - 7 * 86400
+        elif period == "month":
+            cutoff = now - 30 * 86400
+        else:
+            cutoff = 0
+
+        with self._db_lock:
+            params1 = [cutoff]
+            params2 = [cutoff]
+            extra = ""
+            if period == "yesterday":
+                extra = " AND start_time < ?"
+                params1.append(limit_end)
+                params2.append(limit_end)
+
+            row = self._conn.execute(
+                f"""SELECT
+                    COUNT(*) as session_count,
+                    COALESCE(SUM(total_wh), 0) as total_wh,
+                    COALESCE(MAX(peak_power_w), 0) as peak_power_w,
+                    COALESCE(SUM(duration_sec), 0) as total_duration_sec
+                FROM charge_sessions WHERE start_time >= ?{extra} AND total_wh > 0""",
+                params1,
+            ).fetchone()
+
+            # Get true peak power from charge_points data (more accurate than per-session max)
+            peak_row = self._conn.execute(
+                f"""SELECT COALESCE(MAX(power), 0) as peak_power
+                    FROM charge_points cp
+                    JOIN charge_sessions cs ON cp.session_id = cs.id
+                    WHERE cs.start_time >= ?{extra} AND cs.total_wh > 0""",
+                params1,
+            ).fetchone()
+            peak_from_points = peak_row["peak_power"] if peak_row else 0
+
+            by_port = self._conn.execute(
+                f"""SELECT port, COALESCE(SUM(total_wh), 0) as wh, COUNT(*) as count
+                   FROM charge_sessions WHERE start_time >= ?{extra} AND total_wh > 0
+                   GROUP BY port""",
+                params2,
+            ).fetchall()
+
+        # Calculate avg power from total energy and duration (more accurate than DB avg)
+        total_dur = row["total_duration_sec"] or 0
+        total_wh = row["total_wh"] or 0
+        avg_power = round(total_wh / (total_dur / 3600), 1) if total_dur > 0 else 0
+
+        return {
+            "period": period,
+            "total_wh": round(total_wh, 2),
+            "session_count": row["session_count"],
+            "avg_power_w": avg_power,
+            "peak_power_w": round(max(row["peak_power_w"], peak_from_points), 1),
+            "total_duration_sec": total_dur,
+            "by_port": {str(r["port"]): {"wh": round(r["wh"], 2), "count": r["count"]}
+                        for r in by_port},
+        }

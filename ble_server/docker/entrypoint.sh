@@ -26,7 +26,10 @@ if [ ! -f "$CONFIG_FILE" ]; then
     fi
 else
     echo "[INFO] Config file found: $CONFIG_FILE"
-    cp "$CONFIG_FILE" /app/config.yaml
+    # Copy to /app/config.yaml only if not already there (avoid cp self-error)
+    if [ "$CONFIG_FILE" != "/app/config.yaml" ]; then
+        cp "$CONFIG_FILE" /app/config.yaml
+    fi
 fi
 
 # Check D-Bus (use host's via mounted socket)

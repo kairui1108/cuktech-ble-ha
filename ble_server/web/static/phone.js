@@ -571,3 +571,8 @@ function toggleTheme() {
 renderAll();
 fetchStatus();
 setInterval(fetchStatus, 2000);
+
+// ── Charge History ──
+if (typeof startChargeHistoryAutoRefresh === 'function') {
+    startChargeHistoryAutoRefresh('chargeSessionList', 'chargeStats', 'today', 2000);
+}

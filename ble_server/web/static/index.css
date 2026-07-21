@@ -176,3 +176,31 @@
             .charger-controls { grid-template-columns: 1fr; }
             .port-grid, .settings-grid, .countdown-grid { grid-template-columns: 1fr; }
         }
+
+/* ── Charge History ── */
+.mini-stat {
+    text-align: center;
+    padding: 12px 8px;
+    background: var(--card-bg, rgba(255,255,255,0.03));
+    border-radius: 10px;
+}
+.mini-stat-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text);
+}
+.mini-stat-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+select {
+    background: var(--card-bg, transparent);
+    color: var(--text-dim);
+    border-color: var(--card-border, rgba(255,255,255,0.15));
+}
+select option {
+    background: var(--card-bg, #252525);
+    color: var(--text-dim);
+}

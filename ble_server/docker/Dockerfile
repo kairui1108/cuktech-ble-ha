@@ -11,18 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY pyproject.toml .
-
-RUN pip install --no-cache-dir \
-    aiohttp>=3.9 \
-    paho-mqtt>=2.0 \
-    bleak>=0.21 \
-    cryptography>=41 \
-    pyyaml>=6.0
-
+# Install the cuktech_ble package + all dependencies from pyproject.toml
+COPY pyproject.toml ./
 COPY src/ src/
+RUN pip install --no-cache-dir .
+
 COPY web/ web/
-COPY state.py state_protocol_v2.py history.py config.py ble_manager.py ha_server.py bemfa_client.py .
+COPY state.py state_protocol_v2.py history.py config.py ble_manager.py ha_server.py bemfa_client.py energy.py downsample.py ./
 
 RUN mkdir -p /data
 

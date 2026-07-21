@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import time
 from pathlib import Path
 from aiohttp import web
@@ -485,7 +486,8 @@ class Server:
         aligned_start = (int(start_ts) // interval) * interval
 
         use_date = hours > 12
-        epochs = list(range(aligned_start, int(now_ts) + 1, interval))
+        aligned_now = (int(now_ts) // interval) * interval
+        epochs = list(range(aligned_start, aligned_now, interval))
         if use_date:
             all_labels = [time.strftime('%m-%d %H:%M', time.localtime(t)) for t in epochs]
         else:
@@ -595,6 +597,131 @@ class Server:
             return web.FileResponse(WEB_DIR / 'phone.html')
         return web.FileResponse(WEB_DIR / 'index.html')
 
+    # ── Charge Session API ──
+
+    async def handle_sessions(self, request):
+        """GET /api/sessions?port=c1&period=today&limit=10&page=1"""
+        port_str = request.query.get("port", "")
+        period = request.query.get("period", "today")
+        limit = min(int(request.query.get("limit", "10")), 50)
+        page = max(1, int(request.query.get("page", "1")))
+
+        port = None
+        if port_str:
+            port_map = {"c1": 1, "c2": 2, "c3": 3, "a": 4}
+            port = port_map.get(port_str)
+
+        loop = asyncio.get_running_loop()
+        sessions, total = await loop.run_in_executor(
+            None, self.history.get_sessions, port, period, limit, (page - 1) * limit)
+
+        # Merge live energy data for active sessions
+        now = time.time()
+        live = self.ble.get_live_session_data()
+        db_session_ids = {s.get("id") for s in sessions}
+        for port_id, ld in live.items():
+            sid = ld.get("session_id")
+            matched = False
+            for s in sessions:
+                if s.get("id") == sid:
+                    s["total_wh"] = ld["session_wh"]
+                    s["peak_power_w"] = max(s.get("peak_power_w", 0), ld["max_power"])
+                    # Recalculate avg from live data (DB values are stale for active sessions)
+                    start_time = ld.get("start_time") or now
+                    dur_sec = max(1, int(now - start_time))
+                    dur_h = dur_sec / 3600.0
+                    s["avg_power_w"] = round(ld["session_wh"] / dur_h, 1) if dur_h > 0 else 0
+                    port_state = self.ble.state.ports.get(port_id)
+                    if port_state:
+                        s["avg_voltage"] = round(port_state.voltage, 2)
+                        s["avg_current"] = round(port_state.current, 2)
+                    s["duration_sec"] = dur_sec
+                    s["is_active"] = True
+                    matched = True
+                    break
+            if not matched and sid:
+                # Active session not in DB results (total_wh=0, filtered out) — add it
+                start_time = ld.get("start_time") or now
+                dur_sec = max(1, int(now - start_time))
+                dur_h = dur_sec / 3600.0
+                avg_p = round(ld["session_wh"] / dur_h, 1) if dur_h > 0 else 0
+                # Current V/I from port state as approximate averages for active session
+                port_state = self.ble.state.ports.get(port_id)
+                avg_v = round(port_state.voltage, 2) if port_state else 0
+                avg_i = round(port_state.current, 2) if port_state else 0
+                sessions.insert(0, {
+                    "id": sid, "port": port_id, "start_time": start_time,
+                    "end_time": None, "total_wh": ld["session_wh"],
+                    "avg_power_w": avg_p, "peak_power_w": ld["max_power"],
+                    "avg_voltage": avg_v, "avg_current": avg_i,
+                    "duration_sec": dur_sec,
+                    "protocol": port_state.protocol if port_state else "", "is_active": True,
+                })
+                total += 1
+
+        # Mark unmatched sessions as inactive
+        live_sids = {ld.get("session_id") for ld in live.values()}
+        for s in sessions:
+            if s.get("id") not in live_sids:
+                s["is_active"] = False
+
+        return web.json_response({
+            "sessions": sessions,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": max(1, (total + limit - 1) // limit),
+        })
+
+    async def handle_session_points(self, request):
+        """GET /api/sessions/{id}/points?downsample=600"""
+        sid = int(request.match_info["id"])
+        target = int(request.query.get("downsample", "0"))
+        loop = asyncio.get_running_loop()
+        points = await loop.run_in_executor(
+            None, self.history.get_session_points, sid)
+        if target > 0 and len(points) > target:
+            from downsample import lttb_downsample
+            points = await loop.run_in_executor(
+                None, lttb_downsample, points, target)
+        return web.json_response({"points": points})
+
+    async def handle_energy_stats(self, request):
+        """GET /api/energy/stats?period=today"""
+        period = request.query.get("period", "today")
+        loop = asyncio.get_running_loop()
+        stats = await loop.run_in_executor(
+            None, self.history.get_energy_stats, period)
+
+        # Merge live data from active sessions
+        now = time.time()
+        live = self.ble.get_live_session_data()
+        live_count = len(live)
+        for port, ld in live.items():
+            stats["total_wh"] = round(stats["total_wh"] + ld["session_wh"], 2)
+            stats["peak_power_w"] = max(stats.get("peak_power_w", 0), ld["max_power"])
+            # Add live duration for active sessions
+            if ld.get("start_time"):
+                live_duration = int(now - ld["start_time"])
+                stats["total_duration_sec"] = stats.get("total_duration_sec", 0) + live_duration
+            port_key = str(port)
+            if port_key not in stats.get("by_port", {}):
+                stats.setdefault("by_port", {})[port_key] = {"wh": 0, "count": 0}
+            stats["by_port"][port_key]["wh"] = round(
+                stats["by_port"][port_key]["wh"] + ld["session_wh"], 2)
+            stats["by_port"][port_key]["count"] = stats["by_port"][port_key].get("count", 0) + 1
+            stats["by_port"][port_key]["is_active"] = True
+
+        # DB count excludes active sessions (total_wh=0), add them back
+        stats["session_count"] = stats.get("session_count", 0) + live_count
+
+        # Recalculate avg_power_w from total energy and total duration
+        total_dur = stats.get("total_duration_sec", 0)
+        total_wh = stats.get("total_wh", 0)
+        stats["avg_power_w"] = round(total_wh / (total_dur / 3600), 1) if total_dur > 0 else 0
+
+        return web.json_response(stats)
+
 
 WEB_DIR = Path(__file__).parent / "web"
 _server = None
@@ -678,6 +805,9 @@ app.router.add_get("/api/chart", lambda r: get_server().handle_chart(r))
 app.router.add_get("/api/statistics/{port}", lambda r: get_server().handle_statistics(r))
 app.router.add_get("/api/export/{port}", lambda r: get_server().handle_export(r))
 app.router.add_get("/api/bemfa", lambda r: get_server().handle_bemfa(r))
+app.router.add_get("/api/sessions", lambda r: get_server().handle_sessions(r))
+app.router.add_get("/api/sessions/{id}/points", lambda r: get_server().handle_session_points(r))
+app.router.add_get("/api/energy/stats", lambda r: get_server().handle_energy_stats(r))
 app.router.add_static("/static", WEB_DIR / "static", show_index=False)
 
 
@@ -699,9 +829,21 @@ async def on_startup(app_):
 async def on_shutdown(app_):
     _LOGGER.info("Shutting down...")
     s = get_server()
+    # Close active sessions first (fast, sync DB write)
+    s.ble._close_active_sessions()
+    # BLE disconnect with timeout
+    try:
+        await asyncio.wait_for(s.ble.request_stop(), timeout=5.0)
+    except asyncio.TimeoutError:
+        _LOGGER.warning("BLE stop timed out, forcing disconnect")
+        await asyncio.wait_for(s.ble._disconnect(), timeout=3.0)
+    except Exception as e:
+        _LOGGER.error("BLE stop error: %s", e)
     if s.bemfa:
-        await s.bemfa.stop()
-    await s.ble.stop()
+        try:
+            await asyncio.wait_for(s.bemfa.stop(), timeout=3.0)
+        except Exception:
+            pass
     ble_task = app_.get("ble_task")
     if ble_task:
         ble_task.cancel()
@@ -720,4 +862,12 @@ app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
     s = get_server()
+
+    async def _on_startup(app_):
+        # Register SIGTERM handler inside event loop for safe asyncio calls
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, lambda: asyncio.ensure_future(app.shutdown()))
+
+    app.on_startup.append(_on_startup)
     web.run_app(app, host="0.0.0.0", port=s.config.server.port)
