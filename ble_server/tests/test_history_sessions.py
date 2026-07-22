@@ -148,13 +148,13 @@ class TestChargeSessions:
         assert "1" in stats["by_port"]
         assert "2" in stats["by_port"]
 
-    def test_get_energy_stats_peak_from_points(self, history):
-        """peak_power_w uses max from charge_points when higher than session max."""
+    def test_get_energy_stats_peak(self, history):
+        """peak_power_w comes from charge_sessions.peak_power_w."""
         sid = history.start_session(1)
-        history.record_charge_point(sid, 20.0, 5.0, 100.0)  # 100W peak
+        history.record_charge_point(sid, 20.0, 5.0, 100.0)  # 100W in points
         history.end_session(sid, 10.0, 50.0, 20.0, 1.0, 1800)  # session says 50W peak
         stats = history.get_energy_stats(period="all")
-        assert stats["peak_power_w"] == 100.0  # should use 100W from points
+        assert stats["peak_power_w"] == 50.0  # uses charge_sessions.peak_power_w
 
     def test_get_energy_stats_empty(self, history):
         """get_energy_stats with no data returns zeros."""

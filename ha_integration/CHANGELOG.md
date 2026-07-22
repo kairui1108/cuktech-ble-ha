@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.7] - 2026-07-22
+
+### Added
+- Charge session event entity: fires `charge_end` event via MQTT on session completion
+
 ## [1.0.6] - 2026-07-19
 
 ### Added

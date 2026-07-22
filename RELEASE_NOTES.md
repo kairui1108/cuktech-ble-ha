@@ -1,5 +1,25 @@
 # Release Notes
 
+## v1.0.7
+
+### BLE Server — 充电记录与电量统计
+
+#### 新增功能
+- **充电记录（Charge Session）**：自动记录每次充电的起止时间、总电量、峰值功率、协议类型
+- **能量积分（Energy Integration）**：基于梯形积分法实时累积端口充电电量
+- **LTTB 降采样**：session 详情曲线按需降采样，前端渲染流畅
+- **充电记录 API**：`/api/sessions`、`/api/sessions/{id}/points`、`/api/energy/stats`
+- **前端充电记录卡片**：支持翻页查看历史充电记录，点击查看详情曲线
+
+#### 修复
+- **功率曲线为零**：BLE 推送间歇期定时采样器补写数据，修复电压电流恒定时历史功率显示为 0
+- **会话终止误判**：ChargeEndDetector 阈值单位错配（A vs W）导致 session 在正常充电时被提前结束
+- **协议检测卡死**：端口空闲时未清空协议去抖缓冲，协议值卡在旧值
+
+### HA Integration
+
+- **充电事件实体**：新增 `event.cuktech_charge_session`，实时推送充电完成事件
+
 ## v1.0.6
 
 ### BLE Server — 巴法云接入

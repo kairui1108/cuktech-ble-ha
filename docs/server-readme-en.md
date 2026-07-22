@@ -14,6 +14,8 @@ Standalone BLE server for connecting CUKTECH chargers and pushing real-time data
 - **HTTP API**: RESTful endpoints for external systems
 - **MQTT LWT**: Auto-notify HA on crash
 - **Bemfa Cloud**: XiaoAi / DuerOS voice control for charger ports
+- **Charge Sessions & Energy Stats**: Auto-record charge sessions (duration, energy Wh, peak power), view history via Web UI
+- **Energy Integration (Wh)**: Real-time trapezoidal energy accumulation per port
 - **SQLite History**: Persistent port data with statistics and CSV export
 - **Environment Check**: `check_env.sh` for system compatibility
 

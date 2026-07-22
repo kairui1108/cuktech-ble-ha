@@ -47,6 +47,7 @@ Re-authentication supported when server URL changes.
 - **Countdown timer**: 0-1440 minutes per port
 - **Device settings**: Screen timeout, language, USB-A always-on
 - **Device info sync**: Model and firmware version synced from BLE server
+- **Charge event**: `charge_end` event entity fires on charge completion, enabling notification automations
 - **Dual availability**: MQTT status + HTTP health check
 
 ## Entities
