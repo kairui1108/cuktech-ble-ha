@@ -18,6 +18,26 @@
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Optional, List
+import time
+
+
+# ============================================================
+# P0: 协议检测缓存 — 稳定充电时跳过重复计算
+# ============================================================
+_proto_cache: Dict[tuple, int] = {}
+_PROTO_CACHE_MAX = 64
+
+# 置信度衰减：记录每个端口上次协议变化时间
+_last_proto_change: Dict[int, float] = {}
+_CONFIDENCE_HALF_LIFE = 300  # 5 分钟半衰期
+
+
+def _cache_key(piid: int, raw: 'RawPortData', pdo_data: Optional[Dict],
+               switches: Optional[Dict]) -> tuple:
+    """生成缓存 key（仅关键判据）."""
+    pdo_hash = hash(str(sorted((pdo_data or {}).items()))) if pdo_data else 0
+    sw_hash = hash(str(sorted((switches or {}).items()))) if switches else 0
+    return (piid, raw.code, raw.voltage_raw, raw.current_raw, pdo_hash, sw_hash)
 
 
 # ============================================================
@@ -166,6 +186,25 @@ def estimate_protocol_number(piid: int, raw: RawPortData, pdo_data: Optional[Dic
     Returns:
         米家协议号，0 表示空闲/无法确定
     """
+    # P0: 缓存命中直接返回
+    key = _cache_key(piid, raw, pdo_data, protocol_switches)
+    if key in _proto_cache:
+        return _proto_cache[key]
+
+    voltage = raw.voltage
+    code = raw.code
+    result = _estimate_protocol_number_impl(piid, raw, pdo_data, protocol_switches)
+
+    # 缓存结果（LRU 简化：超限清空）
+    if len(_proto_cache) >= _PROTO_CACHE_MAX:
+        _proto_cache.clear()
+    _proto_cache[key] = result
+    return result
+
+
+def _estimate_protocol_number_impl(piid: int, raw: RawPortData, pdo_data: Optional[Dict],
+                                    protocol_switches: Optional[Dict]) -> int:
+    """实际协议估算逻辑."""
     voltage = raw.voltage
     code = raw.code
 
@@ -191,14 +230,20 @@ def estimate_protocol_number(piid: int, raw: RawPortData, pdo_data: Optional[Dic
             pdo_kind = pdo_data.get("kind") if pdo_data else None
             pps_enabled = (protocol_switches or {}).get({1:"c1",2:"c2"}[piid], {}).get("pps", True)
             if pdo_kind == "PD PPS":
+                # P1: PDO 明确说 PPS，若 PPS 开关关了 → 直接判 PD
+                if not pps_enabled:
+                    return 7
                 min_dist = min(abs(voltage - v) for v in PD_FIXED_VOLTAGES)
-                if round(min_dist, 4) <= 0.05:
-                    return 7  # 极精准匹配 PD 档位
+                if round(min_dist, 4) <= 0.20:  # P3: 放宽到 0.20
+                    return 7  # 精准匹配 PD 档位
                 return 8      # 默认 PPS
             elif pdo_kind == "PD Fixed":
                 # PDO 说 PD Fixed 但 PIID21 中 PPS 是开的 → PDO 可能是动态值
                 if pps_enabled and voltage < 12.0:
                     return _estimate_pd_subtype(voltage, code)
+                return 7
+            # P1: PDO 缺失时，若 PPS 开关关了 → 直接判 PD
+            if not pps_enabled and voltage > 0:
                 return 7
             return _estimate_pd_subtype(voltage, code)
         
@@ -210,8 +255,16 @@ def estimate_protocol_number(piid: int, raw: RawPortData, pdo_data: Optional[Dic
     
     elif piid == 3:
         # ===== C3: 混合口 =====
-        if code == 0x70:       return 3   # QC 明确标识
-        
+        if code == 0x70:
+            # P2: code=0x70 是 PD 和 QC 共享，参考 PDO 数据区分
+            pdo_kind = pdo_data.get("kind") if pdo_data else None
+            if pdo_kind in ("PD Fixed", "PD PPS"):
+                return 7  # PDO 明确说 PD
+            if pdo_kind == "QC":
+                return 3  # PDO 明确说 QC
+            # 无 PDO 数据时，默认 QC（C3 首次协商多为 QC）
+            return 3
+
         # 电压优先策略 (对齐米家实测结果)
         if voltage >= 15.0:    return 7   # 15V+ → PD
         if voltage >= 8.5:     return 3   # 8.5-15V → C3 倾向 QC
@@ -263,8 +316,24 @@ def decode_port_v2(
     else:
         proto_num = estimate_protocol_number(piid, raw, pdo_data, protocol_switches)
         protocol = get_mijia_protocol_name(proto_num)
-        confidence = 0.90 if proto_num > 0 else 0.30
         method = f"proto_{proto_num}"
+
+        # P5: 置信度衰减 — 协议越久未变越不可靠
+        now = time.time()
+        last_change = _last_proto_change.get(piid, 0)
+        if proto_num > 0:
+            if last_change == 0 or proto_num != _proto_cache.get(
+                    _cache_key(piid, raw, pdo_data, protocol_switches)):
+                # 首次检测或协议变化，重置衰减计时
+                _last_proto_change[piid] = now
+                confidence = 0.90
+            else:
+                # 协议未变，按半衰期衰减
+                elapsed = now - _last_proto_change[piid]
+                decay = max(0.40, 0.90 * (0.5 ** (elapsed / _CONFIDENCE_HALF_LIFE)))
+                confidence = round(decay, 2)
+        else:
+            confidence = 0.30
 
     return {
         "voltage": round(raw.voltage, 1),

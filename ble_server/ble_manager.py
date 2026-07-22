@@ -62,7 +62,7 @@ class BLEManager:
         self._active_sessions = {}  # port -> session_id
         # Protocol debounce: track consecutive protocol readings per port
         self._proto_buf = {i: [] for i in range(1, 5)}  # port -> [last N protocols]
-        self._PROTO_DEBOUNCE_N = 2
+        self._PROTO_DEBOUNCE_N = 3  # consecutive readings to confirm protocol
         # Session end debounce: consecutive low-current count per port
         self._low_current_count = {i: 0 for i in range(1, 5)}
         self._LOW_CURRENT_N = 10  # consecutive readings below threshold to end session

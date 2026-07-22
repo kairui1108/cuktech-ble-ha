@@ -288,11 +288,13 @@ function renderPagination(containerId, data) {
     if (!el || !data.pages || data.pages <= 1) return;
     const pag = document.createElement('div');
     pag.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:8px;padding:10px 0;font-size:12px;';
+    const btnStyle = 'padding:4px 10px;border-radius:6px;border:1px solid var(--card-border);background:var(--card-bg);color:var(--text-dim);font-size:11px;';
+    const disStyle = btnStyle + 'opacity:0.4;cursor:not-allowed;';
     pag.innerHTML = `
         <button onclick="chGoPage(${Math.max(1, data.page - 1)})" ${data.page <= 1 ? 'disabled' : ''}
-            style="padding:4px 10px;border-radius:6px;border:1px solid var(--card-border);background:var(--card-bg);color:var(--text-dim);cursor:pointer;font-size:11px;">上一页</button>
+            style="${data.page <= 1 ? disStyle : btnStyle}">上一页</button>
         <span style="color:var(--text-dim);">${data.page} / ${data.pages}</span>
         <button onclick="chGoPage(${Math.min(data.pages, data.page + 1)})" ${data.page >= data.pages ? 'disabled' : ''}
-            style="padding:4px 10px;border-radius:6px;border:1px solid var(--card-border);background:var(--card-bg);color:var(--text-dim);cursor:pointer;font-size:11px;">下一页</button>`;
+            style="${data.page >= data.pages ? disStyle : btnStyle}">下一页</button>`;
     el.appendChild(pag);
 }
