@@ -10,6 +10,7 @@ TOPIC_SETTINGS = f"{TOPIC_PREFIX}/settings"
 TOPIC_STATUS = f"{TOPIC_PREFIX}/status"
 TOPIC_SET = f"{TOPIC_PREFIX}/set"
 TOPIC_PROBE = f"{TOPIC_PREFIX}/__probe__"
+TOPIC_CHARGE_EVENT = f"{TOPIC_PREFIX}/charge_event"
 
 # Port mapping
 PORT_MAP = {"c1": 1, "c2": 2, "c3": 3, "a": 4}

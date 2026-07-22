@@ -94,6 +94,10 @@ class Config:
     def topic_status(self):
         return f"{self.mqtt.topic_prefix}/status"
 
+    @property
+    def topic_charge_event(self):
+        return f"{self.mqtt.topic_prefix}/charge_event"
+
 
 def load_config() -> Config:
     """Load config from YAML file, then override with environment variables."""

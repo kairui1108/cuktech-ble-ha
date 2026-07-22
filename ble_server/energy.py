@@ -1,7 +1,7 @@
 """CUKTECH BLE Server - Energy accumulation with adaptive integration."""
 import statistics
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -54,10 +54,6 @@ class AdaptiveEnergyIntegrator:
 
         # Trapezoidal integration
         energy = (state.last_power + power) / 2.0 * dt_hours
-
-        # Overshoot protection: cap at 1.5x expected (use max of both endpoints)
-        max_energy = max(state.last_power, power) * dt_hours * 1.5 if power > 0 or state.last_power > 0 else 0
-        energy = min(energy, max_energy) if max_energy > 0 else 0
 
         state.total_wh += energy
         state.session_wh += energy

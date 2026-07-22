@@ -4,6 +4,7 @@ import logging
 import sys
 import os
 import time
+from datetime import datetime, timezone
 
 try:
     from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION, AuthConnectionError
@@ -104,10 +105,18 @@ class BLEManager:
             if es.is_charging and port in self._active_sessions and self._history:
                 sid = self._active_sessions.pop(port)
                 duration = int(now - (es.session_start or now))
-                if duration > 0 and es.session_wh > 0:
+                det = self._charge_detectors[port]
+                det.on_session_end(now)
+                es.is_charging = False
+                es.last_end_time = now
+                if es.session_wh >= 0.05:
+                    ps = self.state.ports.get(port)
+                    if ps:
+                        self._publish_charge_event(
+                            port, sid, es, now,
+                            ps.voltage, ps.current, duration)
                     _LOGGER.info("Closing session %d (port %d, %.1fWh, %ds)", sid, port, es.session_wh, duration)
                     self._history.end_session(sid, es.session_wh, es.max_power, 0, 0, duration)
-                es.is_charging = False
 
     def _close_session(self, piid, timestamp, voltage=0, current=0):
         """Close a charge session: cleanup state and write to DB.
@@ -116,16 +125,21 @@ class BLEManager:
         """
         det = self._charge_detectors[piid]
         es = self._energy_states[piid]
+        sid = self._active_sessions.pop(piid, None)
+        if not sid:
+            return None
         det.on_session_end(timestamp)
         es.is_charging = False
         es.last_end_time = timestamp
-        sid = self._active_sessions.pop(piid, None)
         if sid and self._history:
             duration = int(timestamp - (es.session_start or timestamp))
             if es.session_wh < 0.05:
                 task = asyncio.get_running_loop().run_in_executor(
                     None, self._history.delete_session, sid)
             else:
+                # Publish charge completion event via MQTT
+                self._publish_charge_event(piid, sid, es, timestamp,
+                                           voltage, current, duration)
                 task = asyncio.get_running_loop().run_in_executor(
                     None, self._history.end_session, sid,
                     round(es.session_wh, 4), round(es.max_power, 2),
@@ -133,6 +147,33 @@ class BLEManager:
             task.add_done_callback(
                 lambda t, _sid=sid: _LOGGER.error("Close session %d failed: %s", _sid, t.exception()) if t.exception() else None)
         return sid
+
+    def _publish_charge_event(self, piid, sid, es, timestamp, voltage, current, duration):
+        """Publish charge completion event via MQTT."""
+        if not self._mqtt_publish:
+            return
+        try:
+            ps = self.state.ports.get(piid)
+            payload = {
+                "event": "charge_end",
+                "port": PORT_NAMES.get(piid, str(piid)),
+                "port_id": piid,
+                "session_id": sid,
+                "start_time": datetime.fromtimestamp(es.session_start, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if es.session_start else None,
+                "end_time": datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                "duration_sec": duration,
+                "energy_wh": round(es.session_wh, 4),
+                "avg_power_w": round(es.session_wh / (duration / 3600), 1) if duration > 0 else 0,
+                "max_power_w": round(es.max_power, 2),
+                "protocol": (ps.protocol if ps else "") or "idle",
+                "voltage": round(voltage, 2) if voltage else round(ps.voltage, 2) if ps else 0,
+                "current": round(current, 2) if current else round(ps.current, 2) if ps else 0,
+            }
+            self._mqtt_publish(self.config.topic_charge_event, payload)
+            _LOGGER.info("Charge event published: port=%s energy=%.1fWh duration=%ds",
+                         PORT_NAMES.get(piid, str(piid)), es.session_wh, duration)
+        except Exception as err:
+            _LOGGER.error("Failed to publish charge event: %s", err)
 
     def _get_reconnect_delay(self):
         """Calculate exponential backoff delay."""
@@ -403,6 +444,7 @@ class BLEManager:
                     now = time.time()
                     if now - last_refresh > self.config.server.settings_refresh_interval:
                         await self._refresh_settings()
+                        now = time.time()
                         last_refresh = now
                         last_notify = now
                     if now - last_keepalive > 10:

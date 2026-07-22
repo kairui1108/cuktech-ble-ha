@@ -27,13 +27,14 @@ from .const import (
     TOPIC_SETTINGS,
     TOPIC_STATUS,
     TOPIC_SET,
+    TOPIC_CHARGE_EVENT,
     PORT_MAP,
     PROTOCOL_BITS,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SENSOR, Platform.SWITCH, Platform.SELECT, Platform.BINARY_SENSOR, Platform.NUMBER]
+PLATFORMS = [Platform.SENSOR, Platform.SWITCH, Platform.SELECT, Platform.BINARY_SENSOR, Platform.NUMBER, Platform.EVENT]
 HEALTH_CHECK_INTERVAL = timedelta(seconds=30)
 
 
@@ -88,6 +89,8 @@ class CuktechMQTTCoordinator:
         self._ble_enabled: bool = False
         self._ble_pending: bool = False
         self._ble_lock = asyncio.Lock()
+        self._charge_events: list[dict] = []
+        self._charge_event_callbacks: list = []
 
     @property
     def available(self) -> bool:
@@ -119,6 +122,20 @@ class CuktechMQTTCoordinator:
         """Unregister a callback."""
         if cb in self._callbacks:
             self._callbacks.remove(cb)
+
+    def register_charge_event_callback(self, cb) -> None:
+        """Register a callback for charge completion events."""
+        self._charge_event_callbacks.append(cb)
+
+    def unregister_charge_event_callback(self, cb) -> None:
+        """Unregister a charge event callback."""
+        if cb in self._charge_event_callbacks:
+            self._charge_event_callbacks.remove(cb)
+
+    @property
+    def last_charge_event(self) -> dict | None:
+        """Return the most recent charge event, or None."""
+        return self._charge_events[-1] if self._charge_events else None
 
     @property
     def port_data(self) -> dict[str, dict[str, Any]]:
@@ -207,6 +224,11 @@ class CuktechMQTTCoordinator:
 
         unsub = await mqtt.async_subscribe(
             self.hass, TOPIC_STATUS, self._on_status_message
+        )
+        self._unsub.append(unsub)
+
+        unsub = await mqtt.async_subscribe(
+            self.hass, TOPIC_CHARGE_EVENT, self._on_charge_event
         )
         self._unsub.append(unsub)
 
@@ -327,6 +349,30 @@ class CuktechMQTTCoordinator:
             _LOGGER.debug("Status JSON parse error: %s", err)
         except Exception as err:
             _LOGGER.exception("Status message error: %s", err)
+
+    @callback
+    def _on_charge_event(self, msg: Any) -> None:
+        """Handle charge completion event from MQTT."""
+        try:
+            payload = json.loads(msg.payload)
+            if payload.get("event") != "charge_end":
+                return
+            self._charge_events.append(payload)
+            # Keep only last 50 events
+            if len(self._charge_events) > 50:
+                self._charge_events = self._charge_events[-50:]
+            _LOGGER.info("Charge event: port=%s energy=%.1fWh duration=%ds",
+                         payload.get("port"), payload.get("energy_wh", 0),
+                         payload.get("duration_sec", 0))
+            for cb in list(self._charge_event_callbacks):
+                try:
+                    cb()
+                except Exception as err:
+                    _LOGGER.exception("Charge event callback error: %s", err)
+        except json.JSONDecodeError as err:
+            _LOGGER.debug("Charge event JSON parse error: %s", err)
+        except Exception as err:
+            _LOGGER.exception("Charge event error: %s", err)
 
     async def _async_update_device_registry(self) -> None:
         """Update device registry with latest device info (firmware, model)."""
