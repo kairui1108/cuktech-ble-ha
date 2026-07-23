@@ -30,6 +30,37 @@ void http_server_set_callbacks(port_data_cb ports, settings_cb settings,
     _ble_ctl_cb = ble_ctl;
 }
 
+/* ==================== Ping / Health Check ==================== */
+
+static int _get_ping_handler(httpd_req_t *req) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddStringToObject(root, "service", "cuktech_charger_esp32");
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, json);
+    cJSON_free(json); cJSON_Delete(root);
+    return 0;
+}
+
+/* ==================== Status API (for HA integration validation) ==================== */
+
+static int _get_status_handler(httpd_req_t *req) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddBoolToObject(root, "connected", true);
+    cJSON_AddBoolToObject(root, "authenticated", true);
+    cJSON_AddStringToObject(root, "device_model", DEVICE_MODEL);
+    cJSON_AddStringToObject(root, "firmware_version", FW_VERSION);
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, json);
+    cJSON_free(json); cJSON_Delete(root);
+    return 0;
+}
+
 /* ==================== Config API ==================== */
 
 static void _json_cfg(cJSON *root) {
@@ -651,6 +682,8 @@ void http_server_start(DeviceConfig *cfg, http_config_cb on_save) {
     }
 
     const httpd_uri_t uris[] = {
+        { .uri = "/api/ping",     .method = HTTP_GET,  .handler = _get_ping_handler },
+        { .uri = "/api/status",   .method = HTTP_GET,  .handler = _get_status_handler },
         { .uri = "/api/config",   .method = HTTP_GET,  .handler = _get_config_handler },
         { .uri = "/api/config",   .method = HTTP_POST, .handler = _post_config_handler },
         { .uri = "/api/ports",    .method = HTTP_GET,  .handler = _get_ports_handler },

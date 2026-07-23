@@ -24,6 +24,10 @@
 // --- 功能开关 ---
 #define ENABLE_MQTT      true
 
+// --- 设备信息 ---
+#define DEVICE_MODEL      "njcuk.fitting.ad1204_HS6621C"
+#define FW_VERSION        "2.1.2_0073"
+
 // --- Timing ---
 #define KEEPALIVE_INTERVAL_MS    10000
 
