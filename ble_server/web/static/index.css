@@ -20,6 +20,11 @@
         .status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: pulse 2s infinite; }
         .status-badge.disconnected .status-dot { animation: none; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .quality-tooltip { position: fixed; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 14px; font-size: 11px; color: var(--text); white-space: nowrap; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.3); pointer-events: none; }
+        .quality-bar { height: 4px; border-radius: 2px; background: rgba(255,255,255,0.1); margin-top: 4px; }
+        .quality-bar-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
+        .quality-row { display: flex; justify-content: space-between; align-items: center; margin-top: 3px; }
+        .quality-label { color: var(--text-dim); }
         .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--border-radius); padding: 20px; margin-bottom: 14px; }
         .card:hover { border-color: var(--accent); }
         .card-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

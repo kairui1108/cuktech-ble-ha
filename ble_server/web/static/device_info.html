@@ -416,6 +416,24 @@
                         updateDeviceContainer(msg.ports);
                     }
                 }
+                if (msg.type === 'quality') {
+                    const badge = document.getElementById('statusBadge');
+                    const score = (msg.ble || {}).score || 0;
+                    if (badge && bleConnected) {
+                        const scoreColor = score >= 80 ? 'var(--success)' : score >= 50 ? 'var(--warning)' : 'var(--danger)';
+                        const existing = document.getElementById('qualityScore');
+                        if (existing) {
+                            existing.textContent = score;
+                            existing.style.color = scoreColor;
+                        } else {
+                            const span = document.createElement('span');
+                            span.id = 'qualityScore';
+                            span.textContent = score;
+                            span.style.cssText = `margin-left:8px;font-size:11px;font-weight:600;color:${scoreColor};`;
+                            badge.parentNode.insertBefore(span, badge.nextSibling);
+                        }
+                    }
+                }
             } catch (err) {}
         };
     </script>

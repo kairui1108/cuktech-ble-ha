@@ -52,17 +52,26 @@
                             <span id="firmwareVersion" style="font-weight: 400; font-size: 10px;"></span>
                         </div>
                         <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
-                            <div id="statusBadge" class="status-badge disconnected" title="BLE 设备连接状态">
-                                <span class="status-dot"></span>
-                                <span>BLE</span>
+                            <div style="position: relative;">
+                                <div id="statusBadge" class="status-badge disconnected">
+                                    <span class="status-dot"></span>
+                                    <span>BLE</span>
+                                </div>
+                                <div id="qualityTooltip" class="quality-tooltip" style="display:none;"></div>
                             </div>
-                            <div id="mqttBadge" class="status-badge disconnected" title="MQTT 连接状态">
-                                <span class="status-dot"></span>
-                                <span>MQTT</span>
+                            <div style="position: relative;">
+                                <div id="mqttBadge" class="status-badge disconnected">
+                                    <span class="status-dot"></span>
+                                    <span>MQTT</span>
+                                </div>
+                                <div id="mqttTooltip" class="quality-tooltip" style="display:none;"></div>
                             </div>
-                            <div id="bemfaBadge" class="status-badge disconnected" title="巴法云连接状态">
-                                <span class="status-dot"></span>
-                                <span>Bemfa</span>
+                            <div style="position: relative;">
+                                <div id="bemfaBadge" class="status-badge disconnected">
+                                    <span class="status-dot"></span>
+                                    <span>Bemfa</span>
+                                </div>
+                                <div id="bemfaTooltip" class="quality-tooltip" style="display:none;"></div>
                             </div>
                         </div>
                     </div>

@@ -417,12 +417,14 @@
             if (String(currentModalPort) === key) updateModalChart();
         }
 
+        let _mqttConnected = false;
         function updateStatusBadge(connected, authenticated, mqttConnected) {
             const badge = document.getElementById('statusBadge');
             badge.className = (connected && authenticated) ? 'status-badge connected' : 'status-badge disconnected';
 
+            if (mqttConnected !== undefined) _mqttConnected = mqttConnected;
             const mqttBadge = document.getElementById('mqttBadge');
-            mqttBadge.className = mqttConnected ? 'status-badge connected' : 'status-badge disconnected';
+            mqttBadge.className = _mqttConnected ? 'status-badge connected' : 'status-badge disconnected';
         }
 
         function updateBleButton() {
@@ -747,6 +749,9 @@
                         case 'session_end':
                             window.dispatchEvent(new CustomEvent('sse-session-end', { detail: msg }));
                             break;
+                        case 'quality':
+                            renderQuality(msg);
+                            break;
                     }
                 } catch (err) { console.error('SSE parse error:', err); }
             };
@@ -757,6 +762,94 @@
             // Chart refresh every 30s (decoupled from status)
             sseChartTimer = setInterval(fetchChartData, 30000);
         }
+
+        let _lastQuality = null;
+        function renderQuality(q) {
+            _lastQuality = q;
+            renderBleQuality(q.ble || {});
+            renderMqttQuality(q.mqtt || {});
+            renderBemfaQuality(q.bemfa || {});
+        }
+        function formatDuration(sec) {
+            if (!sec) return '0s';
+            const h = Math.floor(sec / 3600);
+            const m = Math.floor((sec % 3600) / 60);
+            const s = sec % 60;
+            return h > 0 ? `${h}h${m}m` : m > 0 ? `${m}m${s}s` : `${s}s`;
+        }
+        function scoreColor(score) {
+            return score >= 80 ? 'var(--success)' : score >= 50 ? 'var(--warning)' : 'var(--danger)';
+        }
+        function qualityBar(score) {
+            const c = scoreColor(score);
+            return `<div class="quality-bar"><div class="quality-bar-fill" style="width:${score}%;background:${c}"></div></div>`;
+        }
+        function renderBleQuality(ble) {
+            const el = document.getElementById('qualityTooltip');
+            if (!el) return;
+            const uptimeText = ble.uptime > 0 ? formatDuration(ble.uptime) : '未连接';
+            const lastPushText = ble.last_push_age != null ? `${ble.last_push_age}s前` : '无';
+            const pushColor = ble.last_push_age != null && ble.last_push_age > 10 ? 'color:var(--warning)' : '';
+            const delayText = ble.next_reconnect_delay != null ? `${Math.round(ble.next_reconnect_delay)}s后` : null;
+            el.innerHTML = `<div style="font-weight:600;margin-bottom:2px;">BLE <span style="color:${scoreColor(ble.score)}">${ble.score}</span>/100</div>
+                ${qualityBar(ble.score)}
+                <div class="quality-row"><span class="quality-label">连接时长</span><span>${uptimeText}</span></div>
+                <div class="quality-row"><span class="quality-label">最后推送</span><span style="${pushColor}">${lastPushText}</span></div>
+                ${delayText ? `<div class="quality-row"><span class="quality-label">下次重连</span><span style="color:var(--warning)">${delayText}</span></div>` : ''}
+                <div class="quality-row"><span class="quality-label">解密成功</span><span>${ble.decrypt}%</span></div>
+                <div class="quality-row"><span class="quality-label">通知响应</span><span>${ble.notify}%</span></div>
+                <div class="quality-row"><span class="quality-label">连接稳定</span><span>${ble.reconnect_score}%</span></div>
+                <div class="quality-row"><span class="quality-label">5min重连</span><span>${ble.reconnect_count_5m}次</span></div>`;
+        }
+        function renderMqttQuality(mqtt) {
+            const el = document.getElementById('mqttTooltip');
+            if (!el) return;
+            el.innerHTML = `<div style="font-weight:600;margin-bottom:2px;">MQTT <span style="color:${scoreColor(mqtt.score)}">${mqtt.score}</span>/100</div>
+                ${qualityBar(mqtt.score)}
+                <div class="quality-row"><span class="quality-label">运行时长</span><span>${formatDuration(mqtt.uptime)}</span></div>
+                <div class="quality-row"><span class="quality-label">断连次数</span><span>${mqtt.disconnects}</span></div>
+                <div class="quality-row"><span class="quality-label">发送失败</span><span>${mqtt.publish_failures}</span></div>`;
+        }
+        function renderBemfaQuality(bemfa) {
+            const el = document.getElementById('bemfaTooltip');
+            if (!el) return;
+            el.innerHTML = `<div style="font-weight:600;margin-bottom:2px;">Bemfa <span style="color:${scoreColor(bemfa.score)}">${bemfa.score}</span>/100</div>
+                ${qualityBar(bemfa.score)}
+                <div class="quality-row"><span class="quality-label">运行时长</span><span>${formatDuration(bemfa.uptime)}</span></div>
+                <div class="quality-row"><span class="quality-label">Ping丢包</span><span>${bemfa.ping_lost}/3</span></div>
+                <div class="quality-row"><span class="quality-label">重连次数</span><span>${bemfa.reconnect_count}</span></div>`;
+        }
+        // Hover tooltip for each badge
+        function setupBadgeTooltip(badgeId, tooltipId) {
+            const badge = document.getElementById(badgeId);
+            const tooltip = document.getElementById(tooltipId);
+            if (!badge || !tooltip) return;
+            badge.addEventListener('mouseenter', (e) => {
+                if (_lastQuality) {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    tooltip.style.left = rect.left + 'px';
+                    tooltip.style.top = (rect.bottom + 8) + 'px';
+                    tooltip.style.display = 'block';
+                }
+            });
+            badge.addEventListener('mouseleave', () => {
+                tooltip.style.display = 'none';
+            });
+        }
+        setupBadgeTooltip('statusBadge', 'qualityTooltip');
+        setupBadgeTooltip('mqttBadge', 'mqttTooltip');
+        setupBadgeTooltip('bemfaBadge', 'bemfaTooltip');
+        // Hide all tooltips on scroll or click outside
+        function hideAllTooltips() {
+            ['qualityTooltip', 'mqttTooltip', 'bemfaTooltip'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
+            });
+        }
+        document.addEventListener('scroll', hideAllTooltips, true);
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.status-badge')) hideAllTooltips();
+        });
 
         function updateDeviceContainer(ports) {
             const unconnected = document.getElementById('unconnectedImg');

@@ -49,9 +49,15 @@ class BLEManager:
         self._port_timer_task = None
         self._mqtt_publish = None
         self._sse_emitter = None
+        self._quality_provider = None
         self._reconnect_attempts = 0
         self._decrypt_failures = 0
+        self._total_frames = 0
+        self._last_notify_time = 0.0
+        self._reconnect_times = []  # timestamps of recent reconnects
+        self._keepalive_fails = 0
         self._auth_fail_count = 0
+        self._ble_connect_time = 0.0  # timestamp of current BLE connection
         self._base_reconnect_delay = config.server.reconnect_base_delay
         self._max_reconnect_delay = config.server.reconnect_max_delay
         self._history = None
@@ -74,6 +80,10 @@ class BLEManager:
     def set_sse_emitter(self, emitter):
         self._sse_emitter = emitter
 
+    def set_quality_provider(self, provider):
+        """Set a callback that returns combined quality dict from all sources."""
+        self._quality_provider = provider
+
     def _sse_emit(self, event_type, data):
         """Emit SSE event if emitter is connected."""
         if self._sse_emitter:
@@ -86,6 +96,42 @@ class BLEManager:
     def is_running(self) -> bool:
         """是否正在运行 (不处于停止状态)。"""
         return not self._stop_event.is_set()
+
+    def connection_quality(self) -> dict:
+        """Estimate BLE connection quality (0-100) from available metrics."""
+        total = self._total_frames or 1
+        # 1. Decrypt success rate (40%)
+        decrypt_score = max(0, ((total - self._decrypt_failures) / total) * 100)
+        # 2. Notification responsiveness — time since last BLE push (30%)
+        notify_age = time.time() - self._last_notify_time if self._last_notify_time else 999
+        notify_score = max(0, min(100, 100 - notify_age * 10))
+        # 3. Reconnect frequency in last 5 min (20%)
+        recent = sum(1 for t in self._reconnect_times if time.time() - t < 300)
+        reconnect_score = max(0, 100 - recent * 25)
+        # 4. Keepalive success (10%)
+        keepalive_fails = self._keepalive_fails
+        keepalive_score = max(0, 100 - keepalive_fails * 33)
+        score = round(decrypt_score * 0.4 + notify_score * 0.3 +
+                      reconnect_score * 0.2 + keepalive_score * 0.1)
+        # Connection uptime
+        uptime = int(time.time() - self._ble_connect_time) if self._ble_connect_time else 0
+        # Last push age
+        last_push_age = round(time.time() - self._last_notify_time) if self._last_notify_time else None
+        # Next reconnect delay (when disconnected)
+        next_delay = self._get_reconnect_delay() if self._reconnect_attempts > 0 else None
+        return {
+            "score": score,
+            "decrypt": round(decrypt_score),
+            "notify": round(notify_score),
+            "reconnect_score": round(reconnect_score),
+            "reconnect_count_5m": recent,
+            "keepalive": round(keepalive_score),
+            "total_frames": total,
+            "decrypt_failures": self._decrypt_failures,
+            "uptime": uptime,
+            "last_push_age": last_push_age,
+            "next_reconnect_delay": next_delay,
+        }
 
     def get_live_session_data(self) -> dict:
         """Get real-time energy data for active charging sessions.
@@ -257,6 +303,10 @@ class BLEManager:
                 else:
                     delay = self._get_reconnect_delay()
                 self._reconnect_attempts += 1
+                self._reconnect_times.append(time.time())
+                # Prune to last 10 minutes
+                cutoff = time.time() - 600
+                self._reconnect_times = [t for t in self._reconnect_times if t > cutoff]
                 if 'POWERED_OFF' not in str(last_error or '') and 'No powered Bluetooth' not in str(last_error or ''):
                     _LOGGER.info("Reconnecting in %.0fs (attempt %d)...", delay, self._reconnect_attempts)
                 try:
@@ -323,6 +373,8 @@ class BLEManager:
             raise AuthConnectionError("Auth failed")
 
         self._auth_fail_count = 0  # reset on successful auth
+        self._ble_connect_time = time.time()
+        self._last_notify_time = 0.0  # reset so quality shows "无" until first push
         await self.state.set_connection(True, True)
         _invalidate()
         _LOGGER.info("Authenticated!")
@@ -379,6 +431,9 @@ class BLEManager:
             except Exception:
                 pass
             self.ctrl = None
+            self._ble_connect_time = 0.0  # reset uptime on disconnect
+            self._last_notify_time = 0.0  # reset push tracking on disconnect
+            self._total_frames = 0       # reset frame counter on disconnect
             # Close active charge sessions on disconnect
             self._close_active_sessions()
             if was_connected and not self._stop_event.is_set():
@@ -487,6 +542,8 @@ class BLEManager:
                     if not self.ctrl:
                         break
                     last_notify = time.time()
+                    self._last_notify_time = last_notify
+                    self._total_frames += 1
                 except asyncio.TimeoutError:
                     now = time.time()
                     if now - last_keepalive > 10:
@@ -530,9 +587,15 @@ class BLEManager:
 
     async def _port_timer(self):
         """1-second timer: write port_history + energy + charge_points for ports
-        that are NOT receiving BLE pushes (stable V/I)."""
+        that are NOT receiving BLE pushes (stable V/I). Also emits connection quality every 5s."""
+        quality_tick = 0
         while not self._stop_event.is_set():
             await asyncio.sleep(1)
+            # Emit connection quality every 5s (independent of history)
+            quality_tick += 1
+            if quality_tick % 5 == 0:
+                q = self._quality_provider() if self._quality_provider else {"ble": self.connection_quality()}
+                self._sse_emit("quality", q)
             if not self._history or self._stop_event.is_set():
                 continue
             now = time.time()

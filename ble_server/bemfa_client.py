@@ -76,10 +76,25 @@ class BemfaClient:
         self._ping_lost = 0
         self._ping_publish_task: Optional[asyncio.Task] = None
         self._ping_receive_task: Optional[asyncio.Task] = None
+        self._reconnect_count = 0
 
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    def quality(self) -> dict:
+        """Return Bemfa connection quality metrics."""
+        if not self._connected:
+            return {"score": 0, "uptime": 0, "ping_lost": self._ping_lost,
+                    "reconnect_count": self._reconnect_count}
+        uptime = int(time.time() - self._connect_time) if self._connect_time else 0
+        # Ping loss penalty: each lost ping costs 15 points
+        ping_score = max(0, 100 - self._ping_lost * 15)
+        # Reconnect penalty: each reconnect costs 10 points
+        reconnect_score = max(0, 100 - self._reconnect_count * 10)
+        score = round(ping_score * 0.6 + reconnect_score * 0.4)
+        return {"score": score, "uptime": uptime, "ping_lost": self._ping_lost,
+                "reconnect_count": self._reconnect_count}
 
     def add_device(self, entity_id: str, name: str) -> BemfaDevice:
         """Register a device to sync with Bemfa."""
@@ -298,6 +313,7 @@ class BemfaClient:
     async def _reconnect(self):
         """Disconnect and reconnect MQTT, restart ping cycle."""
         self._ping_lost = 0
+        self._reconnect_count += 1
         # Cancel publish chain only (future cycles), not _ping_receive_task
         if self._ping_publish_task and not self._ping_publish_task.done():
             self._ping_publish_task.cancel()

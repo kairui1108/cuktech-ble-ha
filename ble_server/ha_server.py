@@ -73,6 +73,9 @@ class Server:
         self.state = ChargerState()
         self.ble = BLEManager(self.config.ble.mac, self.config.ble.token, self.state, self.config)
         self.mqtt_client = None
+        self._mqtt_connect_time = 0.0
+        self._mqtt_disconnect_count = 0
+        self._mqtt_publish_failures = 0
         self.loop = None
         self._start_lock = asyncio.Lock()
         self._status_cache_bytes = None
@@ -98,7 +101,10 @@ class Server:
         """Publish to all enabled MQTT clients (multiplex)."""
         # HA MQTT
         if self.mqtt_client and self.mqtt_client.is_connected():
-            self.mqtt_client.publish(topic, json.dumps(payload, ensure_ascii=False), retain=retain)
+            try:
+                self.mqtt_client.publish(topic, json.dumps(payload, ensure_ascii=False), retain=retain)
+            except Exception:
+                self._mqtt_publish_failures += 1
         # Bemfa
         if self.bemfa and self.bemfa.is_connected:
             self._bemfa_publish(topic, payload)
@@ -203,12 +209,14 @@ class Server:
         def on_connect(client, userdata, flags, rc, properties=None):
             _LOGGER.info("MQTT connected (rc=%s)", rc)
             s = get_server()
+            s._mqtt_connect_time = time.time()
             if s.ble:
                 s.ble.set_mqtt_publisher(s.mqtt_publish)
             s.setup_mqtt_subscriptions()
 
         def on_disconnect(client, userdata, flags, rc, properties=None):
             _LOGGER.warning("MQTT disconnected (rc=%s)", rc)
+            get_server()._mqtt_disconnect_count += 1
 
         self.mqtt_client.on_connect = on_connect
         self.mqtt_client.on_disconnect = on_disconnect
@@ -295,6 +303,23 @@ class Server:
 
     def invalidate_status_cache(self):
         self._status_cache_valid = False
+
+    def mqtt_quality(self) -> dict:
+        """Return MQTT connection quality metrics."""
+        if not self.mqtt_client:
+            return {"score": 0, "uptime": 0, "disconnects": 0, "publish_failures": 0}
+        connected = self.mqtt_client.is_connected()
+        if not connected:
+            return {"score": 0, "uptime": 0, "disconnects": self._mqtt_disconnect_count,
+                    "publish_failures": self._mqtt_publish_failures}
+        uptime = int(time.time() - self._mqtt_connect_time) if self._mqtt_connect_time else 0
+        # Disconnect penalty: each disconnect costs 15 points
+        dc_score = max(0, 100 - self._mqtt_disconnect_count * 15)
+        # Publish failure penalty
+        pf_score = max(0, 100 - self._mqtt_publish_failures * 5)
+        score = round(dc_score * 0.6 + pf_score * 0.4)
+        return {"score": score, "uptime": uptime, "disconnects": self._mqtt_disconnect_count,
+                "publish_failures": self._mqtt_publish_failures}
 
     async def handle_status(self, request):
         if self._status_cache_valid and self._status_cache_bytes:
@@ -902,6 +927,11 @@ async def on_startup(app_):
         s.loop = asyncio.get_running_loop()
         set_status_cache_invalidator(s.invalidate_status_cache)
         s.ble.set_sse_emitter(s.sse)
+        s.ble.set_quality_provider(lambda: {
+            "ble": s.ble.connection_quality(),
+            "mqtt": s.mqtt_quality(),
+            "bemfa": s.bemfa.quality() if s.bemfa else {"score": 0, "uptime": 0, "ping_lost": 0, "reconnect_count": 0},
+        })
         s.history.connect()
         s.ble.set_history(s.history)
         await s.setup_mqtt()
