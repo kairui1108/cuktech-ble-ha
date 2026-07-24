@@ -15,7 +15,8 @@
 ## 功能特性
 
 ### BLE Server（Python）
-- **实时功率监控**：通过 MQTT 推送电压、电流、功率数据
+- **实时功率监控**：通过 SSE 事件流推送电压、电流、功率数据至 Web 前端，MQTT 推送至 HA
+- **SSE 事件流**：Server-Sent Events 实时推送端口数据、状态变更、设置更新，替代 2s 轮询
 - **功率曲线图**：Web UI 实时显示各端口及总功率曲线
 - **端口控制**：远程开关 C1/C2/C3/A 端口
 - **协议开关控制**：独立控制各端口的 PD/PPS/UFCS/SCP 协议开关
@@ -50,6 +51,7 @@
 - **充电事件**：充电完成时自动触发事件实体，支持通知自动化
 
 ### Web 管理界面
+- **SSE 实时推送**：端口数据、状态变更通过 SSE 事件流即时更新，无轮询延迟
 - 实时功率曲线图（各端口 + 总功率）
 - 充电记录历史查看（会话详情、功率曲线）
 - 端口开关控制
@@ -318,6 +320,7 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
+| `/api/events` | GET | SSE 事件流（端口数据、状态、设置实时推送） |
 | `/api/status` | GET | 获取充电器状态 |
 | `/api/enable` | POST | 启用/禁用 BLE 连接 |
 | `/api/set` | POST | 设置 PIID 值 |

@@ -365,9 +365,17 @@
             updateDeviceContainer(data.ports);
             updateSettingsUI(data.settings || {});
             renderCountdown(data.settings || {});
+            updateSummary(data.ports);
+            if (data.firmware_version) {
+                document.getElementById('firmwareVersion').textContent = '固件版本：' + data.firmware_version;
+            }
+            if (currentModalPort) updateModalChart();
+        }
+
+        function updateSummary(ports) {
             let totalPower = 0, activeCount = 0, maxV = 0;
-            for (const [id, port] of Object.entries(data.ports)) {
-                if ((port.current > 0 || port.power > 0) && port.enabled) {
+            for (const [id, port] of Object.entries(ports || {})) {
+                if ((port.current > 0 || port.power > 0) && port.enabled !== false) {
                     totalPower += port.power;
                     activeCount++;
                     maxV = Math.max(maxV, port.voltage);
@@ -377,11 +385,36 @@
             const apEl = document.getElementById('activePorts');
             if (apEl) apEl.textContent = activeCount;
             document.getElementById('maxVoltage').textContent = maxV.toFixed(1);
-            if (data.firmware_version) {
-                document.getElementById('firmwareVersion').textContent = '固件版本：' + data.firmware_version;
+        }
+
+        // ── Incremental port DOM update (no innerHTML rebuild) ──
+        function updatePortDOM(portId, portData) {
+            const key = String(portId);
+            // Merge with existing data to preserve fields not in SSE event
+            latestPorts[key] = { ...(latestPorts[key] || {}), ...portData };
+            const card = document.getElementById(`port-${portId}`);
+            if (!card) return renderPorts(latestPorts);
+            const merged = latestPorts[key];
+            // Update stats text directly
+            const vals = card.querySelectorAll('.port-stat-value');
+            if (vals[0]) vals[0].textContent = merged.voltage.toFixed(1);
+            if (vals[1]) vals[1].textContent = merged.current.toFixed(1);
+            if (vals[2]) vals[2].textContent = merged.power.toFixed(1);
+            // Update protocol label
+            const protoEl = card.querySelector('div[style*="text-align:center"]');
+            if (protoEl) {
+                protoEl.textContent = merged.protocol;
+                protoEl.style.color = merged.protocol !== 'idle' ? 'var(--accent)' : 'var(--text-dim)';
             }
-            fetchChartData();
-            if (currentModalPort) updateModalChart();
+            // Update active class (enabled comes from PIID 16, not BLE data)
+            card.classList.toggle('active', merged.enabled !== false);
+            // Update toggle checkbox
+            const toggle = document.getElementById(`toggle-${PORT_KEY_MAP[portId]}`);
+            if (toggle) toggle.checked = merged.enabled !== false;
+            // Update summary totals
+            updateSummary(latestPorts);
+            // Update modal if open for this port
+            if (String(currentModalPort) === key) updateModalChart();
         }
 
         function updateStatusBadge(connected, authenticated, mqttConnected) {
@@ -478,7 +511,7 @@
                 if (toggle) toggle.checked = !on;
             } finally {
                 if (toggle) toggle.disabled = false;
-                fetchStatus();
+                // SSE port_update will update UI automatically
             }
         }
 
@@ -548,37 +581,19 @@
             const statusEl = document.getElementById(`countdown-status-${port}`);
             const isClear = minutes === 0;
             if (btn) { btn.disabled = true; btn.textContent = isClear ? '清除中...' : '设置中...'; }
-            const expectedText = minutes > 0 ? minutes + '分钟' : '未设置';
-            const revertBtn = () => {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.textContent = isClear ? '清除' : '设置';
-                    btn.className = `countdown-toggle-btn ${isClear ? 'clear' : 'set'}`;
-                }
-                if (!isClear) {
-                    const input = document.getElementById(`countdown-${port}`);
-                    if (input) input.value = '';
-                }
-            };
             const piid = COUNTDOWN_PIIDS[id];
-            if (!piid) { countdownPending[port] = false; revertBtn(); return; }
+            if (!piid) { countdownPending[port] = false; if (btn) { btn.disabled = false; } return; }
             try {
                 await fetch(`${API_BASE}/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid, value: minutes }) });
-                fetchStatus();
-                if (statusEl) {
-                    const observer = new MutationObserver(() => {
-                        if (statusEl.textContent === expectedText) {
-                            observer.disconnect();
-                            countdownPending[port] = false;
-                            revertBtn();
-                        }
-                    });
-                    observer.observe(statusEl, { childList: true, characterData: true, subtree: true });
-                    setTimeout(() => { observer.disconnect(); countdownPending[port] = false; revertBtn(); }, 10000);
-                } else {
-                    setTimeout(() => { countdownPending[port] = false; revertBtn(); }, 3000);
+                // Immediately update button + status based on result
+                countdownPending[port] = false;
+                if (statusEl) statusEl.textContent = minutes > 0 ? minutes + '分钟' : '未设置';
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = minutes > 0 ? '清除' : '设置';
+                    btn.className = `countdown-toggle-btn ${minutes > 0 ? 'clear' : 'set'}`;
                 }
-            } catch (e) { console.error('Set countdown error:', e); countdownPending[port] = false; revertBtn(); }
+            } catch (e) { console.error('Set countdown error:', e); countdownPending[port] = false; if (btn) { btn.disabled = false; } }
         }
 
         function setCountdownFromInput(port) {
@@ -605,8 +620,7 @@
             try {
                 const enable = btn.textContent === '连接设备';
                 await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: enable }) });
-                await new Promise(r => setTimeout(r, 500));
-                await fetchStatus();
+                // SSE status event will update UI when connection state changes
             } catch (e) { console.error('BLE toggle error:', e); }
             finally { btn.disabled = false; }
         }
@@ -619,8 +633,7 @@
                 await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
                 await new Promise(r => setTimeout(r, 2000));
                 await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
-                await new Promise(r => setTimeout(r, 500));
-                await fetchStatus();
+                // SSE status event will update UI when connection state changes
             } catch (e) { console.error('BLE restart error:', e); }
             finally { btn.disabled = false; }
         }
@@ -651,17 +664,98 @@
             try {
                 initChart();
                 fetchChartData();
-                pollStatus();
+                initSSE();
                 fetchBemfaStatus();
             } catch (e) {
                 console.error('Init error:', e);
+                // Fallback to polling if SSE fails
                 pollStatus();
             }
         }
 
+        // ── SSE (Server-Sent Events) — replaces 2s polling ──
+        let evtSource = null;
+        let sseChartTimer = null;
+
+        // Fallback polling — used when SSE init fails
         async function pollStatus() {
             await fetchStatus();
             setTimeout(pollStatus, 2000);
+        }
+
+        function initSSE() {
+            if (evtSource) { evtSource.close(); evtSource = null; }
+            evtSource = new EventSource(`${API_BASE}/api/events`);
+            evtSource.onopen = () => {
+                console.log('SSE connected');
+                document.getElementById('statusBadge').className = 'status-badge connected';
+                // SSE init event handles state sync; no fetchStatus needed
+            };
+            evtSource.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    switch (msg.type) {
+                        case 'init':
+                            updateUI(msg);
+                            break;
+                        case 'port_update':
+                            updatePortDOM(msg.port_id, msg.data);
+                            updateDeviceContainer(latestPorts);
+                            break;
+                        case 'status':
+                            bleConnected = msg.connected && msg.authenticated;
+                            latestPorts = latestPorts || {};
+                            updateStatusBadge(msg.connected, msg.authenticated, msg.mqtt_connected);
+                            updateBleButton();
+                            if (msg.firmware_version) {
+                                document.getElementById('firmwareVersion').textContent =
+                                    '固件版本：' + msg.firmware_version;
+                            }
+                            if (!bleConnected) {
+                                // Disconnect: clear port data
+                                for (const id of Object.keys(PORT_MAP)) {
+                                    latestPorts[id] = { voltage: 0, current: 0, power: 0, active: false, protocol: 'idle', enabled: true };
+                                }
+                                renderPorts(latestPorts);
+                                updateDeviceContainer(latestPorts);
+                                updateSummary(latestPorts);
+                            } else if (msg.ports) {
+                                // Reconnect: apply full state
+                                latestPorts = msg.ports;
+                                renderPorts(msg.ports);
+                                updateDeviceContainer(msg.ports);
+                                updateSummary(msg.ports);
+                            }
+                            if (msg.settings) {
+                                updateSettingsUI(msg.settings);
+                                renderCountdown(msg.settings);
+                            }
+                            if (msg.protocol_switches) protocolSwitches = msg.protocol_switches;
+                            if (msg.protocol_extend !== undefined) protocolExtend = msg.protocol_extend;
+                            break;
+                        case 'settings':
+                            if (msg.settings) {
+                                updateSettingsUI(msg.settings);
+                                renderCountdown(msg.settings);
+                            }
+                            break;
+                        case 'protocol':
+                            if (msg.switches) protocolSwitches = msg.switches;
+                            if (msg.protocol_extend !== undefined) protocolExtend = msg.protocol_extend;
+                            if (currentModalPort) renderModalProtocols();
+                            break;
+                        case 'session_end':
+                            window.dispatchEvent(new CustomEvent('sse-session-end', { detail: msg }));
+                            break;
+                    }
+                } catch (err) { console.error('SSE parse error:', err); }
+            };
+            evtSource.onerror = () => {
+                console.warn('SSE disconnected, will auto-reconnect');
+                document.getElementById('statusBadge').className = 'status-badge disconnected';
+            };
+            // Chart refresh every 30s (decoupled from status)
+            sseChartTimer = setInterval(fetchChartData, 30000);
         }
 
         function updateDeviceContainer(ports) {
@@ -673,7 +767,7 @@
 
             let totalW = 0;
             for (const [id, port] of Object.entries(ports || {})) {
-                if (port.enabled && port.power > 0) totalW += port.power;
+                if (port.enabled !== false && port.power > 0) totalW += port.power;
             }
 
             const wrapInner = document.querySelector('.device-wrap-inner');
@@ -683,12 +777,11 @@
                 if (wrapInner) wrapInner.classList.remove('idle');
                 charger.classList.add('charging');
                 glow.classList.add('active');
-                // Scene badge: not shown until scene mode data available
                 if (badge) badge.classList.remove('show');
 
                 const portKeys = ['c1','c2','c3','a'];
                 for (const key of portKeys) {
-                    const p = ports[PORT_KEY_TO_ID[key]] || { voltage:0, current:0, power:0, enabled:false, protocol:'idle' };
+                    const p = ports[String(PORT_KEY_TO_ID[key])] || { voltage:0, current:0, power:0, enabled:false, protocol:'idle' };
                     const mod = document.getElementById('usbMod' + key.toUpperCase());
                     const pval = document.getElementById('usbPval' + key.toUpperCase());
                     const active = p.enabled && p.power > 0;

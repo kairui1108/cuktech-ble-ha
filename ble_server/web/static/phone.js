@@ -295,8 +295,11 @@ function renderRateCard() {
 let portCharts = {};
 function renderCharts() {
     let totalW = 0;
-    for (const p of Object.values(state.ports)) {
-        if (p.enabled) totalW += p.w;
+    // When BLE disconnected, chart shows 0 instead of stale data
+    if (state.bleConnected) {
+        for (const p of Object.values(state.ports)) {
+            if (p.enabled) totalW += p.w;
+        }
     }
     if (!state._totalHistory) state._totalHistory = [];
     if (totalW > 0 || state._totalHistory.length > 0) {
@@ -316,16 +319,16 @@ function renderCharts() {
         miniChart.innerHTML = miniHtml;
     }
 
-    // Update port history (skip until first real data arrives)
+    // Update port history — push 0 when disconnected
     let hasData = false;
     for (const key of PORT_KEYS) {
         const p = state.ports[key];
-        if (p.enabled && p.w > 0) hasData = true;
+        if (state.bleConnected && p.enabled && p.w > 0) hasData = true;
     }
     if (hasData || state.history.c1.length > 0) {
         for (const key of PORT_KEYS) {
             const p = state.ports[key];
-            const w = (p.enabled && p.w > 0) ? p.w : 0;
+            const w = (state.bleConnected && p.enabled && p.w > 0) ? p.w : 0;
             state.history[key].push(w);
             if (state.history[key].length > 30) state.history[key].shift();
         }
@@ -569,8 +572,134 @@ function toggleTheme() {
 
 // ── Init ──
 renderAll();
-fetchStatus();
-setInterval(fetchStatus, 2000);
+initPhoneSSE();
+// Chart decoupled from SSE — update every 2s instead of every ~1s push
+setInterval(renderCharts, 2000);
+
+// ── SSE (Server-Sent Events) ──
+function initPhoneSSE() {
+    const evtSource = new EventSource(`${API_BASE}/api/events`);
+    evtSource.onopen = () => {
+        document.getElementById('connectDot').style.background = '#34C759';
+        // SSE init event handles state sync; no fetchStatus needed
+    };
+    evtSource.onmessage = (e) => {
+        try {
+            const msg = JSON.parse(e.data);
+            switch (msg.type) {
+                case 'init':
+                    applyFullStatus(msg);
+                    break;
+                case 'port_update':
+                    applyPortUpdate(msg.port_id, msg.data);
+                    break;
+                case 'status':
+                    state.bleConnected = msg.connected && msg.authenticated;
+                    if (msg.firmware_version) state.firmware = msg.firmware_version;
+                    updateConnectionUI();
+                    if (!state.bleConnected) {
+                        // Disconnect: clear port data to avoid showing stale values
+                        for (const key of PORT_KEYS) {
+                            state.ports[key].v = 0;
+                            state.ports[key].a = 0;
+                            state.ports[key].w = 0;
+                            state.ports[key].protocol = 'idle';
+                        }
+                        renderDeviceArea();
+                        renderRateCard();
+                        renderPowerDist();
+                    } else if (msg.ports) {
+                        // Reconnect: apply full state
+                        for (const [id, port] of Object.entries(msg.ports)) {
+                            const key = API_PORT_MAP[id];
+                            if (key && state.ports[key]) {
+                                state.ports[key].v = port.voltage || 0;
+                                state.ports[key].a = port.current || 0;
+                                state.ports[key].w = port.power || 0;
+                                state.ports[key].enabled = port.enabled !== false;
+                                state.ports[key].protocol = port.protocol || 'idle';
+                            }
+                        }
+                        renderDeviceArea();
+                        renderRateCard();
+                        renderPowerDist();
+                    }
+                    if (msg.settings) applySettingsUpdate(msg.settings);
+                    if (msg.protocol_switches) state.protocolSwitches = msg.protocol_switches;
+                    if (msg.protocol_extend !== undefined) state.protocolExtend = msg.protocol_extend;
+                    break;
+                case 'settings':
+                    if (msg.settings) applySettingsUpdate(msg.settings);
+                    break;
+                case 'protocol':
+                    if (msg.switches) state.protocolSwitches = msg.switches;
+                    if (msg.protocol_extend !== undefined) state.protocolExtend = msg.protocol_extend;
+                    renderProtocolSwitches();
+                    break;
+                case 'session_end':
+                    window.dispatchEvent(new CustomEvent('sse-session-end', { detail: msg }));
+                    break;
+            }
+        } catch (err) { console.error('SSE parse error:', err); }
+    };
+    evtSource.onerror = () => {
+        document.getElementById('connectDot').style.background = '#666';
+    };
+}
+
+function applyFullStatus(data) {
+    state.bleConnected = data.connected && data.authenticated;
+    state.firmware = data.firmware_version || '';
+    if (data.ports) {
+        for (const [id, port] of Object.entries(data.ports)) {
+            const key = API_PORT_MAP[id];
+            if (key && state.ports[key]) {
+                state.ports[key].v = port.voltage || 0;
+                state.ports[key].a = port.current || 0;
+                state.ports[key].w = port.power || 0;
+                if (!isRecentLocal()) state.ports[key].enabled = port.enabled !== false;
+                state.ports[key].protocol = port.protocol || 'idle';
+            }
+        }
+    }
+    if (data.protocol_switches) state.protocolSwitches = data.protocol_switches;
+    if (data.protocol_extend !== undefined) state.protocolExtend = data.protocol_extend;
+    if (data.settings) applySettingsUpdate(data.settings);
+    updateConnectionUI();
+    renderAll();
+}
+
+function applyPortUpdate(portId, portData) {
+    const key = API_PORT_MAP[portId];
+    if (!key || !state.ports[key]) return;
+    state.ports[key].v = portData.voltage || 0;
+    state.ports[key].a = portData.current || 0;
+    state.ports[key].w = portData.power || 0;
+    if (!isRecentLocal()) state.ports[key].enabled = portData.enabled !== false;
+    state.ports[key].protocol = portData.protocol || 'idle';
+    // Incremental render — skip chart (decoupled to 2s timer)
+    renderDeviceArea();
+    renderRateCard();
+    renderPowerDist();
+    renderDelayOff();
+}
+
+function applySettingsUpdate(settings) {
+    state.settings = settings;
+    const sceneVal = settings['5'];
+    if (sceneVal && sceneVal > 0 && !isRecentLocal()) state.scene = sceneVal;
+    if (!isRecentLocal()) {
+        if (settings['6'] !== undefined) state.screenTime = settings['6'];
+        if (settings['15'] !== undefined) state.trickleEnabled = settings['15'] === 1;
+    }
+    if (!isRecentLocal()) {
+        for (const key of PORT_KEYS) {
+            const v = settings[String(DELAY_PIIDS[key])];
+            if (v !== undefined) delayMinutes[key] = parseInt(v) || 0;
+        }
+    }
+    renderAll();
+}
 
 // ── Charge History ──
 if (typeof startChargeHistoryAutoRefresh === 'function') {

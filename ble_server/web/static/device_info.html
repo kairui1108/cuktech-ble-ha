@@ -245,50 +245,57 @@
             try {
                 const res = await fetch(`${API_BASE}/api/status`);
                 const data = await res.json();
-                
-                bleConnected = data.connected && data.authenticated;
-                
-                const badge = document.getElementById('statusBadge');
-                const text = document.getElementById('statusText');
-                
-                if (bleConnected) {
-                    badge.className = 'status-badge connected';
-                    text.textContent = '已连接';
-                } else if (data.connected) {
-                    badge.className = 'status-badge connected';
-                    text.textContent = '认证中...';
-                } else {
-                    badge.className = 'status-badge disconnected';
-                    text.textContent = '未连接';
-                }
-                
-                const btn = document.getElementById('bleToggle');
-                if (bleConnected) {
-                    btn.textContent = '断开设备';
-                    btn.className = 'btn btn-danger';
-                } else {
-                    btn.textContent = '连接设备';
-                    btn.className = 'btn btn-primary';
-                }
-                
-                let totalPower = 0, activeCount = 0, maxV = 0;
-                for (const [id, port] of Object.entries(data.ports || {})) {
-                    if ((port.current > 0 || port.power > 0) && port.enabled) {
-                        totalPower += port.power;
-                        activeCount++;
-                        maxV = Math.max(maxV, port.voltage);
-                    }
-                }
-                document.getElementById('totalPower').textContent = totalPower.toFixed(1);
-                document.getElementById('activePorts').textContent = activeCount;
-                document.getElementById('maxVoltage').textContent = maxV.toFixed(1);
-                if (data.firmware_version) {
-                    document.getElementById('firmwareVersion').textContent = '固件版本：' + data.firmware_version;
-                }
-                updateDeviceContainer(data.ports);
+                applyFullStatus(data);
             } catch (e) {
                 console.error('Fetch error:', e);
             }
+        }
+
+        function applyFullStatus(data) {
+            bleConnected = data.connected && data.authenticated;
+
+            const badge = document.getElementById('statusBadge');
+            const text = document.getElementById('statusText');
+
+            if (bleConnected) {
+                badge.className = 'status-badge connected';
+                text.textContent = '已连接';
+            } else if (data.connected) {
+                badge.className = 'status-badge connected';
+                text.textContent = '认证中...';
+            } else {
+                badge.className = 'status-badge disconnected';
+                text.textContent = '未连接';
+            }
+
+            const btn = document.getElementById('bleToggle');
+            if (bleConnected) {
+                btn.textContent = '断开设备';
+                btn.className = 'btn btn-danger';
+            } else {
+                btn.textContent = '连接设备';
+                btn.className = 'btn btn-primary';
+            }
+
+            updateSummary(data.ports || {});
+            if (data.firmware_version) {
+                document.getElementById('firmwareVersion').textContent = '固件版本：' + data.firmware_version;
+            }
+            updateDeviceContainer(data.ports);
+        }
+
+        function updateSummary(ports) {
+            let totalPower = 0, activeCount = 0, maxV = 0;
+            for (const [id, port] of Object.entries(ports || {})) {
+                if ((port.current > 0 || port.power > 0) && port.enabled !== false) {
+                    totalPower += port.power;
+                    activeCount++;
+                    maxV = Math.max(maxV, port.voltage);
+                }
+            }
+            document.getElementById('totalPower').textContent = totalPower.toFixed(1);
+            document.getElementById('activePorts').textContent = activeCount;
+            document.getElementById('maxVoltage').textContent = maxV.toFixed(1);
         }
 
         function updateDeviceContainer(ports) {
@@ -298,7 +305,7 @@
             if (!unconnected || !charger) return;
             let totalW = 0;
             for (const [id, port] of Object.entries(ports || {})) {
-                if (port.enabled && port.power > 0) totalW += port.power;
+                if (port.enabled !== false && port.power > 0) totalW += port.power;
             }
             if (totalW > 0) {
                 unconnected.classList.remove('show');
@@ -306,7 +313,7 @@
                 charger.classList.add('charging');
                 if (glow) glow.classList.add('active');
                 ['c1','c2','c3','a'].forEach(k => {
-                    const p = ports[PORT_KEY_TO_ID[k]] || { voltage:0,current:0,power:0,enabled:false };
+                    const p = ports[String(PORT_KEY_TO_ID[k])] || { voltage:0,current:0,power:0,enabled:false };
                     const mod = document.getElementById('usbMod' + k.toUpperCase());
                     const pval = document.getElementById('usbPval' + k.toUpperCase());
                     const active = p.enabled && p.power > 0;
@@ -336,8 +343,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ enabled: enable })
                 });
-                await new Promise(r => setTimeout(r, 500));
-                await fetchStatus();
+                // SSE status event will update UI
             } catch (e) {
                 console.error('BLE toggle error:', e);
             } finally {
@@ -357,12 +363,61 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ enabled: true })
                 });
-                setTimeout(fetchStatus, 2000);
+                // SSE status event will update UI
             }, 2000);
         }
 
         fetchStatus();
-        setInterval(fetchStatus, 2000);
+        // SSE: replace 2s polling
+        let latestPorts = {};
+        const evtSource = new EventSource(`${API_BASE}/api/events`);
+        evtSource.onopen = () => {};  // SSE init handles state sync
+        evtSource.onmessage = (e) => {
+            try {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'init') {
+                    latestPorts = msg.ports || {};
+                    applyFullStatus(msg);
+                }
+                if (msg.type === 'port_update' && msg.port_id && msg.data) {
+                    latestPorts[String(msg.port_id)] = msg.data;
+                    updateSummary(latestPorts);
+                    updateDeviceContainer(latestPorts);
+                }
+                if (msg.type === 'status') {
+                    bleConnected = msg.connected && msg.authenticated;
+                    const badge = document.getElementById('statusBadge');
+                    const text = document.getElementById('statusText');
+                    if (bleConnected) {
+                        badge.className = 'status-badge connected';
+                        text.textContent = '已连接';
+                    } else if (msg.connected) {
+                        badge.className = 'status-badge connected';
+                        text.textContent = '认证中...';
+                    } else {
+                        badge.className = 'status-badge disconnected';
+                        text.textContent = '未连接';
+                    }
+                    const btn = document.getElementById('bleToggle');
+                    if (bleConnected) { btn.textContent = '断开设备'; btn.className = 'btn btn-danger'; }
+                    else { btn.textContent = '连接设备'; btn.className = 'btn btn-primary'; }
+                    if (msg.firmware_version) {
+                        document.getElementById('firmwareVersion').textContent = '固件版本：' + msg.firmware_version;
+                    }
+                    if (!bleConnected) {
+                        // Disconnect: clear port data
+                        latestPorts = {};
+                        updateSummary({});
+                        updateDeviceContainer({});
+                    } else if (msg.ports) {
+                        // Reconnect: apply full state
+                        latestPorts = msg.ports;
+                        updateSummary(msg.ports);
+                        updateDeviceContainer(msg.ports);
+                    }
+                }
+            } catch (err) {}
+        };
     </script>
 </body>
 </html>

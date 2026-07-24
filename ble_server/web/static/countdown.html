@@ -159,35 +159,19 @@
             if (countdownPending[port]) return;
             countdownPending[port] = true;
             const id = PORT_KEY_TO_ID[port];
-            const btn = document.querySelector(`#countdownGrid .countdown-item:nth-child(${id}) .countdown-set-btn`);
             const statusEl = document.getElementById(`countdown-status-${port}`);
-            if (btn) { btn.disabled = true; btn.textContent = '设置中...'; }
-            const expectedText = minutes > 0 ? minutes + '分钟' : '未设置';
             const piid = COUNTDOWN_PIIDS[id];
-            if (!piid) { countdownPending[port] = false; if (btn) { btn.disabled = false; btn.textContent = '设置'; } return; }
+            if (!piid) { countdownPending[port] = false; return; }
             try {
-                await fetch(`${API_BASE}/api/set`, { 
-                    method: 'POST', 
-                    headers: { 'Content-Type': 'application/json' }, 
-                    body: JSON.stringify({ piid, value: minutes }) 
+                await fetch(`${API_BASE}/api/set`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ piid, value: minutes })
                 });
-                fetchStatus();
-                if (statusEl) {
-                    const observer = new MutationObserver(() => {
-                        if (statusEl.textContent === expectedText) {
-                            observer.disconnect();
-                            countdownPending[port] = false;
-                            if (btn) { btn.disabled = false; btn.textContent = '设置'; }
-                        }
-                    });
-                    observer.observe(statusEl, { childList: true, characterData: true, subtree: true });
-                    setTimeout(() => { observer.disconnect(); countdownPending[port] = false; if (btn) { btn.disabled = false; btn.textContent = '设置'; } }, 10000);
-                } else {
-                    setTimeout(() => { countdownPending[port] = false; if (btn) { btn.disabled = false; btn.textContent = '设置'; } }, 3000);
-                }
-            } catch (e) { 
-                countdownPending[port] = false; 
-                if (btn) { btn.disabled = false; btn.textContent = '设置'; } 
+                countdownPending[port] = false;
+                if (statusEl) statusEl.textContent = minutes > 0 ? minutes + '分钟' : '未设置';
+            } catch (e) {
+                countdownPending[port] = false;
             }
         }
 
@@ -200,7 +184,16 @@
         }
 
         fetchStatus();
-        setInterval(fetchStatus, 5000);
+        // SSE: listen for settings updates
+        const evtSource = new EventSource(`${API_BASE}/api/events`);
+        evtSource.onopen = () => {};  // SSE init handles state sync
+        evtSource.onmessage = (e) => {
+            try {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'init' && msg.settings) renderCountdown(msg.settings);
+                if (msg.type === 'settings' && msg.settings) renderCountdown(msg.settings);
+            } catch (err) {}
+        };
     </script>
 </body>
 </html>

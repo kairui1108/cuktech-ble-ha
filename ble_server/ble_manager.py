@@ -48,6 +48,7 @@ class BLEManager:
         self._stop_event = asyncio.Event()
         self._port_timer_task = None
         self._mqtt_publish = None
+        self._sse_emitter = None
         self._reconnect_attempts = 0
         self._decrypt_failures = 0
         self._auth_fail_count = 0
@@ -69,6 +70,14 @@ class BLEManager:
 
     def set_mqtt_publisher(self, publisher):
         self._mqtt_publish = publisher
+
+    def set_sse_emitter(self, emitter):
+        self._sse_emitter = emitter
+
+    def _sse_emit(self, event_type, data):
+        """Emit SSE event if emitter is connected."""
+        if self._sse_emitter:
+            self._sse_emitter.emit(event_type, data)
 
     def set_history(self, history):
         self._history = history
@@ -140,6 +149,15 @@ class BLEManager:
                 # Publish charge completion event via MQTT
                 self._publish_charge_event(piid, sid, es, timestamp,
                                            voltage, current, duration)
+                # Emit SSE session_end event for real-time UI update
+                self._sse_emit("session_end", {
+                    "session_id": sid,
+                    "port": PORT_NAMES.get(piid, str(piid)),
+                    "port_id": piid,
+                    "total_wh": round(es.session_wh, 4),
+                    "peak_power_w": round(es.max_power, 2),
+                    "duration_sec": duration,
+                })
                 task = asyncio.get_running_loop().run_in_executor(
                     None, self._history.end_session, sid,
                     round(es.session_wh, 4), round(es.max_power, 2),
@@ -320,11 +338,23 @@ class BLEManager:
                 await self._try_process_inline_frame(frame)
             self.ctrl.init_push_frames = []
 
+        # Build full state for status event
+        ports_data = {}
+        port_ctl = self.state.settings.get("16", 0x0F)
+        for piid, pname in PORT_NAMES.items():
+            ps = self.state.ports.get(piid)
+            port_data = ps.to_dict() if ps else dict(PORT_DEFAULT)
+            port_data["enabled"] = bool(port_ctl & (1 << (piid - 1)))
+            ports_data[str(piid)] = port_data
         self._publish_status({
             "connected": True,
             "authenticated": True,
             "device_model": self.ctrl.device_model,
             "firmware_version": self.ctrl.firmware_version,
+            "ports": ports_data,
+            "settings": self.state.settings,
+            "protocol_switches": self.state.protocol_switches,
+            "protocol_extend": self.state.protocol_extend,
         }, retain=True)
 
         await asyncio.sleep(2)
@@ -445,6 +475,12 @@ class BLEManager:
                 if not self.ctrl:
                     break
 
+                # Periodic settings refresh — runs regardless of BLE push activity
+                now = time.time()
+                if now - last_refresh > self.config.server.settings_refresh_interval:
+                    await self._refresh_settings()
+                    last_refresh = time.time()
+
                 try:
                     data = await asyncio.wait_for(
                         self.ctrl.wait_notify("cmd_recv"), timeout=2.0)
@@ -453,11 +489,6 @@ class BLEManager:
                     last_notify = time.time()
                 except asyncio.TimeoutError:
                     now = time.time()
-                    if now - last_refresh > self.config.server.settings_refresh_interval:
-                        await self._refresh_settings()
-                        now = time.time()
-                        last_refresh = now
-                        last_notify = now
                     if now - last_keepalive > 10:
                         if self.ctrl and self.ctrl.client and self.ctrl.client.is_connected:
                             try:
@@ -575,6 +606,8 @@ class BLEManager:
                                      self.state._hw_protocol_c3, self.state._hw_protocol_a, val32)
                     elif piid == 21:
                         await self.state.update_protocol_extend(result["value"])
+                        self._sse_emit("protocol", {"switches": self.state.protocol_switches,
+                                                     "protocol_extend": result["value"]})
             except Exception as e:
                 fail_count += 1
                 _LOGGER.debug("Failed to read PIID %d: %s", piid, e)
@@ -584,6 +617,53 @@ class BLEManager:
         await self.state.update_pdo_caps(pdo_caps)
         _invalidate()
         self._publish_settings(retain=True)
+        # Detect port control changes (PIID 16) — firmware may close ports via countdown
+        self._emit_port_control_changes()
+
+    def _emit_port_state(self, piid: int, port_info: dict = None):
+        """Unified port state emission: build data + publish MQTT + emit SSE.
+
+        Args:
+            piid: Port ID (1-4)
+            port_info: Optional pre-built port data dict (e.g. from BLE decode).
+                       If None, reads from state based on PIID 16 enabled flag.
+        """
+        port_ctl = self.state.settings.get("16", 0x0F)
+        is_enabled = bool(port_ctl & (1 << (piid - 1)))
+
+        if port_info is not None:
+            # Caller provided data (e.g. BLE push decoded data)
+            data = dict(port_info)
+            data["enabled"] = is_enabled and port_info.get("active", False)
+        elif is_enabled:
+            # Port enabled — use current state
+            ps = self.state.ports.get(piid)
+            data = ps.to_dict() if ps else dict(PORT_DEFAULT)
+            data["enabled"] = True
+        else:
+            # Port disabled — use zeros
+            data = dict(PORT_DEFAULT)
+            data["enabled"] = False
+
+        self._publish_port(PORT_NAMES[piid], data, retain=True)
+        self._sse_emit("port_update", {"port_id": piid, "port": PORT_NAMES[piid], "data": data})
+
+    def _emit_port_control_changes(self):
+        """Check if PIID 16 (port control) changed and emit SSE events for affected ports."""
+        new_ctl = self.state.settings.get("16", 0x0F)
+        old_ctl = getattr(self, '_last_port_ctl', None)
+        self._last_port_ctl = new_ctl
+        if old_ctl is None or old_ctl == new_ctl:
+            return
+        for piid in range(1, 5):
+            bit = 1 << (piid - 1)
+            was_on = bool(old_ctl & bit)
+            now_on = bool(new_ctl & bit)
+            if was_on != now_on:
+                self._emit_port_state(piid)
+                _LOGGER.info("Port %s %s (PIID16 changed: 0x%02X→0x%02X)",
+                             PORT_NAMES[piid], "enabled" if now_on else "disabled",
+                             old_ctl, new_ctl)
 
     async def _read_initial_settings(self):
         await self._fetch_settings(update_existing=False)
@@ -618,6 +698,8 @@ class BLEManager:
             # 同步协议扩展缓存，防止后续 toggle 读到过期值
             if piid == 21:
                 await self.state.update_protocol_extend(value)
+                self._sse_emit("protocol", {"switches": self.state.protocol_switches,
+                                             "protocol_extend": value})
             _invalidate()
             self._publish_settings(retain=True)
             if cmd_future and not cmd_future.done():
@@ -642,13 +724,19 @@ class BLEManager:
             if new_val != cur_val:
                 await self.ctrl.send_miot_command(2, 16, value=new_val)
                 await self.state.update_settings({"16": new_val})
-                # 端口关闭时清零端口数据
-                if action == "off" and port != "all":
+                # Emit port state for all changed ports (SSE + MQTT)
+                if port == "all":
+                    for piid in range(1, 5):
+                        if not bool(new_val & (1 << (piid - 1))):
+                            await self.state.update_port(piid, PORT_DEFAULT)
+                        self._emit_port_state(piid)
+                else:
                     piid = {"c1": 1, "c2": 2, "c3": 3, "a": 4}.get(port)
                     if piid:
-                        await self.state.update_port(piid, PORT_DEFAULT)
-                        _invalidate()
-                        self._publish_port(PORT_NAMES[piid], PORT_DEFAULT, retain=True)
+                        if action == "off":
+                            await self.state.update_port(piid, PORT_DEFAULT)
+                        self._emit_port_state(piid)
+                _invalidate()
             _invalidate()
             self._publish_settings(retain=True)
             if cmd_future and not cmd_future.done():
@@ -731,7 +819,7 @@ class BLEManager:
                 await self.state.update_port(piid, port_info)
                 if old is None or old.to_dict() != port_info:
                     _invalidate()
-                    self._publish_port(PORT_NAMES[piid], port_info, retain=True)
+                    self._emit_port_state(piid, port_info)
 
                 # ── Data processing: runs on EVERY push, not gated by change detection ──
                 voltage = port_info.get("voltage", 0)
@@ -858,10 +946,12 @@ class BLEManager:
     def _publish_status(self, payload, retain=False):
         if self._mqtt_publish:
             self._mqtt_publish(self.config.topic_status, payload, retain=retain)
+        self._sse_emit("status", payload)
 
     def _publish_settings(self, retain=False):
         if self._mqtt_publish:
             self._mqtt_publish(self.config.topic_settings, self.state.settings, retain=retain)
+        self._sse_emit("settings", {"settings": self.state.settings})
 
     def _publish_port(self, port_name, data, retain=False):
         if self._mqtt_publish:

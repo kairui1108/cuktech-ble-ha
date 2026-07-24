@@ -220,7 +220,7 @@
                 if (toggle) toggle.checked = !on;
             } finally {
                 if (toggle) toggle.disabled = false;
-                fetchStatus();
+                // SSE port_update will update UI
             }
         }
 
@@ -232,11 +232,25 @@
             } catch (e) {}
         }
 
-        async function poll() {
-            await fetchStatus();
-            setTimeout(poll, 1000);
-        }
-        poll();
+        fetchStatus();
+        // SSE: replace 1s polling
+        const latestPorts = {};
+        const evtSource = new EventSource(`${API_BASE}/api/events`);
+        evtSource.onopen = () => {};  // SSE init handles state sync
+        evtSource.onmessage = (e) => {
+            try {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'init') {
+                    Object.assign(latestPorts, msg.ports || {});
+                    renderPorts(latestPorts);
+                }
+                if (msg.type === 'port_update' && msg.port_id && msg.data) {
+                    latestPorts[String(msg.port_id)] = msg.data;
+                    renderPorts(latestPorts);
+                    if (currentModalPort === msg.port_id) fetchModalData();
+                }
+            } catch (err) {}
+        };
     </script>
 </body>
 </html>

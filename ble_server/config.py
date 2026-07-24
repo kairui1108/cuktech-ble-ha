@@ -61,7 +61,7 @@ class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 8199
     command_timeout: float = 10.0
-    settings_refresh_interval: float = 60.0
+    settings_refresh_interval: float = 10.0
     log_level: str = "info"
     history_retention_days: int = 2
     history_db_path: str = "port_history.db"

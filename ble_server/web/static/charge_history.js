@@ -270,6 +270,12 @@ function startChargeHistoryAutoRefresh(containerId, statsId, period, interval) {
     window._chPeriod = period;
     refreshChargeHistory();
     setInterval(refreshChargeHistory, interval || 30000);
+    // SSE: refresh immediately on session completion
+    // Listen for CustomEvent dispatched by main SSE handler (avoids second SSE connection)
+    if (!window._chSseListening) {
+        window._chSseListening = true;
+        window.addEventListener('sse-session-end', () => refreshChargeHistory());
+    }
 }
 
 function refreshChargeHistory() {

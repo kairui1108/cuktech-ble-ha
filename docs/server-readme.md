@@ -8,7 +8,8 @@
 
 - **BLE 连接与 MiOT 认证**：自动连接充电器，支持断线自动重连
 - **BLE 连接稳定性**：power cycle 后 LL 断连确认、GATT 就绪等待、指数退避重连
-- **实时数据推送**：通过 MQTT 发布电压、电流、功率、协议等数据
+- **实时数据推送**：通过 SSE 事件流实时推送端口数据、状态变更至 Web 前端，MQTT 推送至 HA
+- **SSE 事件流**：Server-Sent Events 即时推送端口更新、状态切换、设置变更，替代 2s 轮询
 - **协议检测**：自动识别 PD / PD Fixed / PD PPS / QC / USB-A 充电协议
 - **协议开关控制**：通过 API 独立控制各端口 PD/PPS/UFCS/SCP 协议开关
 - **Web 管理界面**：实时功率曲线图、端口控制、协议控制、设备设置、巴法云启停，支持 6 种主题
@@ -244,6 +245,7 @@ cd systemd && ./install-service.sh
 
 ### 功能
 
+- **SSE 实时推送**：端口数据、状态变更通过 SSE 事件流即时更新，Web 界面无需轮询
 - **设备信息**：连接状态、BLE 控制、总功率、最高电压
 - **功率曲线**：Chart.js 实时折线图，显示各端口及总功率趋势
 - **端口监控**：C1/C2/C3/A 四端口独立控制，显示电压、电流、功率、协议
@@ -272,6 +274,7 @@ cd systemd && ./install-service.sh
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
+| `/api/events` | GET | SSE 事件流（端口数据、状态、设置实时推送） |
 | `/api/status` | GET | 获取充电器完整状态 |
 | `/api/enable` | POST | 启用/禁用 BLE 连接 `{"enabled": true/false}` |
 | `/api/set` | POST | 设置 PIID 值 `{"piid": N, "value": V}` |
