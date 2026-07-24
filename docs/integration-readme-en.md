@@ -120,7 +120,7 @@ Re-authentication supported when server URL changes.
 ### Known Limitations
 
 - **Single Device**: Current architecture supports only one charger at a time. Multi-device support is planned for future releases.
-- **Protocol Detection**: Charging protocol identification (PD/QC/USB-A etc.) is inferred from port voltage and PDO data, and may not always match the actual protocol.
+- **Protocol Detection**: Hardware protocol codes (PIID 17/18) are consistent with the Xiaomi Home app, refreshed every ~60s — protocol changes during the interval may appear delayed; falls back to heuristic inference when hardware codes are unavailable
 - **Platform Support**: Development and testing are done exclusively on Linux. Compatibility with other platforms (macOS, Windows) has not been verified — use at your own risk.
 
 ## License

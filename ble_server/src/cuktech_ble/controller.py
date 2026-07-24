@@ -62,6 +62,7 @@ class CuktechBLEController:
         self.firmware_version: str = ""
         self._miot_seq = 1
         self._session_keys = None
+        self.init_push_frames = []  # 认证后初始推送的 inline 帧
 
     def _make_notify_handler(self, name):
         """创建通知回调函数 (基于队列，避免竞态条件)。"""
@@ -83,6 +84,16 @@ class CuktechBLEController:
         try:
             return await asyncio.wait_for(queue.get(), timeout)
         except asyncio.TimeoutError:
+            return None
+
+    def get_pending_notify(self, name):
+        """Non-blocking: get one pending notification if available, else None."""
+        queue = self._notify_queues.get(name)
+        if not queue:
+            return None
+        try:
+            return queue.get_nowait()
+        except asyncio.QueueEmpty:
             return None
 
     async def _recv_auth_response(self, channel, label="数据"):
@@ -153,16 +164,25 @@ class CuktechBLEController:
                 except asyncio.QueueEmpty:
                     break
 
-        # 提前订阅所有通知通道 (避免 CCCD 订阅延迟导致丢失通知)
+        # 订阅通知通道 — 对齐米家时序:
+        # 第一批: cmd_recv, cmd_send, dev_info
         for char, name in [
-            (CHAR_AUTH_CTRL, "auth_ctrl"), (CHAR_AUTH_DATA, "auth_data"),
-            (CHAR_CMD_SEND, "cmd_send"), (CHAR_CMD_RECV, "cmd_recv"),
+            (CHAR_CMD_RECV, "cmd_recv"),
+            (CHAR_CMD_SEND, "cmd_send"),
+            (CHAR_DEVICE_INFO, "dev_info"),
         ]:
             try:
                 await self.client.start_notify(char, self._make_notify_handler(name))
             except Exception as e:
                 _LOGGER.warning("Failed to subscribe %s: %s", name, e)
-        _LOGGER.info("All notification channels subscribed")
+
+        # 第二批: auth_data (密钥交换前订阅)
+        try:
+            await self.client.start_notify(CHAR_AUTH_DATA, self._make_notify_handler("auth_data"))
+        except Exception as e:
+            _LOGGER.warning("Failed to subscribe auth_data: %s", e)
+
+        _LOGGER.info("Notification channels subscribed (deferred auth_ctrl)")
 
         return True
 
@@ -343,6 +363,12 @@ class CuktechBLEController:
                         break
 
         # ---- Phase B: 登录认证 (CMD_LOGIN) ----
+        # 对齐米家: 订阅 auth_ctrl (0x0010) 在密钥交换之后、CMD_LOGIN 之前
+        try:
+            await self.client.start_notify(CHAR_AUTH_CTRL, self._make_notify_handler("auth_ctrl"))
+            _LOGGER.debug("  [2/5] Subscribed auth_ctrl (0x0010)")
+        except Exception as e:
+            _LOGGER.debug("  [2/5] auth_ctrl subscribe: %s", e)
         _LOGGER.info("  [2/5] 发送登录命令 (CMD_LOGIN=0x24)...")
         await asyncio.sleep(0.05)
         CMD_LOGIN = bytes([0x24, 0x00, 0x00, 0x00])
@@ -446,8 +472,77 @@ class CuktechBLEController:
 
         # 等待 RCV_OK
         data = await self.wait_notify("auth_data", timeout=3.0)
-        if data:
-            _LOGGER.debug("  ACK: %s", data.hex())
+        _LOGGER.debug("  Phase5 ACK: %s", data.hex() if data else 'None')
+
+        # ---- 认证第二轮: 挑战-应答 + 第二轮 auth response ----
+        # Frida 抓到的完整序列:
+        # R: challenge (0x0d, 16B)  → W: keepalive
+        # R: response  (0x0c, 32B)  → W: keepalive → W: ACK → R: RCV_RDY
+        # W: second auth response (0x0c, 32B) → R: RCV_OK
+        try:
+            deadline = asyncio.get_event_loop().time() + 8.0
+            challenge_data = None
+            response_data = None
+
+            while asyncio.get_event_loop().time() - deadline < 0:
+                break
+
+            # 读取 challenge + response + RCV_RDY
+            while asyncio.get_event_loop().time() - deadline < 0:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    break
+                data = await self.wait_notify("auth_data", timeout=min(remaining, 3.0))
+                if not data:
+                    continue
+                _LOGGER.debug("  Phase6 auth_data: %s", data.hex())
+
+                # Challenge: 00 00 02 0d [16B]
+                if len(data) >= 3 and data[2] == 0x0d:
+                    challenge_data = data
+                    _LOGGER.debug("  Phase6: challenge received (%dB)", len(data))
+                    # 发送 keepalive
+                    await self.client.write_gatt_char(
+                        CHAR_AUTH_DATA, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
+
+                # Response: 00 00 02 0c [32B]
+                elif len(data) >= 3 and data[2] == 0x0c:
+                    response_data = data
+                    _LOGGER.debug("  Phase6: response received (%dB)", len(data))
+                    # 发送 keepalive
+                    await self.client.write_gatt_char(
+                        CHAR_AUTH_DATA, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
+
+                    # 发送 ACK
+                    await self.client.write_gatt_char(
+                        CHAR_AUTH_DATA, bytes([0x00, 0x00, 0x00, 0x0a, 0x01, 0x00]), response=False)
+
+                # RCV_RDY: 00 00 01 01
+                elif data == bytes([0x00, 0x00, 0x01, 0x01]):
+                    _LOGGER.debug("  Phase6: RCV_RDY received")
+                    break
+
+                # RCV_OK: 00 00 01 00 (可能直接跳到 auth_ctrl)
+                elif data == bytes([0x00, 0x00, 0x01, 0x00]):
+                    _LOGGER.debug("  Phase6: RCV_OK, skipping to auth_ctrl")
+                    break
+
+            # 发送第二轮 auth response
+            if response_data:
+                # 构造第二轮 auth response: header=01 00, opcode=0c, data=响应
+                auth_resp_payload = bytes([0x01, 0x00, 0x0c]) + response_data[3:]
+                _LOGGER.debug("  Phase6: sending 2nd auth response (%dB)", len(auth_resp_payload))
+                await self.client.write_gatt_char(
+                    CHAR_AUTH_DATA, auth_resp_payload, response=False)
+
+                # 等待 RCV_OK
+                data = await self.wait_notify("auth_data", timeout=3.0)
+                _LOGGER.debug("  Phase6: post-response ACK: %s", data.hex() if data else 'None')
+
+        except asyncio.TimeoutError:
+            _LOGGER.debug("  Phase6: timeout (may be OK)")
+        except Exception as e:
+            _LOGGER.debug("  Phase6: error %s (continuing)", e)
 
         # ---- 等待认证结果 ----
         result = await self.wait_notify("auth_ctrl", timeout=5.0)
@@ -473,7 +568,12 @@ class CuktechBLEController:
         return self.authenticated
 
     async def _drain_device_push(self):
-        """消耗设备认证后的自动推送数据。"""
+        """消耗设备认证后的自动推送数据。
+
+        保存 inline 帧 (0x02) 到 init_push_frames 供主循环处理，
+        不再丢弃端口数据。
+        """
+        self.init_push_frames = []
         _LOGGER.debug("Waiting for device init push...")
         push_count = 0
         start = asyncio.get_running_loop().time()
@@ -481,7 +581,6 @@ class CuktechBLEController:
         max_push_count = 60
 
         while True:
-            # 防止设备持续推送导致这里永远不退出
             if push_count >= max_push_count:
                 _LOGGER.debug("Init push limit reached (%d), stopping drain", max_push_count)
                 break
@@ -508,10 +607,13 @@ class CuktechBLEController:
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
             elif data[2] == 0x02:
+                # 保存 inline 帧供主循环处理（端口数据）
+                self.init_push_frames.append(data)
                 await self.client.write_gatt_char(
                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
 
-        _LOGGER.debug("Drained %d push messages", push_count)
+        _LOGGER.debug("Drained %d push messages, saved %d inline frames",
+                      push_count, len(self.init_push_frames))
 
     # ---- 加密命令通道 ----
 
@@ -570,18 +672,8 @@ class CuktechBLEController:
         """认证成功后，初始化命令通道 (已在 connect 中预订阅)。"""
         self._send_it = 0
         self._miot_seq = 1  # MiOT 命令序列号 (从1开始)
-        # CMD 通道已在 connect() 中提前订阅，这里只需清空队列并处理推送
         await asyncio.sleep(0.5)
-        # 正确处理认证期间可能积累的 CMD 通知 (必须 ACK，否则设备会停止发送)
         await self._drain_pending_pushes()
-        # 也清空 cmd_send 队列
-        q = self._notify_queues.get("cmd_send")
-        if q:
-            while True:
-                try:
-                    q.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
         _LOGGER.info("Command channel ready")
 
         # 等待并消耗设备认证后自动推送的数据

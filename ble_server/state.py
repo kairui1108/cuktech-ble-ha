@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Optional
 
 from src.cuktech_ble.protocol import PDO_KIND_BY_HIGH_BYTE
 
@@ -81,6 +81,12 @@ class ChargerState:
         self._cache_valid = False
         # PIID 21 协议扩展控制值
         self._protocol_extend: int = 0
+        # PIID 17 硬件协议代码 (C1, C2) — 来自 c1_c2_protocol Spec 属性
+        self._hw_protocol_c1: int = 0
+        self._hw_protocol_c2: int = 0
+        # PIID 18 硬件协议代码 (C3, A) — 来自 c3_a_protocol Spec 属性
+        self._hw_protocol_c3: int = 0
+        self._hw_protocol_a: int = 0
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -174,6 +180,31 @@ class ChargerState:
             self.pdo_caps = pdo_caps
             self._invalidate_cache()
 
+    def set_hw_protocol_codes(self, c1: int, c2: int):
+        """设置 PIID 17 解析出的硬件协议代码。零值不覆盖已有值。"""
+        if c1 > 0:
+            self._hw_protocol_c1 = c1
+        if c2 > 0:
+            self._hw_protocol_c2 = c2
+
+    def set_hw_protocol_codes_c3a(self, c3: int, a: int):
+        """设置 PIID 18 解析出的硬件协议代码。零值不覆盖已有值。"""
+        if c3 > 0:
+            self._hw_protocol_c3 = c3
+        if a > 0:
+            self._hw_protocol_a = a
+
+    def get_hw_protocol(self, piid: int) -> Optional[int]:
+        """获取硬件协议代码 (来自 PIID 17/18)"""
+        _map = {
+            1: self._hw_protocol_c1,
+            2: self._hw_protocol_c2,
+            3: self._hw_protocol_c3,
+            4: self._hw_protocol_a,
+        }
+        val = _map.get(piid, 0)
+        return val or None
+
     async def update_protocol_extend(self, value: int):
         """Update PIID 21 protocol extend value."""
         async with self._lock:
@@ -213,20 +244,9 @@ class ChargerState:
             return self._cache
 
 
-def decode_port(piid, pt, pdo_data=None, protocol_switches=None):
-    """解码端口数据，使用 V2 协议检测引擎.
-
-    Args:
-        piid: 端口 ID (1-4)
-        pt: 解密后的 MiOT 属性负载 (bytes)
-        pdo_data: PDO 能力信息 (可选, PIID 17/18)
-        protocol_switches: PIID 21 当前协议开关状态 (可选)
-
-    Returns:
-        端口数据字典: {voltage, current, power, active, protocol, ...}
-        或 None (数据无效)
-    """
-    return _decode_port_v2(piid, pt, pdo_data, protocol_switches=protocol_switches)
+def decode_port(piid, pt, pdo_data=None, protocol_switches=None, hw_protocol=None):
+    """解码端口数据，使用 V2 协议检测引擎."""
+    return _decode_port_v2(piid, pt, pdo_data, protocol_switches=protocol_switches, hw_protocol=hw_protocol)
 
 
 def decode_pdo_caps(value, high_port, low_port):

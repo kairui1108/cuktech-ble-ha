@@ -52,12 +52,24 @@ function parsePortInfo(index, value) {
 
 **等价的 Python 解析:**
 ```python
-spec_val = int.from_bytes(raw[-4:], 'little')
+spec_val = value  # unsigned 32-bit integer from JSON
 voltage = (spec_val >> 24) & 0xFF  # /10 = V
 current = (spec_val >> 16) & 0xFF  # /10 = A
 protocol = (spec_val >> 8) & 0xFF  # 1-10
 status = spec_val & 0xFF
 ```
+
+**Frida 实测验证 (2026-07-22, 固件 2.1.2_0073):**
+
+| 端口 | piid | 32-bit value | hex | V | I | proto | getC1C2ProtocolStr |
+|------|------|-------------|-----|---|---|-------|-------------------|
+| C1 | 1 | 855836417 | 0x33030701 | 5.1V | 0.3A | **7** | **PD** |
+| C1 | 1 | 855705345 | 0x33010701 | 5.1V | 0.1A | **7** | **PD** |
+| C2 | 2 | 3372614657 | 0xC9060401 | 20.1V | 0.6A | **4** | **AFC** |
+| C2 | 2 | 3372483585 | 0xC9040401 | 20.1V | 0.4A | **4** | **AFC** |
+| C2 | 2 | 3372680193 | 0xC9070401 | 20.1V | 0.7A | **4** | **AFC** |
+
+协议号来自设备固件，在 BLE Spec 通知的 32-bit packed value 中**直接嵌入**，无需启发式推算。
 
 ---
 
@@ -592,3 +604,282 @@ plaintext = bytes([0x0c, 0x20, seq, 0x00, ...])  # 始终用 0x0c=12
 
 测试工具: `docs/tools/test_piid21_bare.py`<br/>
 完整分析: `docs/bug.md`
+
+---
+
+## 十、Frida 实测 Spec 通道初始化与协议号数据流
+
+> 分析日期: 2026-08-06
+> 设备: M2102J2SC (Xiaomi thyme, Android 16), Frida 17.9.11
+> 脚本: `docs/frida/frida_hook_spec_init.js` (v2)
+
+### 关键发现：插件运行在独立进程
+
+CUKTECH 插件运行在 `com.xiaomi.smarthome:plugin0` 进程（PID 32688），**不是**主进程（PID 4108）。
+`TinyEventReceiver`、`RNEventReceiver`、`BLESpecNotifyActionEvent` 等事件分发都在 plugin0 进程中。
+
+**Frida 必须同时 attach 到两个进程：**
+- 主进程：捕获 Spec 通道握手 + `fq0` 解密回调
+- plugin0 进程：捕获 `ble.spec.notify` JSON（含协议号的 32-bit 值）
+
+### Spec 通道初始化握手序列（完整捕获）
+
+```
+[握手阶段]
+00 01 03                           → 通道类型标识（cmd_send通道）
+03 07 48 53 36 36 32 31 43         → 芯片型号 "HS6621C"
+00 00 04 00 06 f2                   → 握手响应
+00 00 04 01 f2 f2...f2 (244B)      → 密钥交换（0xf2 padding）
+00 00 01 01                         → 握手确认
+00 00 02 0d b2 ed 79 7a e6 88...   → 加密数据包 A（认证）
+00 00 02 0c 03 df c2 e6 ce 56...   → 加密数据包 B（认证）
+00 00 01 00                         → 握手完成
+21 00 00 00                         → 通道就绪
+
+[Spec 属性读取 — getWriter 触发]
+FQ0 回调: code=0, result=String "2.1.2_0073"  ← 固件版本
+00 00 02 00 01 00 44 3d c7 b8 af...  → 属性帧 1 (21B)
+00 00 02 00 02 00 8b 2a 6d 8e 61...  → 属性帧 2 (11B)
+00 00 02 00 03 00 8b d1 3f 2e c2...  → 属性帧 3 (157B)
+...
+00 00 02 00 09 00 dd 60 9b bc 58...  → 属性帧 9 (21B)
+```
+
+### 解码的 32-bit 端口值（Frida plugin0 进程捕获）
+
+```json
+{"mac":"3C:CD:73:34:AE:59","opcode":4,"objects":[
+  {"siid":2,"piid":1,"type":5,"value":855967489,"code":-1},
+  {"siid":2,"piid":2,"type":5,"value":3372811265,"code":-1}
+]}
+```
+
+解码结果：
+
+| 端口 | 原始值 | hex | voltage | current | protocol | 状态 |
+|------|--------|-----|---------|---------|----------|------|
+| C1 (piid=1) | 855967489 | 0x33050701 | 5.1V | 0.5A | 7 (PD) | 1 (on) |
+| C2 (piid=2) | 3372811265 | 0xC9090401 | 20.1V | 0.9A | 4 (AFC) | 1 (on) |
+| C1 (piid=1) | 855836417 | 0x33040701 | 5.1V | 0.4A | 7 (PD) | 1 (on) |
+| C2 (piid=2) | 3372745729 | 0xC9080401 | 20.1V | 0.8A | 4 (AFC) | 1 (on) |
+| C2 (piid=2) | 3372614657 | 0xC9060401 | 20.1V | 0.6A | 4 (AFC) | 1 (on) |
+
+### Frida Hook 脚本配置
+
+```bash
+# 主进程 — 捕获握手 + 解密回调
+frida -U -p <main_PID> -l frida_hook_spec_init.js
+
+# plugin0 进程 — 捕获 ble.spec.notify JSON
+frida -U -p <plugin0_PID> -l frida_hook_spec_init.js
+```
+
+hook 组件：
+- `IPCChannelManager$NotifyReceiver` — character_changed 广播
+- `SpecChannelManager$NotifyReceiver` — Spec 通道广播
+- `SpecChannelManager$1.onRead` — cmd_send 数据到达
+- `fq0.onResponse` — 解密回调（注意：result 可能是 String 不是 byte[]）
+- `TinyEventReceiver` — ble.spec.notify JSON 分发
+- `RNEventReceiver` — RN 事件转发
+- `OooO0o.OooOO0O` — getWriter 调用
+- `mp0` — 加密/解密方法列表
+
+### 对 ble_server 实现的影响
+
+要获取硬件协议号，ble_server 需要：
+1. **实现 Spec 通道初始化握手**（9 步：类型标识→芯片识别→密钥交换→认证→完成→就绪）
+2. **订阅 cmd_send (0x001a) 通知**（与 MiOT 共用同一 GATT 特征）
+3. **解密 Spec 数据**（AES-CCM，与 MiOT 共用 key，nonce 构造不同）
+4. **解析 TLV 编码**（siid=2, piid=1-4 → 32-bit packed value → 提取 bits 15-8 = protocol）
+
+握手协议需进一步逆向 gr1.smali 状态机逻辑。
+
+---
+
+## 十一、Spec 通道初始化握手协议（Frida 实测）
+
+> 分析日期: 2026-07-22
+> 数据源: Frida hook `frida_hook_spec_init.js`，同时 hook 主进程和 plugin 进程
+
+### 握手流程（cmd_send 0x001a 上的完整序列）
+
+设备连接并认证后，Mi Home 通过 cmd_send 建立 Spec 通道。以下为 Frida 捕获的完整握手序列：
+
+```
+===== 第一阶段：通道类型标识 =====
+[01] → Device → App: 通道类型请求
+  00 01 03                           → 类型标识 (3 字节)
+
+[02] → App → Device: 响应
+  03 07 48 53 36 36 32 31 43         → "HS6621C"（充电器 BLE 芯片型号）
+
+===== 第二阶段：密钥交换 =====
+[03] → Device → App: 密钥交换请求
+  00 00 04 00 06 f2                   → 握手命令
+
+[04] → Device → App: 密钥交换数据
+  00 00 04 01 [244 字节 0xf2]         → 加密密钥（全 0xf2 填充）
+
+[05] → Device → App: 握手确认
+  00 00 01 01                         → 握手确认
+
+===== 第三阶段：认证 =====
+[06] → Device → App: 认证数据包 1
+  00 00 02 0d [16B 加密数据]          → 认证 challenge
+
+[07] → Device → App: 认证数据包 2
+  00 00 02 0c [32B 加密数据]          → 认证 response
+
+[08] → Device → App: 认证完成
+  00 00 01 00                         → 认证通过
+
+[09] → Device → App: 通道就绪
+  21 00 00 00                         → Spec 通道就绪
+```
+
+### 帧格式分析
+
+cmd_send 上的数据帧遵循 MiOT 传输层协议：
+
+```
+[header: 2B LE] [payload...]
+```
+
+**header 编码**：
+- `bits 15-12`: 帧类型 (0=控制, 2=数据)
+- `bits 11-0`: payload 长度
+
+**关键帧类型**：
+
+| header | 含义 | payload |
+|--------|------|---------|
+| `01 00` | 控制帧（3字节 payload） | 通道类型标识 |
+| `03 00` | 控制帧（芯片信息） | ASCII 芯片型号 |
+| `04 00 00 00` | 密钥交换命令 | 密钥数据 |
+| `01 00 00 00` | 握手确认/完成 | 状态码 |
+| `02 00 00 00` | 认证帧 | 加密认证数据 |
+| `21 00 00 00` | 通道就绪 | - |
+
+### Spec 属性读取（getWriter 触发）
+
+通道建立后，插件调用 `OooO0o.OooOO0O(mac)` 获取 writer，触发批量属性读取。
+
+ON-READ 回调接收到的帧格式（帧号 01-09）：
+
+```
+[帧号: 1B] [00: 1B] [加密 TLV 数据...]
+```
+
+| 帧号 | 数据长度 | 说明 |
+|------|---------|------|
+| 01 | 21B | 单帧属性（固件版本 2.1.2_0073） |
+| 02 | 11B | 单帧属性 |
+| 03 | 153B | **多帧属性**（端口数据 PIID1-4） |
+| 04 | 21B | 单帧属性 |
+| 05 | 153B | **多帧属性** |
+| 06 | 21B | 单帧属性 |
+| 07 | 153B | **多帧属性** |
+| 08 | 21B | 单帧属性 |
+| 09 | 21B | 单帧属性 |
+
+### fq0.onResponse 特殊行为
+
+`fq0.onResponse` 是解密回调，但实测发现：
+- **code=0 时 result 可能是 String**（不是 byte[]），如固件版本 `"2.1.2_0073"`
+- 这意味着 `mp0.OooO0O0` 解密路径有多个分支，部分返回 String
+
+### 数据分发流程
+
+```
+cmd_send 通知 → SpecChannelManager$NotifyReceiver.onReceive(character_changed)
+  → gr1 状态机帧重组
+    → SpecChannelManager$1.onRead(mac, data, 0)
+      → mp0.OooO0O0(mac, data, callback)  // AES-CCM 解密
+        → fq0.onResponse(code, result)
+          → 广播 "action.miot.receive.specv2.ble.data" {mac, value: byte[]}
+            → [中间层 - 在插件 dex 中] TLV 解析 + 32-bit packed 构造
+              → 广播 "com.xiaomi.smarthome.ble.spec.notify" {json, packageName}
+                → TinyEventReceiver / RNEventReceiver
+                  → RCTDeviceEventEmitter → PluginRNActivity
+                    → JS: BLESpecNotifyActionEvent → parsePortInfo()
+```
+
+### 关键发现
+
+1. **Spec 通道数据在独立进程（plugin0/plugin1）中处理**，不在主进程
+2. **`ble.spec.notify` 广播在插件进程内发送**，主进程只发 `action.miot.receive.specv2.ble.data`
+3. **中间层（TLV→32-bit 转换）位于插件 dex 中**，非主 APK
+4. **协议号 7(PD)/4(AFC) 是设备固件直接报告**，非 SDK 计算
+
+### Frida Hook 文件
+
+| 文件 | 用途 |
+|------|------|
+| `frida_hook_spec_init.js` | 初始版：IPC/Spec 通道 + fq0 + Tiny/RN |
+| `frida_hook_spec_full.js` | 完整版：加 LBM 广播拦截 + RN emit hook |
+| `frida_hook_spec_handshake.js` | 双向追踪：GATT write + setNotify + ON-READ |
+
+### 完整双向握手协议（Frida 实测确认）
+
+> 日期: 2026-07-22
+
+#### GATT 特征 UUID 映射
+
+| UUID 短名 | 用途 | 方向 |
+|-----------|------|------|
+| `0x001a` (CMD_SEND) | Spec 通知通道 | 设备→App (notify) |
+| `0x001b` (CMD_RECV) | MiOT 命令通道 | App→设备 (write) |
+| `0x0019` | **Spec 写入通道** | App→设备 (write) |
+| `0x001c` | 控制通道 | 双向 |
+| `0x0010` | 控制通道 | 双向 |
+
+#### 完整握手序列
+
+```
+1. 订阅所有 5 个特征的通知
+   setNotify(0x001b, true)  → MiOT cmd_recv
+   setNotify(0x001a, true)  → Spec 通知
+   setNotify(0x001c, true)  → 控制
+   setNotify(0x0019, true)  → Spec 写入
+   setNotify(0x0010, true)  → 控制
+
+2. 设备自动开始握手（推送在 cmd_send 0x001a 上）:
+   [设备→App] 00 01 03                              → 通道类型请求
+   [设备→App] 03 07 48 53 36 36 32 31 43            → 芯片型号 "HS6621C"
+
+3. 密钥交换:
+   [设备→App] 00 00 04 00 06 f2                      → 密钥请求 (type=4, sub=0)
+   [设备→App] 00 00 04 01 [244B 0xf2]                → 密钥材料 (type=4, sub=1)
+
+4. App 通过 0x0019 回复:
+   [App→设备] 00 00 05 00 06 f2                      → 密钥响应 (type=5, sub=0)
+   [App→设备] 00 00 05 01 [244B 0xf2]                → 密钥响应数据 (type=5, sub=1)
+
+5. 控制通道:
+   [App→设备] via 0x0010: 24 00 00 00                → 控制命令
+   [App→设备] via 0x0019: 00 00 00 0b 01 00          → ACK
+
+6. 认证:
+   [App→设备] via 0x0019: 01 00 0d 26 50 0d 73 1f   → 认证响应 (加密)
+                           22 68 88 04 2e 45 b5 eb a7 96
+
+7. 保活:
+   [App→设备] via 0x0019: 00 00 03 00                → 保活帧
+
+8. 之后设备开始推送属性（cmd_send 0x001a）:
+   ON-READ 帧号 01-0a，包含端口数据
+```
+
+#### 关键发现
+
+- **0x0019 是缺失的关键特征**：App 必须通过 0x0019 回复设备的握手，否则设备不会推送属性
+- **密钥交换使用 type=5（设备用 type=4）**：App 响应的 type 编号比设备大 1
+- **认证数据是 16B 加密数据**：使用已有的 MiOT session key + AES-CCM
+- **握手完成后，属性数据自动推送在 cmd_send (0x001a) 上**
+
+#### ble_server 需要新增
+
+1. **订阅 0x0019 和 0x0010 的通知**（当前只订阅了 0x001a 和 0x001b）
+2. **在 0x0019 上发送握手响应**（type=5 密钥响应 + 认证响应）
+3. **在 0x0010 上发送控制命令**（24 00 00 00）
+4. **解析 cmd_send 上的 Spec TLV 数据**（提取 32-bit packed value → protocol）

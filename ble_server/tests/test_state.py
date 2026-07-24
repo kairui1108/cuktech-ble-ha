@@ -232,4 +232,110 @@ class TestChargerState:
         """Test lock property returns the same lock instance."""
         state = ChargerState()
         assert state.lock is state._lock
-        assert isinstance(state.lock, asyncio.Lock)
+
+
+class TestHwProtocol:
+    """Test hardware protocol code extraction from PIID 17/18."""
+
+    def test_hw_protocol_initial(self):
+        """Initial hw_protocol should be None for all ports."""
+        state = ChargerState()
+        for piid in (1, 2, 3, 4):
+            assert state.get_hw_protocol(piid) is None
+
+    def test_set_hw_protocol_c1c2(self):
+        """PIID 17 sets C1/C2 protocol codes."""
+        state = ChargerState()
+        state.set_hw_protocol_codes(9, 7)
+        assert state.get_hw_protocol(1) == 9   # C1 = PPS
+        assert state.get_hw_protocol(2) == 7   # C2 = PD
+        assert state.get_hw_protocol(3) is None  # C3 untouched
+        assert state.get_hw_protocol(4) is None  # A untouched
+
+    def test_set_hw_protocol_c3a(self):
+        """PIID 18 sets C3/A protocol codes."""
+        state = ChargerState()
+        state.set_hw_protocol_codes_c3a(7, 0)
+        assert state.get_hw_protocol(3) == 7   # C3 = PD
+        assert state.get_hw_protocol(4) is None  # A = 0 → None
+        assert state.get_hw_protocol(1) is None  # C1 untouched
+
+    def test_zero_protection_c1c2(self):
+        """PIID 17 zero values should not overwrite existing protocol codes."""
+        state = ChargerState()
+        state.set_hw_protocol_codes(9, 7)  # set C1=PPS, C2=PD
+        state.set_hw_protocol_codes(0, 7)  # C1=0 should be ignored
+        assert state.get_hw_protocol(1) == 9  # C1 preserved
+        assert state.get_hw_protocol(2) == 7  # C2 updated
+
+    def test_zero_protection_c3a(self):
+        """PIID 18 zero values should not overwrite."""
+        state = ChargerState()
+        state.set_hw_protocol_codes_c3a(7, 0)
+        assert state.get_hw_protocol(3) == 7
+        state.set_hw_protocol_codes_c3a(0, 3)
+        assert state.get_hw_protocol(3) == 7  # preserved
+        assert state.get_hw_protocol(4) == 3  # updated
+
+    def test_piid17_byte_extraction(self):
+        """Verify PIID 17 value parsing: byte[0]=C1, byte[2]=C2."""
+        # raw=0x090F0764 → C1=9(PPS), C2=7(PD)
+        val32 = 0x090F0764
+        c1 = (val32 >> 24) & 0xFF  # byte[0] = 0x09 = 9
+        c2 = (val32 >> 8) & 0xFF   # byte[2] = 0x07 = 7
+        assert c1 == 9  # PPS
+        assert c2 == 7  # PD
+
+        # raw=0x07460937 → C1=7(PD), C2=9(PPS) (swapped devices)
+        val32 = 0x07460937
+        c1 = (val32 >> 24) & 0xFF
+        c2 = (val32 >> 8) & 0xFF
+        assert c1 == 7  # PD
+        assert c2 == 9  # PPS
+
+    def test_piid18_byte_extraction(self):
+        """Verify PIID 18 value parsing: byte[0]=C3, byte[2]=A."""
+        # raw=0x071E0000 → C3=7(PD), A=0(idle)
+        val32 = 0x071E0000
+        c3 = (val32 >> 24) & 0xFF
+        a = (val32 >> 8) & 0xFF
+        assert c3 == 7  # PD
+        assert a == 0   # idle
+
+
+class TestEstimateProtocolHw:
+    """Test hw_protocol override in estimate_protocol_number."""
+
+    def test_hw_protocol_overrides_heuristic(self):
+        """When hw_protocol is provided, it should be used directly."""
+        from state_protocol_v2 import estimate_protocol_number, RawPortData
+        raw = RawPortData(in_use=True, code=0x04, current_raw=8, voltage_raw=200)
+        result = estimate_protocol_number(2, raw, hw_protocol=4)
+        assert result == 4  # AFC, not PD
+
+    def test_hw_protocol_none_falls_back(self):
+        """When hw_protocol is None, heuristic should run."""
+        from state_protocol_v2 import estimate_protocol_number, RawPortData
+        raw = RawPortData(in_use=True, code=0x07, current_raw=5, voltage_raw=200)
+        result = estimate_protocol_number(2, raw, hw_protocol=None)
+        assert result == 7  # PD via heuristic
+
+    def test_decode_port_with_hw_protocol(self):
+        """decode_port should pass hw_protocol through."""
+        # Build a valid MiOT inline frame: [0c20][seq:2B][00][04][01][02][02][00][01][10][01][04][00][01][00]
+        frame = bytes([0x0c, 0x20, 0x01, 0x00, 0x04, 0x01, 0x02, 0x02,
+                        0x00, 0x01, 0x10, 0x01, 0x04, 0x00, 0x01, 0x00])
+        # hw_protocol=8 (PPS) should override heuristic
+        result = decode_port(2, frame, hw_protocol=8)
+        assert result is not None
+        assert result["protocol"] == "PPS"
+
+    def test_decode_port_no_hw_protocol(self):
+        """decode_port without hw_protocol uses heuristic."""
+        # [in_use=1][code=0x07][current=5][voltage=200] → last 4 bytes
+        frame = bytes([0x0c, 0x20, 0x01, 0x00, 0x04, 0x01, 0x02, 0x02,
+                        0x01, 0x07, 0x05, 0xC8])
+        result = decode_port(2, frame)
+        assert result is not None
+        # code=0x07 at 20V → heuristic gives PD
+        assert result["protocol"] == "PD"

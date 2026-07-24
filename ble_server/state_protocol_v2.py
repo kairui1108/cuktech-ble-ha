@@ -174,26 +174,23 @@ def _estimate_pd_subtype(voltage: float, code: int) -> int:
 
 
 def estimate_protocol_number(piid: int, raw: RawPortData, pdo_data: Optional[Dict] = None,
-                              protocol_switches: Optional[Dict] = None) -> int:
+                              protocol_switches: Optional[Dict] = None,
+                              hw_protocol: Optional[int] = None) -> int:
     """
-    估算米家协议号 (1-10).
+    估算米家协议号 (1-11).
 
-    对齐米家 App 逻辑:
-      - PIID 17/18 PDO 能力数据提供端口是否支持 PPS
-      - PIID 21 protocol_switches 提供当前是否已启用 PD
-      - 结合电压判断当前是 PD Fixed、PPS 还是 5V
-
-    Returns:
-        米家协议号，0 表示空闲/无法确定
+    当 hw_protocol 提供时直接使用 (BLE Spec 帧的硬件协议号)。
+    否则通过启发式推断。
     """
-    # P0: 缓存命中直接返回
     key = _cache_key(piid, raw, pdo_data, protocol_switches)
+    if hw_protocol is not None and hw_protocol > 0:
+        return hw_protocol  # 硬件协议号不走缓存
     if key in _proto_cache:
         return _proto_cache[key]
 
     voltage = raw.voltage
     code = raw.code
-    result = _estimate_protocol_number_impl(piid, raw, pdo_data, protocol_switches)
+    result = _estimate_protocol_number_impl(piid, raw, pdo_data, protocol_switches, hw_protocol)
 
     # 缓存结果（LRU 简化：超限清空）
     if len(_proto_cache) >= _PROTO_CACHE_MAX:
@@ -203,10 +200,20 @@ def estimate_protocol_number(piid: int, raw: RawPortData, pdo_data: Optional[Dic
 
 
 def _estimate_protocol_number_impl(piid: int, raw: RawPortData, pdo_data: Optional[Dict],
-                                    protocol_switches: Optional[Dict]) -> int:
-    """实际协议估算逻辑."""
+                                    protocol_switches: Optional[Dict],
+                                    hw_protocol: Optional[int] = None) -> int:
+    """实际协议估算逻辑.
+    
+    Args:
+        hw_protocol: BLE Spec 硬件协议号 (1-11)，来自 0f20 TLV value bits 15-8。
+                     当提供时直接使用，跳过启发式推断。
+    """
     voltage = raw.voltage
     code = raw.code
+
+    # BLE Spec 帧: 有硬件协议号时直接使用 (与 parsePortInfo 一致)
+    if hw_protocol is not None and hw_protocol > 0:
+        return hw_protocol
 
     if piid in (1, 2):
         # ===== C1/C2: Type-C 全系列 PD =====
@@ -289,8 +296,9 @@ def decode_port_v2(
     piid: int,
     payload: bytes,
     pdo_data: Optional[Dict] = None,
-    thresholds=None,  # 保留参数兼容，不再使用
+    thresholds=None,
     protocol_switches: Optional[Dict] = None,
+    hw_protocol: Optional[int] = None,
 ) -> Optional[Dict]:
     """解码端口数据 (V2).
 
@@ -314,7 +322,7 @@ def decode_port_v2(
         confidence = 1.0
         method = "no_load"
     else:
-        proto_num = estimate_protocol_number(piid, raw, pdo_data, protocol_switches)
+        proto_num = estimate_protocol_number(piid, raw, pdo_data, protocol_switches, hw_protocol)
         protocol = get_mijia_protocol_name(proto_num)
         method = f"proto_{proto_num}"
 
@@ -351,6 +359,6 @@ def decode_port_v2(
 # ============================================================
 # 向后兼容包装器
 # ============================================================
-def decode_port(piid, pt, pdo_data=None, protocol_switches=None):
+def decode_port(piid, pt, pdo_data=None, protocol_switches=None, hw_protocol=None):
     """向后兼容接口."""
-    return decode_port_v2(piid, pt, pdo_data, protocol_switches=protocol_switches)
+    return decode_port_v2(piid, pt, pdo_data, protocol_switches=protocol_switches, hw_protocol=hw_protocol)

@@ -65,7 +65,7 @@ class BLEManager:
         self._PROTO_DEBOUNCE_N = 3  # consecutive readings to confirm protocol
         # Session end debounce: consecutive low-current count per port
         self._low_current_count = {i: 0 for i in range(1, 5)}
-        self._LOW_CURRENT_N = 10  # consecutive readings below threshold to end session
+        self._LOW_CURRENT_N = 300  # consecutive readings below threshold to end session
 
     def set_mqtt_publisher(self, publisher):
         self._mqtt_publish = publisher
@@ -308,6 +308,18 @@ class BLEManager:
         await self.state.set_connection(True, True)
         _invalidate()
         _LOGGER.info("Authenticated!")
+
+        # 先读取 PIID 17 (c1_c2_protocol) 获取硬件协议代码
+        # 再处理 init_push 端口数据，确保 hw_protocol 已就绪
+        await self._read_initial_settings()
+
+        # 处理认证后设备推送的初始端口数据
+        if self.ctrl.init_push_frames:
+            _LOGGER.info("Processing %d init push frames", len(self.ctrl.init_push_frames))
+            for frame in self.ctrl.init_push_frames:
+                await self._try_process_inline_frame(frame)
+            self.ctrl.init_push_frames = []
+
         self._publish_status({
             "connected": True,
             "authenticated": True,
@@ -315,7 +327,6 @@ class BLEManager:
             "firmware_version": self.ctrl.firmware_version,
         }, retain=True)
 
-        await self._read_initial_settings()
         await asyncio.sleep(2)
 
     async def _disconnect(self):
@@ -544,8 +555,24 @@ class BLEManager:
                     settings[str(piid)] = result["value"]
                     if piid == 17:
                         pdo_caps["c1c2"] = decode_pdo_caps(result["value"], "c1", "c2")
+                        # PIID 17 byte[0]=C1 协议代码, byte[2]=C2 协议代码
+                        # 与米家 parseC1C2ProtocolInfo 一致
+                        val32 = result["value"] & 0xFFFFFFFF
+                        c1_proto = (val32 >> 24) & 0xFF
+                        c2_proto = (val32 >> 8) & 0xFF
+                        # 零值保护在 state 层自动处理
+                        self.state.set_hw_protocol_codes(c1_proto, c2_proto)
+                        _LOGGER.info("PIID17 hw_protocol_codes: C1=%d C2=%d (raw=0x%08X)",
+                                     self.state._hw_protocol_c1, self.state._hw_protocol_c2, val32)
                     elif piid == 18:
                         pdo_caps["c3a"] = decode_pdo_caps(result["value"], "c3", "a")
+                        # PIID 18 byte[0]=C3 协议代码, byte[2]=A 协议代码
+                        val32 = result["value"] & 0xFFFFFFFF
+                        c3_proto = (val32 >> 24) & 0xFF
+                        a_proto = (val32 >> 8) & 0xFF
+                        self.state.set_hw_protocol_codes_c3a(c3_proto, a_proto)
+                        _LOGGER.info("PIID18 hw_protocol_codes: C3=%d A=%d (raw=0x%08X)",
+                                     self.state._hw_protocol_c3, self.state._hw_protocol_a, val32)
                     elif piid == 21:
                         await self.state.update_protocol_extend(result["value"])
             except Exception as e:
@@ -646,9 +673,16 @@ class BLEManager:
         """
         if not self.ctrl:
             return
+        _LOGGER.debug("inline_frame: raw=%s len=%d", raw_data.hex() if raw_data else "null", len(raw_data) if raw_data else 0)
         encrypted_payload = raw_data[4:]
         pt = self.ctrl.decrypt(encrypted_payload)
+        if pt:
+            _LOGGER.debug("inline_frame: decrypted=%s len=%d", pt.hex(), len(pt))
         if not pt or len(pt) < 8:
+            if not pt:
+                _LOGGER.debug("inline_frame: decrypt failed")
+            else:
+                _LOGGER.debug("inline_frame: too short (%d < 8)", len(pt))
             self._decrypt_failures += 1
             if self._decrypt_failures >= 10:
                 _LOGGER.warning("Decrypt failed %d times consecutively, session stale, triggering reconnect", self._decrypt_failures)
@@ -657,6 +691,11 @@ class BLEManager:
         self._decrypt_failures = 0
         b4 = pt[4]
         piid = pt[7] if len(pt) > 7 else -1
+
+        # 优先使用 PIID 17 的硬件协议代码 (c1_c2_protocol Spec 属性)
+        # 与米家 parseC1C2ProtocolInfo 一致: byte[0]=C1, byte[2]=C2
+        hw_protocol = self.state.get_hw_protocol(piid)
+
         if b4 == 0x04 and piid in PORT_NAMES:
             pdo_data = None
             if piid in (1, 2):
@@ -664,7 +703,12 @@ class BLEManager:
             elif piid in (3, 4):
                 pdo_data = self.state.pdo_caps.get("c3a", {}).get(PORT_NAMES[piid])
             port_info = decode_port(piid, pt, pdo_data,
-                                    protocol_switches=self.state.protocol_switches)
+                                    protocol_switches=self.state.protocol_switches,
+                                    hw_protocol=hw_protocol)
+            if port_info:
+                _LOGGER.info("Port %s update: %s", PORT_NAMES[piid], port_info)
+            else:
+                _LOGGER.debug("Port %s: decode_port returned None (pt=%s)", PORT_NAMES[piid], pt.hex())
             if port_info:
                 # Protocol debounce: only update protocol after N consecutive same readings
                 new_proto = port_info.get("protocol", "")
@@ -682,7 +726,7 @@ class BLEManager:
                         port_info["protocol"] = old.protocol
                 # Port idle → clear protocol immediately (don't let debounce block it)
                 if not port_info.get("active", True):
-                    port_info["protocol"] = ""
+                    port_info["protocol"] = "idle"
                     self._proto_buf[piid].clear()
                 await self.state.update_port(piid, port_info)
                 if old is None or old.to_dict() != port_info:
@@ -743,7 +787,10 @@ class BLEManager:
                     # Also check ChargeEndDetector for gradual power decline
                     if self._low_current_count[piid] >= self._LOW_CURRENT_N or det.should_end_session(es, timestamp):
                         self._low_current_count[piid] = 0
-                        self._close_session(piid, timestamp, voltage, current)
+                        sid = self._close_session(piid, timestamp, voltage, current)
+                        if sid:
+                            _LOGGER.info("LowCurrent ended session %d (port %d, %.1fWh)",
+                                         sid, piid, es.session_wh)
                 # Catch missed end_session: port turns off but session not tracked
                 elif current <= 0.1 and not es.is_charging and piid in self._active_sessions:
                     sid = self._close_session(piid, timestamp)

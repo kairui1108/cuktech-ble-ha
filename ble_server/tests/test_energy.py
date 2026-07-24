@@ -90,6 +90,62 @@ def test_cooldown():
     print("PASS: test_cooldown")
 
 
+def test_window_not_full_no_trigger():
+    """Window < 300 entries should never trigger, even with low power."""
+    det = ChargeEndDetector()
+    state = PortEnergyState()
+    base = 1000000.0
+    for i in range(299):
+        det.update(0.1, base + i)
+    assert not det.should_end_session(state, base + 300), "Window not full should not trigger"
+    print("PASS: test_window_not_full_no_trigger")
+
+
+def test_cooldown_after_restart():
+    """After on_session_end, low_power_start resets, new low-power cycle must restart from zero."""
+    det = ChargeEndDetector()
+    state = PortEnergyState()
+    base = 1000000.0
+    # Fill window and trigger
+    for i in range(1000):
+        det.update(0.4, base + i)
+    det.should_end_session(state, base + 400)
+    assert det.should_end_session(state, base + 1001)
+    # End session
+    det.on_session_end(base + 1001)
+    # Immediately restart with low power — should NOT trigger because _low_power_start was reset
+    for i in range(1000):
+        det.update(0.4, base + 1002 + i)
+    assert not det.should_end_session(state, base + 1002 + 100), \
+        "After cooldown reset, new low-power cycle must not trigger early"
+    # But after 600+ seconds of sustained low power, should trigger
+    assert det.should_end_session(state, base + 1002 + 100 + 601), \
+        "Should trigger after 600s of sustained low power (timer starts at first check)"
+    print("PASS: test_cooldown_after_restart")
+
+
+def test_high_power_resets_low_power_timer():
+    """High power burst resets the low-power countdown."""
+    det = ChargeEndDetector()
+    state = PortEnergyState()
+    base = 1000000.0
+    for i in range(400):
+        det.update(0.1, base + i)
+    det.should_end_session(state, base + 400)
+    # Continue low power, then high power burst near the window tail
+    for i in range(401, 1400):
+        det.update(0.1, base + i)
+    # Multiple high-power entries to push avg > 1W in last 300
+    for i in range(1400, 1450):
+        det.update(50.0, base + i)
+    for i in range(1451, 1500):
+        det.update(0.1, base + i)
+    # Should NOT trigger because high power reset the timer
+    assert not det.should_end_session(state, base + 1501), \
+        "High power burst should reset countdown"
+    print("PASS: test_high_power_resets_low_power_timer")
+
+
 if __name__ == "__main__":
     test_basic_accumulation()
     test_zero_power()

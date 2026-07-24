@@ -278,6 +278,15 @@ function refreshChargeHistory() {
     const period = window._chPeriod;
     fetchEnergyStats(period).then(stats => renderStats(statsId, stats));
     fetchSessions(null, period, _chPageSize, _chPage).then(data => {
+        // 最后一页无数据时自动回退上一页
+        if (data.sessions && data.sessions.length === 0 && data.page > 1) {
+            _chPage = data.page - 1;
+            fetchSessions(null, period, _chPageSize, _chPage).then(data2 => {
+                renderSessionList(containerId, data2.sessions);
+                renderPagination(containerId, data2);
+            });
+            return;
+        }
         renderSessionList(containerId, data.sessions);
         renderPagination(containerId, data);
     });
@@ -294,7 +303,7 @@ function renderPagination(containerId, data) {
         <button onclick="chGoPage(${Math.max(1, data.page - 1)})" ${data.page <= 1 ? 'disabled' : ''}
             style="${data.page <= 1 ? disStyle : btnStyle}">上一页</button>
         <span style="color:var(--text-dim);">${data.page} / ${data.pages}</span>
-        <button onclick="chGoPage(${Math.min(data.pages, data.page + 1)})" ${data.page >= data.pages ? 'disabled' : ''}
-            style="${data.page >= data.pages ? disStyle : btnStyle}">下一页</button>`;
+        <button onclick="chGoPage(${Math.min(data.pages, data.page + 1)})" ${data.page >= data.pages - 1 ? 'disabled' : ''}
+            style="${data.page >= data.pages - 1 ? disStyle : btnStyle}">下一页</button>`;
     el.appendChild(pag);
 }
