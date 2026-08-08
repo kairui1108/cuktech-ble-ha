@@ -54,6 +54,7 @@ void config_store_apply_defaults(DeviceConfig *cfg) {
         .bemfa_name_a = "USB-A开关",
         .bemfa_name_ble = "蓝牙开关",
         .bemfa_modified = false,
+        .reboot_interval_sec = 0,  
         .valid = false,
     };
 }
@@ -92,6 +93,10 @@ bool config_store_load(DeviceConfig *cfg) {
     uint8_t mod = 0;
     if (nvs_get_u8(h, "bemfa_mod", &mod) == ESP_OK) cfg->bemfa_modified = (mod != 0);
 
+    uint32_t rb_int = 0;
+    if (nvs_get_u32(h, "reboot_int", &rb_int) == ESP_OK) cfg->reboot_interval_sec = rb_int;
+    else cfg->reboot_interval_sec = 0;
+
     cfg->valid = (cfg->wifi_ssid[0] != '\0' && cfg->wifi_pass[0] != '\0');
     nvs_close(h);
     ESP_LOGI(TAG, "Config loaded: wifi=%s mqtt=%s:%d device=%s bemfa=%s",
@@ -125,6 +130,7 @@ bool config_store_save(const DeviceConfig *cfg) {
     nvs_set_str(h, "bemfa_n_a",  cfg->bemfa_name_a);
     nvs_set_str(h, "bemfa_n_bl", cfg->bemfa_name_ble);
     nvs_set_u8(h, "bemfa_mod", cfg->bemfa_modified ? 1 : 0);
+    nvs_set_u32(h, "reboot_int", cfg->reboot_interval_sec);
     esp_err_t err = nvs_commit(h);
     nvs_close(h);
     if (err != ESP_OK) {

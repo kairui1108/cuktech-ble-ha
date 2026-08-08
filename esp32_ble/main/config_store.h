@@ -23,6 +23,7 @@ typedef struct {
     char bemfa_name_a[32];
     char bemfa_name_ble[32];
     bool bemfa_modified;
+    uint32_t reboot_interval_sec;  
     bool valid;
 } DeviceConfig;
 

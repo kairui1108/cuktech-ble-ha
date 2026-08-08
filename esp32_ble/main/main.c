@@ -736,9 +736,19 @@ static void app_task(void* pvParameters) {
     uint64_t last_cd_fetch_slow = 0;
     uint64_t last_cd_fetch_fast = 0;
     uint64_t last_mqtt_restart = 0;
+    uint64_t boot_time = esp_timer_get_time() / 1000;  /* for periodic auto-reboot */
 
     while (1) {
         uint64_t now = esp_timer_get_time() / 1000;
+
+        // Periodic auto-reboot (if configured)
+        uint32_t rbi = g_cfg.reboot_interval_sec;
+        if (rbi > 0 && (now - boot_time) >= (uint64_t)rbi * 1000) {
+            ESP_LOGW(TAG, "Periodic reboot: interval=%us reached (uptime=%us)",
+                     (unsigned)rbi, (unsigned)((now - boot_time) / 1000));
+            vTaskDelay(pdMS_TO_TICKS(100));
+            esp_restart();
+        }
 
         // Memory monitor + GC every 10 seconds
         if (now - last_mem_print >= 10000) {

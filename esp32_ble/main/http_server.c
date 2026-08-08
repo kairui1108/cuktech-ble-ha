@@ -186,7 +186,8 @@ static int _get_config_handler(httpd_req_t *req) {
         "\"bemfa_name_c2\":\"%s\","
         "\"bemfa_name_c3\":\"%s\","
         "\"bemfa_name_a\":\"%s\","
-        "\"bemfa_name_ble\":\"%s\""
+        "\"bemfa_name_ble\":\"%s\","
+        "\"reboot_interval_sec\":%u"
         "}",
         _cfg->wifi_ssid, mask_ws,
         _cfg->device_mac, mask_tk, mask_bk,
@@ -197,7 +198,8 @@ static int _get_config_handler(httpd_req_t *req) {
         _cfg->bemfa_enable ? "true" : "false",
         mask_uid,
         _cfg->bemfa_name_c1, _cfg->bemfa_name_c2, _cfg->bemfa_name_c3,
-        _cfg->bemfa_name_a, _cfg->bemfa_name_ble);
+        _cfg->bemfa_name_a, _cfg->bemfa_name_ble,
+        (unsigned)_cfg->reboot_interval_sec);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -281,6 +283,11 @@ static int _post_config_handler(httpd_req_t *req) {
     if (jb && cJSON_IsBool(jb)) _cfg->bemfa_enable = cJSON_IsTrue(jb);
     cJSON *jp = cJSON_GetObjectItem(root, "mqtt_port");
     if (jp && cJSON_IsNumber(jp)) _cfg->mqtt_port = (uint16_t)cJSON_GetNumberValue(jp);
+    cJSON *jrb = cJSON_GetObjectItem(root, "reboot_interval_sec");
+    if (jrb && cJSON_IsNumber(jrb)) {
+        double rb = cJSON_GetNumberValue(jrb);
+        _cfg->reboot_interval_sec = (rb > 0) ? (uint32_t)rb : 0;
+    }
     _cfg->valid = (_cfg->wifi_ssid[0] != '\0' && _cfg->wifi_pass[0] != '\0');
 
     ESP_LOGI(TAG, "Config saved: wifi=%s mqtt=%s:%d", _cfg->wifi_ssid, _cfg->mqtt_broker, _cfg->mqtt_port);
