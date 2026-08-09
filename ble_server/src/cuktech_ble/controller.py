@@ -57,6 +57,7 @@ class CuktechBLEController:
         self.client = None
         self.authenticated = False
         self._notify_queues = {}
+        self._disconnected = False  # set by Bleak disconnect callback on link loss
         self._send_it = 0
         self._dev_it_hi = 0      # device push counter high 16 bits (it rollover tracking)
         self._last_dev_it_lo = 0 # last device push it low 16 bits (rollover detect)
@@ -163,8 +164,13 @@ class CuktechBLEController:
     async def connect(self):
         """连接到设备。"""
         _LOGGER.info("Connecting to %s...", self.mac)
+        self._disconnected = False
         self.client = BleakClient(self.mac)
         await self.client.connect()
+        # NOTE: Bleak 3.x removed set_disconnected_callback / on_disconnect — there
+        # is no callback API. Link loss is instead detected in the main loop by
+        # polling `client.is_connected` (Bleak 3.x keeps it updated from BlueZ
+        # Disconnected events) plus the last_notify watchdog.
         # Bleak (>=0.20, here 3.0.x) auto-negotiates MTU during connect; there is
         # no manual _acquire_mtu() anymore. Read the negotiated value for
         # diagnostics. A small MTU (23) fragments port push frames — log it so

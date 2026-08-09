@@ -653,6 +653,11 @@ class BLEManager:
                     if now - last_keepalive > 10:
                         if self.ctrl and self.ctrl.client and self.ctrl.client.is_connected:
                             try:
+                                # NOTE: must stay response=False — this device's
+                                # characteristics are all Write-Without-Response,
+                                # so response=True would time out on a healthy link
+                                # and cause false reconnects. Link loss is instead
+                                # detected via the disconnect callback below.
                                 await self.ctrl.client.write_gatt_char(
                                     CHAR_CMD_RECV, bytes([0x00, 0x00, 0x00, 0x00]), response=False)
                                 last_keepalive = now
@@ -664,8 +669,20 @@ class BLEManager:
                                     raise ConnectionError("BLE keepalive failed")
                     if now - last_notify > 60:
                         client = self.ctrl.client if self.ctrl else None
-                        if not client or not client.is_connected:
-                            _LOGGER.warning("BLE connection lost, triggering reconnect")
+                        # Detect silent link loss. Bleak 3.x has no disconnect
+                        # callback and is_connected may lag, so do an active probe:
+                        # read the firmware version characteristic — a real BLE read
+                        # fails once the link is actually gone.
+                        lost = not client or not client.is_connected
+                        if not lost:
+                            try:
+                                await asyncio.wait_for(
+                                    client.read_gatt_char(CHAR_FW_VERSION), timeout=3.0)
+                            except Exception:
+                                lost = True
+                        if lost:
+                            _LOGGER.warning("BLE connection lost (is_connected=%s), triggering reconnect",
+                                            client.is_connected if client else None)
                             raise ConnectionError("BLE disconnected")
                     continue
                 except Exception as e:
