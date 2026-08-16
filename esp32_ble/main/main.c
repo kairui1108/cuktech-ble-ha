@@ -64,7 +64,7 @@ static bool settings_valid[32] = {};
 // Known device defaults (can't GET to read actual values)
 static void _init_settings_defaults(void) {
     settings[5] = 1; settings_valid[5] = true;   // 场景模式: 1=AI模式
-    settings[6] = 0; settings_valid[6] = true;   // 息屏时间: 0=5分钟
+    settings[6] = 1; settings_valid[6] = true;   // 息屏时间: 1=5分钟
     settings[13] = 1; settings_valid[13] = true;  // 语言: 1=中文
     settings[15] = 0; settings_valid[15] = true;  // USB-A常通电: 0=关闭
     settings[19] = 1; settings_valid[19] = true;  // 空闲息屏: 1=开启

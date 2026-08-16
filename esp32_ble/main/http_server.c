@@ -496,8 +496,10 @@ static int _post_protocol_handler(httpd_req_t *req) {
 
 /* ==================== Sleep API ==================== */
 
-static const char *SCR_LABELS[] = {"5分钟", "1分钟", "10分钟", "30分钟", "常亮"};
-#define SCR_COUNT 5
+// PIID 6 息屏时间: 数组下标即原始值(1-5)，与米家插件一致。index 0 是占位，非有效设备值。
+static const char *SCR_LABELS[] = {"", "5分钟", "10分钟", "30分钟", "常亮", "1分钟"};
+#define SCR_COUNT 6
+#define SCR_VALID(v) ((v) >= 1 && (v) < SCR_COUNT)
 
 static int _get_sleep_handler(httpd_req_t *req) {
     _cjson_pool_pos = 0;
@@ -510,7 +512,7 @@ static int _get_sleep_handler(httpd_req_t *req) {
     cJSON_Delete(root);
     cJSON *resp = cJSON_CreateObject();
     cJSON_AddNumberToObject(resp, "value", val);
-    cJSON_AddStringToObject(resp, "label", (val >= 0 && val < SCR_COUNT) ? SCR_LABELS[val] : "?");
+    cJSON_AddStringToObject(resp, "label", SCR_VALID(val) ? SCR_LABELS[val] : "?");
     httpd_resp_set_type(req, "application/json");
     if (cJSON_PrintPreallocated(resp, _json_buf, sizeof(_json_buf), false))
         httpd_resp_sendstr(req, _json_buf);
@@ -533,7 +535,7 @@ static int _post_sleep_handler(httpd_req_t *req) {
     bool ok = false;
     if (jv && cJSON_IsNumber(jv) && _setting_set_cb) {
         int val = (int)cJSON_GetNumberValue(jv);
-        if (val >= 0 && val < SCR_COUNT) ok = _setting_set_cb(6, val);
+        if (SCR_VALID(val)) ok = _setting_set_cb(6, val);
     }
     cJSON_Delete(root);
     cJSON *resp = cJSON_CreateObject();
