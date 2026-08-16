@@ -3,18 +3,19 @@
 ## [1.0.10] - 2026-08-16
 
 ### Fixed
-- BLE 断连时清空端口数据，避免实体展示断连前的陈旧读数（端口值变为 unknown 而非误导性数字）
-- `_async_wait_mqtt_ready` 改用官方 `mqtt.async_wait_for_mqtt_client()`（内部限时 50s），不再阻塞最长 ~90s 的自制重试/探测发布
+- Clear port data on BLE disconnect so entities show `unknown` instead of stale readings from before the disconnect
+- Screen-save-time (`select.cuktech_screen_save_time`) mapping corrected to match the Mi Home plugin: PIID 6 raw values are `1=5min, 2=10min, 3=30min, 4=always-on, 5=1min` (value 5 is the actual 1-minute encoding, not an alias of value 1; value 0 is invalid)
+- `_async_wait_mqtt_ready` now uses the official `mqtt.async_wait_for_mqtt_client()` (internal 50s timeout) instead of blocking up to ~90s on a custom retry/probe publish
 
 ### Changed
-- 移除 6 个平台文件中未使用的 `logging` / `_LOGGER` 导入（sensor/switch/binary_sensor/select/number/event）
-- 删除不再使用的 `TOPIC_PROBE` 常量与 `MQTT_RETRY_*` 常量
-- 声明开发测试依赖 `pytest` / `pytest-asyncio`（`pyproject.toml [project.optional-dependencies].dev`）
+- Removed unused `logging` / `_LOGGER` imports from 6 platform files (sensor/switch/binary_sensor/select/number/event)
+- Removed the unused `TOPIC_PROBE` constant and `MQTT_RETRY_*` constants
+- Declared dev test dependencies `pytest` / `pytest-asyncio` (`pyproject.toml [project.optional-dependencies].dev`)
 
 ### Tests
-- 补齐 `pytest-asyncio`（此前 `@pytest.mark.asyncio` 用例在本环境无法运行，13 例失败，现全部通过）
-- 新增用例：BLE 断连清空端口数据、MQTT 就绪等待成功/失败（ConfigEntryNotReady）
-- 新增嵌套 CI 工作流 `.github/workflows/tests.yml`（Python 3.11/3.12 矩阵）
+- Enabled `pytest-asyncio` (previously `@pytest.mark.asyncio` cases could not run in this environment, 13 failing, now all pass)
+- Added cases: clear port data on BLE disconnect, MQTT readiness wait success/failure (ConfigEntryNotReady)
+- Added nested CI workflow `.github/workflows/tests.yml` (Python 3.11/3.12 matrix)
 
 ## [1.0.9] - 2026-07-30
 

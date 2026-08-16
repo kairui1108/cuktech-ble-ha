@@ -20,7 +20,7 @@ BLE GATT 服务/特征:
 MiOT Spec (SIID=2, charger service):
   PIID 1-4:   端口信息 C1/C2/C3/A (read/notify)
   PIID 5:     场景模式 1=AI,2=Apple,3=Single,4=Balance (read/write)
-  PIID 6:     息屏时间 0=5min,1=10min,2=30min,3=OFF,4=1min (read/write)
+  PIID 6:     息屏时间 1=5min,2=10min,3=30min,4=常亮,5=1min (read/write)
   PIID 7:     协议控制 (read/write)
   PIID 8:     倒计时设置 (read/write)
   PIID 9-12:  各端口倒计时(分钟) (read/write)
@@ -170,7 +170,7 @@ PIID_NAMES = {
 
 PIID_DISPLAY = {
     5:  {1: 'AI模式', 2: '数码生态', 3: '单口模式', 4: '均衡模式'},
-    6:  {0: '5分钟', 1: '1分钟', 2: '10分钟', 3: '30分钟', 4: '常亮', 5: '1分钟'},
+    6:  {1: '5分钟', 2: '10分钟', 3: '30分钟', 4: '常亮', 5: '1分钟'},
     13: {0: 'English', 1: '中文'},
     15: {0: '关闭', 1: '开启'},
     19: {0: '关闭', 1: '开启'},

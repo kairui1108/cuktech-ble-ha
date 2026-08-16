@@ -49,8 +49,8 @@ const SCENE_DESCS = {
     4: '多个端口均衡分配充电功率',
 };
 const SCENE_PIID = 5;
-// PIID 6 息屏时间: 数组下标即原始值；value=5 是固件对 value=1（"1分钟"）的别名，追加同名项避免显示 undefined
-const SCREEN_TIMES = ['5分钟', '1分钟', '10分钟', '30分钟', '常亮', '1分钟'];
+// PIID 6 息屏时间: 数组下标即原始值(1-5)，与米家插件一致。index 0 是占位，非有效设备值。
+const SCREEN_TIMES = ['', '5分钟', '10分钟', '30分钟', '常亮', '1分钟'];
 const PORT_KEYS = ['c1', 'c2', 'c3', 'a'];
 const PORT_NAMES = { c1: 'C1', c2: 'C2', c3: 'C3', a: 'USB-A' };
 const PORT_COLORS = { c1: '#FF7A00', c2: '#46B4FF', c3: '#89D8F3', a: '#FFD24B' };
@@ -62,7 +62,7 @@ function markLocalChange() { lastLocalChange = Date.now(); }
 function isRecentLocal() { return Date.now() - lastLocalChange < 3000; }
 let state = {
     scene: 1,
-    screenTime: 0,
+    screenTime: 1,
     bleConnected: false,
     ports: { c1:{v:0,a:0,w:0,protocol:'idle',enabled:true}, c2:{v:0,a:0,w:0,protocol:'idle',enabled:true}, c3:{v:0,a:0,w:0,protocol:'idle',enabled:true}, a:{v:0,a:0,w:0,protocol:'idle',enabled:true} },
     settings: {},
@@ -560,7 +560,8 @@ async function toggleTrickle() {
 }
 
 async function cycleScreenTime() {
-    state.screenTime = (state.screenTime + 1) % SCREEN_TIMES.length;
+    // 有效原始值 1-5（1=5分钟,2=10分钟,3=30分钟,4=常亮,5=1分钟），跳过占位的 index 0
+    state.screenTime = ((state.screenTime - 1) % 5 + 6) % 5 + 1;
     document.getElementById('screenTimeVal').innerHTML =
         SCREEN_TIMES[state.screenTime] + ' <img src="static/plugin_imgs/main_charger_dark_icon_more.png" alt="">';
     markLocalChange();

@@ -15,12 +15,12 @@
 - **DB meta 单源存储**: 运行时开关状态持久化在 `history.db` 的 `meta` 表，随数据库自然备份/清除，无需新增 config.yaml 字段（避免双源问题）
 - **内存占位 sid**: 关闭记录期间使用负值占位会话 ID 保持会话生命周期完整，`/api/sessions`、`/api/energy/stats` 的实时部分不受影响，重新打开后正在充电的会话正常显示
 - **事件与记录解耦**: 关闭记录仅影响 DB 写入，MQTT 充电完成事件（HA 通知）始终发布，上层自动化不受影响
-- **phone.js 屏显时间别名**: 补上 `SCREEN_TIMES[5] = "1分钟"`，与 app.js 及 HA 端映射一致，防止手机页显示 undefined
+- **phone.js 屏显时间**: 补上 `SCREEN_TIMES[5] = "1分钟"`（value 5 是米家插件对 1分钟 的实际编码），与 app.js 及 HA 端映射一致，防止手机页显示 undefined
 
 ### HA Integration
 
 #### 修复
-- **屏显时间显示未知**: PIID 6 value=5 是设备固件对 value=1（"1 分钟"）的别名，原映射为带注释的长字符串导致不在 Select options 列表中 → HA 状态校验返回 unknown；改为与 ble-server 一致的 `"1分钟"`，修复显示
+- **屏显时间显示未知**: 依据米家插件逆向确认 PIID 6 实际编码为 `1=5分钟, 2=10分钟, 3=30分钟, 4=常亮, 5=1分钟`（value 5 即 1分钟，value 0 非法）；此前映射为带注释的长字符串导致不在 Select options 列表中 → HA 状态校验返回 unknown；改为与 ble-server 一致的 `"1分钟"`，修复显示
 - **BLE 断连陈旧数据**: 设备断开时清空 `_port_data`，端口实体展示 unknown 而非断连前的误导性读数
 - **MQTT 就绪等待**: 改用官方 `mqtt.async_wait_for_mqtt_client()`（内部限时 50s），不再阻塞最长 ~90s 的自制重试/探测发布
 

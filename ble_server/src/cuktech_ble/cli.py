@@ -286,7 +286,7 @@ SET_COMMANDS = {
     'set-mode':     {'piid': 5,  'name': '场景模式',
                      'values': {'ai': 1, 'apple': 2, 'single': 3, 'balance': 4}},
     'set-screen':   {'piid': 6,  'name': '息屏时间',
-                     'values': {'1': 4, '5': 0, '10': 1, '30': 2, 'off': 3}},
+                     'values': {'1': 5, '5': 1, '10': 2, '30': 3, 'off': 4}},
     'set-language':  {'piid': 13, 'name': '语言',
                      'values': {'en': 0, 'cn': 1}},
     'set-usba':     {'piid': 15, 'name': 'USB-A小电流',

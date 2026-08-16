@@ -137,7 +137,7 @@
 
         const SETTINGS_CONFIG = [
             { piid: 5, name: '场景模式', options: [{ value: 1, label: 'AI模式' }, { value: 2, label: '数码生态' }, { value: 3, label: '单口模式' }, { value: 4, label: '均衡模式' }] },
-            { piid: 6, name: '息屏时间', options: [{ value: 0, label: '5分钟' }, { value: 1, label: '1分钟' }, { value: 2, label: '10分钟' }, { value: 3, label: '30分钟' }, { value: 4, label: '常亮' }, { value: 5, label: '1分钟' }] },
+            { piid: 6, name: '息屏时间', options: [{ value: 1, label: '5分钟' }, { value: 2, label: '10分钟' }, { value: 3, label: '30分钟' }, { value: 4, label: '常亮' }, { value: 5, label: '1分钟' }] },
             { piid: 13, name: '语言', options: [{ value: 0, label: 'English' }, { value: 1, label: '中文' }] },
             { piid: 15, name: 'USB-A小电流', options: [{ value: 0, label: '关闭' }, { value: 1, label: '开启' }] },
             { piid: 19, name: '空闲息屏', options: [{ value: 0, label: '关闭' }, { value: 1, label: '开启' }] },
