@@ -164,6 +164,10 @@ body.light .config-select { border-color: rgba(0,0,0,0.12); }
                 <div class="config-label">数据保留天数</div>
                 <input class="config-input" id="server_retention" type="number" value="2" style="width:80px;">
             </div>
+            <div class="config-row">
+                <div><div class="config-label">充电会话记录</div><div class="config-hint">即时生效，无需重启；关闭后不再记录充电历史</div></div>
+                <label class="toggle"><input type="checkbox" id="server_session_recording" onchange="toggleSessionRecording(this.checked)"><span class="toggle-slider"></span></label>
+            </div>
         </div>
 
         <!-- Status -->
@@ -244,6 +248,15 @@ async function loadConfig() {
         document.getElementById('server_port').value = c.server.port || 8199;
         document.getElementById('server_retention').value = c.server.history_retention_days || 2;
 
+        // 充电会话记录开关（独立于 config.yaml，DB meta 单源，即时生效）
+        try {
+            const recRes = await fetch(`${API}/api/session-recording`);
+            const recData = await recRes.json();
+            document.getElementById('server_session_recording').checked = recData.enabled !== false;
+        } catch (e) {
+            // 加载失败保持默认开启，不阻断配置加载
+        }
+
         document.getElementById('statusDot').className = 'status-dot-sm ok';
         document.getElementById('statusText').textContent = '配置已加载';
     } catch (e) {
@@ -308,6 +321,26 @@ async function saveConfig() {
         btn.disabled = false;
         document.getElementById('btnSaveIcon').textContent = '⚙';
         document.getElementById('btnSaveText').textContent = '保存配置并重启';
+    }
+}
+
+async function toggleSessionRecording(enabled) {
+    try {
+        const res = await fetch(`${API}/api/session-recording`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled })
+        });
+        const data = await res.json();
+        if (data.ok) {
+            showToast(enabled ? '已开启充电会话记录' : '已关闭充电会话记录', 3000);
+        } else {
+            document.getElementById('server_session_recording').checked = !enabled;
+            showToast('设置失败: ' + (data.error || '未知错误'), 4000);
+        }
+    } catch (e) {
+        document.getElementById('server_session_recording').checked = !enabled;
+        showToast('网络错误: ' + e.message, 4000);
     }
 }
 

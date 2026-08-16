@@ -1,6 +1,7 @@
 """Tests for ble_manager.py - BLE connection manager."""
 import asyncio
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -628,3 +629,270 @@ class TestMQTTPublisherReconnect:
         publisher.assert_called_once_with(
             "cuktech/charger/status", {"connected": True, "authenticated": True}, retain=True
         )
+
+
+class TestSessionRecording:
+    """充电会话记录开关（方案 B：记录可控、事件保留）。"""
+
+    def test_record_sessions_default_true(self):
+        """默认开启（向后兼容）。"""
+        mgr = make_manager()
+        assert mgr.record_sessions is True
+
+    @pytest.mark.asyncio
+    async def test_close_session_recording_off_discards_db_but_publishes_event(self):
+        """记录关闭期间的会话（占位负 sid）：MQTT 事件照发、DB 完全丢弃、不发 SSE。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._mqtt_publish = MagicMock()
+        mgr._sse_emitter = MagicMock()
+        mgr.record_sessions = False
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = -1  # 记录关闭期间产生的占位 sid
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = 1000.0
+        es.session_wh = 1.0
+        es.max_power = 50.0
+
+        sid = mgr._close_session(1, 1600.0, 20.0, 2.0)
+        assert sid == -1
+        await asyncio.sleep(0.05)  # 让 executor 任务有机会执行（如有）
+        mgr._mqtt_publish.assert_called_once()          # 事件照发（HA 通知保留）
+        mgr._history.end_session.assert_not_called()
+        mgr._history.delete_session.assert_not_called()
+        mgr._sse_emitter.emit.assert_not_called()        # 占位会话不发 SSE session_end
+
+    def test_get_live_session_data_shows_recording_off_session(self):
+        """记录关闭时，进行中会话（占位 sid）仍在实时数据中（重开开关后也正常显示）。"""
+        mgr = make_manager()
+        mgr.record_sessions = False
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = -1
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = 1000.0
+        es.session_wh = 1.5
+        es.max_power = 50.0
+        live = mgr.get_live_session_data()
+        assert 1 in live
+        assert live[1]["session_id"] == -1
+        assert live[1]["session_wh"] == 1.5
+
+    @pytest.mark.asyncio
+    async def test_resume_recording_upgrades_fake_sessions(self):
+        """打开开关时，关闭期间正在充电的占位会话立即转为真实记录并从此刻重新累计。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._history.start_session.return_value = 100
+        mgr.record_sessions = False
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = -1
+            mgr._active_sessions[2] = 7   # 已是真实会话，不应被转正
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_wh = 3.0
+        es.session_start = 1000.0
+        mgr.state.ports[1].protocol = "PD"
+
+        mgr.resume_recording_sessions()
+        await asyncio.sleep(0.05)  # 等待 executor 完成 start_session
+
+        mgr._history.start_session.assert_called_once_with(1, "PD")
+        assert mgr._active_sessions[1] == 100   # 占位 -1 已被转正为 100
+        assert mgr._active_sessions[2] == 7     # 真实会话不受影响
+        assert es.session_wh == 0.0             # 从打开时刻重新累计
+        assert es.session_start > 1000.0
+
+    @pytest.mark.asyncio
+    async def test_resume_recording_noop_without_fake_sessions(self):
+        """没有占位会话时（全开状态或无人充电），转正调用不产生任何 DB 操作。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.record_sessions = False
+        with mgr._sess_lock:
+            mgr._active_sessions[2] = 7   # 只有真实会话
+        mgr.resume_recording_sessions()
+        await asyncio.sleep(0.05)
+        mgr._history.start_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_close_session_with_record_writes_db(self):
+        """记录开启（有 sid）时：事件 + SSE + end_session 均执行（原行为不变）。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._mqtt_publish = MagicMock()
+        mgr._sse_emitter = MagicMock()
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 42
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = 1000.0
+        es.session_wh = 2.5
+        es.max_power = 60.0
+
+        sid = mgr._close_session(1, 1600.0, 20.0, 3.0)
+        assert sid == 42
+        await asyncio.sleep(0.05)  # 等待 executor 写入
+        mgr._mqtt_publish.assert_called_once()
+        mgr._sse_emitter.emit.assert_called_once_with("session_end", {   # 前缀匹配
+            "session_id": 42,
+            "port": "c1",
+            "port_id": 1,
+            "total_wh": 2.5,
+            "peak_power_w": 60.0,
+            "duration_sec": 600,
+        })
+        mgr._history.end_session.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_session_micro_wh_recording_on_no_event(self):
+        """记录开启 + 微能量（<0.05Wh）：不发事件、不发 SSE，仅清理 DB 会话行。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._mqtt_publish = MagicMock()
+        mgr._sse_emitter = MagicMock()
+        mgr.record_sessions = True
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 42
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = 1000.0
+        es.session_wh = 0.01
+        es.max_power = 5.0
+
+        sid = mgr._close_session(1, 1600.0, 1.0, 0.1)
+        assert sid == 42
+        await asyncio.sleep(0.05)
+        mgr._mqtt_publish.assert_not_called()        # 事件移回 >=0.05Wh 门控
+        mgr._sse_emitter.emit.assert_not_called()
+        mgr._history.delete_session.assert_called_once_with(42)
+        mgr._history.end_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_close_session_micro_wh_recording_off_no_event(self):
+        """记录关闭 + 微能量（<0.05Wh）占位会话：不发事件、不写库。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._mqtt_publish = MagicMock()
+        mgr._sse_emitter = MagicMock()
+        mgr.record_sessions = False
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = -1
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = 1000.0
+        es.session_wh = 0.01
+
+        sid = mgr._close_session(1, 1600.0, 1.0, 0.1)
+        assert sid == -1
+        await asyncio.sleep(0.05)
+        mgr._mqtt_publish.assert_not_called()
+        mgr._sse_emitter.emit.assert_not_called()
+        mgr._history.end_session.assert_not_called()
+        mgr._history.delete_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_close_active_sessions_recording_off_skips_db_but_publishes(self):
+        """停机关闭 + 记录关闭的占位会话：MQTT 事件照发（session_id=0）、不写库。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._mqtt_publish = MagicMock()
+        mgr._sse_emitter = MagicMock()
+        mgr.record_sessions = False
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = -1
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = time.time() - 120
+        es.session_wh = 2.0
+        es.max_power = 50.0
+        mgr.state.ports[1].voltage = 20.0
+        mgr.state.ports[1].current = 3.0
+
+        mgr._close_active_sessions()
+        await asyncio.sleep(0.05)
+        mgr._mqtt_publish.assert_called_once()
+        published = mgr._mqtt_publish.call_args[0][1]
+        assert published["session_id"] == 0
+        assert published["recorded"] is False
+        mgr._history.end_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resume_race_closes_orphan_db_row(self):
+        """转正窗口内会话已结束：回调闭合刚建的 DB 行，不留孤儿会话、不写假 sid。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._history.start_session.return_value = 100
+        mgr.record_sessions = False
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = -1
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_wh = 3.0
+        es.session_start = 1000.0
+        mgr.state.ports[1].protocol = "PD"
+
+        mgr.resume_recording_sessions()
+        # 模拟 executor 完成前会话已结束（真实流程由 _close_session 完成）
+        with mgr._sess_lock:
+            mgr._active_sessions.pop(1, None)
+        es.is_charging = False
+        await asyncio.sleep(0.05)
+
+        mgr._history.start_session.assert_called_once_with(1, "PD")
+        mgr._history.delete_session.assert_called_once_with(100)
+        assert mgr._active_sessions.get(1) is None
+
+    @pytest.mark.asyncio
+    async def test_record_charge_point_skipped_recording_off(self):
+        """记录关闭：采样点写入门控拒绝（不落库，实时显示不受影响）。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.record_sessions = False
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = -1
+        assert mgr._record_charge_point(1, 20.0, 2.0, "PD") is False
+        await asyncio.sleep(0.05)
+        mgr._history.record_charge_point.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_record_charge_point_skipped_fake_sid(self):
+        """记录开启但 sid 为占位（负值）：仍拒绝写入。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.record_sessions = True
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = -1
+        assert mgr._record_charge_point(1, 20.0, 2.0, "PD") is False
+        await asyncio.sleep(0.05)
+        mgr._history.record_charge_point.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_record_charge_point_written_recording_on(self):
+        """记录开启 + 真实 sid：采样点正常落库。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.record_sessions = True
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 42
+        assert mgr._record_charge_point(1, 20.0, 2.0, "PD") is True
+        await asyncio.sleep(0.05)
+        mgr._history.record_charge_point.assert_called_once_with(
+            42, 20.0, 2.0, 40.0, "PD")
+
+    @pytest.mark.asyncio
+    async def test_session_start_race_closes_orphan(self):
+        """正常开始路径 _on_session_start 回调前会话已结束：闭合刚建的 DB 行，
+        不留孤儿会话（与 resume 转正竞态共享同一 _close_resumed_orphan 兜底路径）。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.record_sessions = True
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        # 模拟会话在 start_session executor 完成前已结束：
+        # 此时 _active_sessions 中无 sid（尚未设置），is_charging 已为 False
+        es.is_charging = False
+        mgr._close_resumed_orphan(1, 100)
+        await asyncio.sleep(0.05)
+        mgr._history.delete_session.assert_called_once_with(100)

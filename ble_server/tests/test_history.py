@@ -147,6 +147,40 @@ class TestBatchCommit:
         assert stats["samples"] == 5
 
 
+class TestRuntimeMeta:
+    """运行时开关持久化（DB meta 单源）。"""
+
+    def test_session_recording_default_true(self, history):
+        """meta 缺失时默认为开启（向后兼容）。"""
+        assert history.get_session_recording() is True
+
+    def test_session_recording_set_get(self, history):
+        """set/get 往返。"""
+        history.set_session_recording(False)
+        assert history.get_session_recording() is False
+        history.set_session_recording(True)
+        assert history.get_session_recording() is True
+
+    def test_session_recording_persists_across_reconnect(self, temp_db):
+        """开关状态写入 DB 后，重连/重启仍然生效。"""
+        from history import PortHistory
+
+        h1 = PortHistory(db_path=temp_db)
+        h1.connect()
+        h1.set_session_recording(False)
+        h1.close()
+
+        h2 = PortHistory(db_path=temp_db)
+        h2.connect()
+        assert h2.get_session_recording() is False
+        h2.close()
+
+    def test_get_meta_after_close(self, history):
+        """连接关闭后读取返回默认值，不抛异常。"""
+        history.close()
+        assert history.get_session_recording() is True
+
+
 class TestSessionCleanup:
     """会话清理（H5）：闭环会话过期回收 + 崩溃孤儿会话启动回收。"""
 

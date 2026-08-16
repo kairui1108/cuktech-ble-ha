@@ -430,6 +430,7 @@ class Server:
             )
         data = await self.state.to_dict()
         data["mqtt_connected"] = self.mqtt_client is not None and self.mqtt_client.is_connected()
+        data["session_recording"] = bool(self.ble.record_sessions)
         self._status_cache_bytes = await asyncio.to_thread(
             lambda: json.dumps(data, ensure_ascii=False).encode()
         )
@@ -639,6 +640,34 @@ class Server:
             _LOGGER.warning("Failed to persist log level to config.yaml", exc_info=True)
         _LOGGER.info("Log level changed to %s", level)
         return web.json_response({"ok": True, "level": level})
+
+    async def handle_session_recording(self, request):
+        """GET/POST /api/session-recording — 充电会话记录开关。
+
+        状态持久化在 history.db 的 meta 表（单源，随数据库备份/清除），
+        即时生效，无需重启服务。关闭后不再创建新的充电会话记录，但充电
+        完成事件（MQTT charge_event，HA 通知）照常发布。
+        """
+        if request.method == "GET":
+            return web.json_response({"ok": True, "enabled": bool(self.ble.record_sessions)})
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        enabled = data.get("enabled")
+        if not isinstance(enabled, bool):
+            return web.json_response({"ok": False, "error": "enabled must be boolean"}, status=400)
+        was_enabled = bool(self.ble.record_sessions)
+        self.ble.record_sessions = enabled
+        if self.history:
+            self.history.set_session_recording(enabled)
+        if enabled and not was_enabled:
+            # 打开瞬间：把关闭期间仍在充电的占位会话立即转为真实记录，
+            # 使正在充电的端口从此刻起恢复曲线/历史（无需等到下次充电）
+            self.ble.resume_recording_sessions()
+        self.invalidate_status_cache()
+        _LOGGER.info("Charge session recording %s", "enabled" if enabled else "disabled")
+        return web.json_response({"ok": True, "enabled": enabled})
 
     async def handle_chart(self, request):
         """Get chart-ready data for all ports with caching and ETag."""
@@ -1461,6 +1490,8 @@ app.router.add_post("/api/enable", lambda r: get_server().handle_enable(r))
 app.router.add_post("/api/protocol", lambda r: get_server().handle_protocol(r))
 app.router.add_get("/api/log-level", lambda r: get_server().handle_log_level(r))
 app.router.add_post("/api/log-level", lambda r: get_server().handle_log_level(r))
+app.router.add_get("/api/session-recording", lambda r: get_server().handle_session_recording(r))
+app.router.add_post("/api/session-recording", lambda r: get_server().handle_session_recording(r))
 app.router.add_get("/api/chart", lambda r: get_server().handle_chart(r))
 app.router.add_get("/api/statistics/{port}", lambda r: get_server().handle_statistics(r))
 app.router.add_get("/api/export/{port}", lambda r: get_server().handle_export(r))
@@ -1494,6 +1525,8 @@ async def on_startup(app_):
         })
         s.history.connect()
         s.ble.set_history(s.history)
+        # 加载充电会话记录开关（history.db meta 单源，默认开启，即时切换无需重启）
+        s.ble.record_sessions = s.history.get_session_recording()
         await s.setup_mqtt()
         if s.mqtt_client:
             s.setup_mqtt_subscriptions()

@@ -58,6 +58,11 @@ class BLEManager:
         self._mqtt_publish = None
         self._sse_emitter = None
         self._quality_provider = None
+        # 充电会话记录开关：关闭时只停止 DB 写入（start/point/end 均 gate），
+        # 内存会话生命周期/实时显示/充电完成事件照常。启动时由服务器从 DB meta 注入。
+        self.record_sessions: bool = True
+        # 记录关闭期间用于占位的内存会话 id（负值递减，不与真实 DB id 冲突）
+        self._fake_sid_counter: int = 0
         self._reconnect_attempts = 0
         self._decrypt_failures = 0
         self._total_frames = 0
@@ -170,75 +175,198 @@ class BLEManager:
         self._stop_event.set()
 
     def _close_active_sessions(self):
-        """Gracefully close all active charge sessions on shutdown."""
+        """Gracefully close all active charge sessions on shutdown.
+
+        事件（MQTT 充电完成）始终发布；DB 记录仅当真实会话（正 sid）且记录
+        开关开启时写入。
+        """
         now = time.time()
         for port, es in self._energy_states.items():
             if es.is_charging:
                 with self._sess_lock:
                     sid = self._active_sessions.pop(port, None)
-                if not sid or not self._history:
-                    continue
                 duration = int(now - (es.session_start or now))
                 det = self._charge_detectors[port]
                 det.on_session_end(now)
                 es.is_charging = False
                 es.last_end_time = now
+                db_sid = sid if (sid and sid > 0) else 0
                 if es.session_wh >= 0.05:
                     ps = self.state.ports.get(port)
                     if ps:
                         self._publish_charge_event(
-                            port, sid, es, now,
+                            port, db_sid, es, now,
                             ps.voltage, ps.current, duration)
-                    _LOGGER.info("Closing session %d (port %d, %.1fWh, %ds)", sid, port, es.session_wh, duration)
-                    self._history.end_session(sid, es.session_wh, es.max_power, 0, 0, duration)
+                    _LOGGER.info("Closing session %s (port %d, %.1fWh, %ds)",
+                                 sid if sid else "n/a", port, es.session_wh, duration)
+                    if db_sid and self._history and self.record_sessions:
+                        self._history.end_session(sid, es.session_wh, es.max_power, 0, 0, duration)
+
+    def resume_recording_sessions(self) -> None:
+        """打开记录开关时调用：把关闭期间仍在充电的占位会话立即转为真实记录。
+
+        对每个持有占位（负）sid 的端口：异步补建 DB 会话（start_session）并
+        从打开时刻起重新累计该端口能量（丢置关闭期间的积分，与"关闭不记录"
+        语义一致）。此后该充电会话的曲线/历史立即有数据，无需等到下次充电。
+        注意：必须在事件循环内调用。
+        """
+        if not self._history:
+            return
+        loop = asyncio.get_running_loop()
+        now = time.time()
+        for port, sid in list(self._active_sessions.items()):
+            if sid >= 0:
+                continue  # 已是真实会话（记录开启时创建）
+            es = self._energy_states.get(port)
+            if not es or not es.is_charging:
+                continue
+            ps = self.state.ports.get(port)
+            protocol = (ps.protocol if ps else "") or ""
+            # 从打开时刻重新开始记录：重置会话起点、能量累计与峰值
+            # （峰值不保留切换前的值，避免污染转正会话的统计）
+            es.session_start = now
+            es.session_wh = 0.0
+            es.max_power = 0.0
+            es.max_current = 0.0
+
+            task = loop.run_in_executor(None, self._history.start_session, port, protocol)
+
+            def _on_upgrade(t, p=port, fake=sid):
+                """转正回调：若窗口内会话已结束或被新会话替换，立即闭合刚建的
+                DB 会话行（start_session 已完成，避免孤儿行）；否则写入真 sid。"""
+                if t.exception():
+                    _LOGGER.error("Resume recording session failed for port %d: %s", p, t.exception())
+                    return
+                new_sid = t.result()
+                if not new_sid:
+                    _LOGGER.error("Resume recording session failed for port %d: DB returned no sid", p)
+                    return
+                with self._sess_lock:
+                    es2 = self._energy_states.get(p)
+                    if es2 is None or not es2.is_charging or self._active_sessions.get(p) != fake:
+                        # 转正窗口内会话已结束/被替换：闭合刚建的 DB 行
+                        self._close_resumed_orphan(p, new_sid)
+                        return
+                    self._active_sessions[p] = new_sid
+                _LOGGER.info("Session recording resumed for port %d (sid=%s)", p, new_sid)
+
+            task.add_done_callback(_on_upgrade)
+
+    def _close_resumed_orphan(self, port: int, session_id: int) -> None:
+        """闭合转正期间被过早创建的 DB 会话行（会话在 start_session 完成前已结束）。"""
+        if not self._history:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _LOGGER.warning(
+                "_close_resumed_orphan: no event loop, session %d left open for port %d",
+                session_id, port)
+            return
+        task = loop.run_in_executor(None, self._history.delete_session, session_id)
+        task.add_done_callback(
+            lambda t, _sid=session_id: _LOGGER.error(
+                "Close resumed orphan session %d failed: %s", _sid, t.exception())
+            if t.exception() else None)
+
+    def _record_charge_point(self, piid: int, voltage: float, current: float,
+                             protocol: str = "") -> bool:
+        """写入会话采样点（仅真实会话且记录开启时；占位负 sid 或记录关闭均跳过）。
+
+        集中两处采样点写入门控，返回是否实际提交了写库任务。
+        """
+        if not self.record_sessions:
+            return False
+        sid = self._active_sessions.get(piid)
+        if not sid or sid <= 0:
+            return False
+        loop = asyncio.get_running_loop()
+        task = loop.run_in_executor(
+            None, self._history.record_charge_point,
+            sid, voltage, current, round(voltage * current, 1), protocol)
+        task.add_done_callback(
+            lambda t: _LOGGER.error("Record charge point failed: %s", t.exception()) if t.exception() else None)
+        return True
 
     def _close_session(self, piid, timestamp, voltage=0, current=0):
-        """Close a charge session: cleanup state and write to DB.
-        Returns sid if a session was closed, None otherwise.
+        """Close a charge session: cleanup state, notify, and write to DB.
+
+        会话记录开关（record_sessions）只影响 DB 写入：关闭记录期间创建的会话
+        使用内存占位 sid（负值），实时显示与充电完成事件（MQTT，存在有效能量
+        >=0.05Wh 时）照常；仅真实会话（开启期间创建的正 sid）且开关开启时才落库。
+        重开开关后正在充电的会话保持显示（占位 sid 仍在 _active_sessions）。
         """
         det = self._charge_detectors[piid]
         es = self._energy_states[piid]
         with self._sess_lock:
             sid = self._active_sessions.pop(piid, None)
-        if not sid:
+        if sid is None and not es.is_charging:
             return None
         det.on_session_end(timestamp)
         es.is_charging = False
         es.last_end_time = timestamp
-        if sid and self._history:
-            duration = int(timestamp - (es.session_start or timestamp))
+        duration = int(timestamp - (es.session_start or timestamp))
+        # 仅真实会话（开启记录期间创建的正 sid）可以写库；负 sid 为关闭期间占位
+        db_sid = sid if (sid and sid > 0) else 0
+
+        if es.session_wh < 0.05:
+            # 无有效能量（如瞬时插拔）：不发事件、不写库（恢复旧语义）；
+            # 真实会话（正 sid）需清理其占用的 DB 会话行
+            if db_sid and self._history and self.record_sessions:
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    _LOGGER.warning("_close_session: no event loop, skip DB delete for session %d", sid)
+                    return sid
+                task = loop.run_in_executor(
+                    None, self._history.delete_session, sid)
+                task.add_done_callback(
+                    lambda t, _sid=sid: _LOGGER.error("Close session %d failed: %s", _sid, t.exception()) if t.exception() else None)
+            else:
+                _LOGGER.info("Charge session ended without recording (port %d, %.1fWh, %ds)",
+                             piid, es.session_wh, duration)
+            return sid
+
+        # 充电完成事件：仅在存在有效能量（>=0.05Wh）时发布，记录开关不影响
+        # HA 通知；未落库会话（recorded=False）session_id 用 0 表示。
+        self._publish_charge_event(piid, db_sid, es, timestamp,
+                                   voltage, current, duration)
+
+        if not db_sid:
+            # 记录关闭期间的会话（占位 sid）：事件已发，不写库、不发 SSE
+            _LOGGER.info("Charge session ended without DB recording (port %d, %.1fWh, %ds)",
+                         piid, es.session_wh, duration)
+            return sid
+
+        # Emit SSE session_end event for real-time UI update
+        self._sse_emit("session_end", {
+            "session_id": sid,
+            "port": PORT_NAMES.get(piid, str(piid)),
+            "port_id": piid,
+            "total_wh": round(es.session_wh, 4),
+            "peak_power_w": round(es.max_power, 2),
+            "duration_sec": duration,
+        })
+        if self._history and self.record_sessions:
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 _LOGGER.warning("_close_session: no event loop, skip DB write for session %d", sid)
                 return sid
-
-            if es.session_wh < 0.05:
-                task = loop.run_in_executor(
-                    None, self._history.delete_session, sid)
-            else:
-                # Publish charge completion event via MQTT
-                self._publish_charge_event(piid, sid, es, timestamp,
-                                           voltage, current, duration)
-                # Emit SSE session_end event for real-time UI update
-                self._sse_emit("session_end", {
-                    "session_id": sid,
-                    "port": PORT_NAMES.get(piid, str(piid)),
-                    "port_id": piid,
-                    "total_wh": round(es.session_wh, 4),
-                    "peak_power_w": round(es.max_power, 2),
-                    "duration_sec": duration,
-                })
-                task = loop.run_in_executor(
-                    None, self._history.end_session, sid,
-                    round(es.session_wh, 4), round(es.max_power, 2),
-                    round(voltage, 2), round(current, 2), duration)
+            task = loop.run_in_executor(
+                None, self._history.end_session, sid,
+                round(es.session_wh, 4), round(es.max_power, 2),
+                round(voltage, 2), round(current, 2), duration)
             task.add_done_callback(
                 lambda t, _sid=sid: _LOGGER.error("Close session %d failed: %s", _sid, t.exception()) if t.exception() else None)
         return sid
 
     def _publish_charge_event(self, piid, sid, es, timestamp, voltage, current, duration):
-        """Publish charge completion event via MQTT."""
+        """Publish charge completion event via MQTT.
+
+        sid 约定：0 表示会话未落库（记录关闭 / DB 启动失败），此时 recorded=False；
+        正值为真实 DB 会话 id（recorded=True）。
+        """
         if not self._mqtt_publish:
             return
         try:
@@ -248,6 +376,7 @@ class BLEManager:
                 "port": PORT_NAMES.get(piid, str(piid)),
                 "port_id": piid,
                 "session_id": sid,
+                "recorded": bool(sid),
                 "start_time": datetime.fromtimestamp(es.session_start, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if es.session_start else None,
                 "end_time": datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                 "duration_sec": duration,
@@ -754,19 +883,13 @@ class BLEManager:
                         if det.should_end_session(es, now):
                             self._low_current_count[piid] = 0
                             sid = self._close_session(piid, now, ps.voltage, ps.current)
-                            if sid:
+                            if sid and sid > 0:
                                 _LOGGER.info("Timer ended session %d (port %d, %.1fWh)",
                                              sid, piid, es.session_wh)
                         else:
-                            sid = self._active_sessions.get(piid)
-                            if sid:
-                                task = loop.run_in_executor(
-                                    None, self._history.record_charge_point,
-                                    sid, ps.voltage, ps.current,
-                                    round(ps.voltage * ps.current, 1),
-                                    ps.protocol or "")
-                                task.add_done_callback(
-                                    lambda t: _LOGGER.error("Timer record_charge_point failed: %s", t.exception()) if t.exception() else None)
+                            # 仅真实会话（正 sid）且记录开启时写入采样点
+                            self._record_charge_point(
+                                piid, ps.voltage, ps.current, ps.protocol or "")
                     # port_history: always write for chart continuity
                     task = loop.run_in_executor(
                         None, self._history.record_port_data,
@@ -1108,7 +1231,7 @@ class BLEManager:
                 if es.is_charging and det.should_end_session(es, timestamp):
                     self._low_current_count[piid] = 0
                     sid = self._close_session(piid, timestamp, voltage, current)
-                    if sid:
+                    if sid and sid > 0:
                         _LOGGER.info("Det ended session %d (port %d, %.1fWh)",
                                      sid, piid, es.session_wh)
                     return  # Session ended by detector, skip normal session management
@@ -1120,7 +1243,8 @@ class BLEManager:
                     start_threshold = 0.3
 
                 if active and current > start_threshold and not es.is_charging:
-                    # Start new session
+                    # Start new session（内存会话生命周期始终完整：即使记录关闭也
+                    # 保持实时显示；仅 DB 写入受 record_sessions 控制）
                     self._low_current_count[piid] = 0
                     es.is_charging = True
                     es.session_wh = 0
@@ -1130,12 +1254,30 @@ class BLEManager:
                     if self._history:
                         loop = asyncio.get_running_loop()
                         protocol = port_info.get("protocol", "")
-                        task = loop.run_in_executor(None, self._history.start_session, piid, protocol)
-                        def _on_session_start(t, p=piid):
-                            if not t.exception():
+                        if self.record_sessions:
+                            task = loop.run_in_executor(None, self._history.start_session, piid, protocol)
+                            def _on_session_start(t, p=piid):
+                                if t.exception():
+                                    _LOGGER.error("Start session failed for port %d: %s", p, t.exception())
+                                    return
+                                new_sid = t.result()
+                                if not new_sid:
+                                    _LOGGER.error("Start session failed for port %d: DB returned no sid", p)
+                                    return
                                 with self._sess_lock:
-                                    self._active_sessions[p] = t.result()
-                        task.add_done_callback(_on_session_start)
+                                    es2 = self._energy_states.get(p)
+                                    if es2 is None or not es2.is_charging or self._active_sessions.get(p) is not None:
+                                        # 回调前会话已结束/被新会话取代：闭合刚建的 DB 行
+                                        self._close_resumed_orphan(p, new_sid)
+                                        return
+                                    self._active_sessions[p] = new_sid
+                            task.add_done_callback(_on_session_start)
+                        else:
+                            # 记录关闭：不写库，使用内存伪造负 sid 保持会话
+                            # 实时显示/充电完成事件正常（负值不与真实会话冲突）
+                            self._fake_sid_counter -= 1
+                            with self._sess_lock:
+                                self._active_sessions[piid] = self._fake_sid_counter
 
                 elif not active and es.is_charging:
                     # Port closed — end session immediately (no debounce needed)
@@ -1149,26 +1291,19 @@ class BLEManager:
                     if self._low_current_count[piid] >= self._LOW_CURRENT_N or det.should_end_session(es, timestamp):
                         self._low_current_count[piid] = 0
                         sid = self._close_session(piid, timestamp, voltage, current)
-                        if sid:
+                        if sid and sid > 0:
                             _LOGGER.info("LowCurrent ended session %d (port %d, %.1fWh)",
                                          sid, piid, es.session_wh)
                 # Catch missed end_session: port turns off but session not tracked
                 elif current <= 0.1 and not es.is_charging and piid in self._active_sessions:
                     sid = self._close_session(piid, timestamp)
-                    if sid:
+                    if sid and sid > 0:
                         _LOGGER.warning("Closing stale session %d on port %d", sid, piid)
 
                 # Record charge points (every push during active session)
                 if self._history and es.is_charging and piid in self._active_sessions:
-                    sid = self._active_sessions.get(piid)
-                    if sid:
-                        loop = asyncio.get_running_loop()
-                        proto = port_info.get("protocol", "")
-                        task = loop.run_in_executor(
-                            None, self._history.record_charge_point,
-                            sid, voltage, current, voltage * current, proto)
-                        task.add_done_callback(
-                            lambda t: _LOGGER.error("Record point failed: %s", t.exception()) if t.exception() else None)
+                    self._record_charge_point(
+                        piid, voltage, current, port_info.get("protocol", ""))
 
                 # Record to history (existing)
                 if self._history and port_info.get("active", False):

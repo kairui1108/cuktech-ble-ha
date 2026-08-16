@@ -111,6 +111,11 @@ class PortHistory:
             );
             CREATE INDEX IF NOT EXISTS idx_charge_points_session ON charge_points(session_id);
             CREATE INDEX IF NOT EXISTS idx_charge_points_timestamp ON charge_points(timestamp);
+
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
         """)
         # Migration: add protocol column to charge_points if missing
         try:
@@ -118,6 +123,43 @@ class PortHistory:
         except sqlite3.OperationalError:
             self._conn.execute("ALTER TABLE charge_points ADD COLUMN protocol TEXT DEFAULT ''")
             self._conn.commit()
+
+    # ── Runtime meta storage (single source for runtime toggles) ──
+
+    def get_meta(self, key: str, default: str = "") -> str:
+        """Read a runtime meta value from the DB. Returns default if absent/failed."""
+        if not self._conn:
+            return default
+        with self._db_lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+                return row["value"] if row else default
+            except Exception as e:
+                _LOGGER.error("Failed to read meta %s: %s", key, e)
+                return default
+
+    def set_meta(self, key: str, value: str):
+        """Persist a runtime meta value (upsert)."""
+        if not self._conn:
+            return
+        with self._db_lock:
+            try:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    (key, value))
+                self._conn.commit()
+            except Exception as e:
+                _LOGGER.error("Failed to write meta %s: %s", key, e)
+
+    def get_session_recording(self) -> bool:
+        """Whether charge session recording is enabled (DB meta, default True)."""
+        value = self.get_meta("session_recording", "true").strip().lower()
+        return value not in ("0", "false", "no", "off")
+
+    def set_session_recording(self, enabled: bool) -> None:
+        """Persist the charge session recording toggle (DB meta, survives restart)."""
+        self.set_meta("session_recording", "true" if enabled else "false")
 
     def _checkpoint_wal(self):
         """Run WAL checkpoint if enough pages have accumulated."""

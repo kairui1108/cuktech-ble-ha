@@ -313,3 +313,106 @@ class TestHandleProtocol:
 
         result = await server.handle_protocol(request)
         assert result.status == 400
+
+
+class TestSessionRecordingAPI:
+    """/api/session-recording 开关接口（DB meta 持久化，即时生效）。"""
+
+    @pytest.fixture
+    def server(self, real_history):
+        """Create a Server instance with real history and mock ble."""
+        from ha_server import Server
+        s = Server.__new__(Server)
+        s.history = real_history
+        s.ble = MagicMock()
+        s.ble.record_sessions = True
+        s._status_cache_valid = False
+        s._status_cache_bytes = None
+        return s
+
+    @pytest.mark.asyncio
+    async def test_get_enabled(self, server):
+        """GET 返回当前开关状态。"""
+        request = AsyncMock()
+        request.method = "GET"
+        result = await server.handle_session_recording(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert body["enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_post_disables_and_persists(self, server):
+        """POST 关闭后即时生效并持久化到 DB meta。"""
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"enabled": False})
+        result = await server.handle_session_recording(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert body["enabled"] is False
+        assert server.ble.record_sessions is False
+        assert server.history.get_session_recording() is False  # 重启后仍生效
+        assert server._status_cache_valid is False              # 状态缓存已失效
+
+    @pytest.mark.asyncio
+    async def test_post_requires_boolean(self, server):
+        """enabled 非布尔值时拒绝。"""
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"enabled": "yes"})
+        result = await server.handle_session_recording(request)
+        assert result.status == 400
+
+    @pytest.mark.asyncio
+    async def test_post_enable_resumes_fake_sessions(self, server):
+        """从关闭切换到打开时，触发正在充电端口立即转正记录。"""
+        server.ble.record_sessions = False
+        server.ble.resume_recording_sessions = MagicMock()
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"enabled": True})
+        result = await server.handle_session_recording(request)
+        body = json.loads(result.body)
+        assert body["enabled"] is True
+        server.ble.resume_recording_sessions.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_post_enable_same_state_no_resume(self, server):
+        """已是开启状态再次开启时，不应重复触发转正。"""
+        server.ble.resume_recording_sessions = MagicMock()
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"enabled": True})
+        await server.handle_session_recording(request)
+        server.ble.resume_recording_sessions.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_status_includes_session_recording(self, server):
+        """/api/status 响应包含 session_recording 字段。"""
+        server.state = MagicMock()
+        server.state.to_dict = AsyncMock(return_value={})
+        server.mqtt_client = None
+        request = AsyncMock()
+        request.query = {}
+        result = await server.handle_status(request)
+        body = json.loads(result.body)
+        assert body["session_recording"] is True
+
+    @pytest.mark.asyncio
+    async def test_post_without_history_ok(self):
+        """history 未连接/不可用时 POST 开关不崩溃，内存开关照常生效。"""
+        from ha_server import Server
+        s = Server.__new__(Server)
+        s.history = None
+        s.ble = MagicMock()
+        s.ble.record_sessions = True
+        s.ble.resume_recording_sessions = MagicMock()
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"enabled": False})
+        result = await s.handle_session_recording(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert body["enabled"] is False
+        assert s.ble.record_sessions is False
+        s.ble.resume_recording_sessions.assert_not_called()
