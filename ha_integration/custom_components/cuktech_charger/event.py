@@ -1,7 +1,6 @@
 """Event platform for CUKTECH Charger — charge completion events."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from homeassistant.components.event import EventEntity, EventEntityDescription
@@ -11,8 +10,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
 from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
 
 EVENT_DESCRIPTION = EventEntityDescription(
     key="charge_end",

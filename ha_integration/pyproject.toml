@@ -9,6 +9,12 @@ description = "Home Assistant integration for CUKTECH 10 GaN Charger Ultra"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
 [tool.setuptools.packages.find]
 where = ["custom_components"]
 

@@ -49,7 +49,8 @@ const SCENE_DESCS = {
     4: '多个端口均衡分配充电功率',
 };
 const SCENE_PIID = 5;
-const SCREEN_TIMES = ['5分钟', '1分钟', '10分钟', '30分钟', '常亮'];
+// PIID 6 息屏时间: 数组下标即原始值；value=5 是固件对 value=1（"1分钟"）的别名，追加同名项避免显示 undefined
+const SCREEN_TIMES = ['5分钟', '1分钟', '10分钟', '30分钟', '常亮', '1分钟'];
 const PORT_KEYS = ['c1', 'c2', 'c3', 'a'];
 const PORT_NAMES = { c1: 'C1', c2: 'C2', c3: 'C3', a: 'USB-A' };
 const PORT_COLORS = { c1: '#FF7A00', c2: '#46B4FF', c3: '#89D8F3', a: '#FFD24B' };

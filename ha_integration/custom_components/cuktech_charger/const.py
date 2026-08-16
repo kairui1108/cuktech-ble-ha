@@ -9,7 +9,6 @@ TOPIC_PORT = f"{TOPIC_PREFIX}/port"
 TOPIC_SETTINGS = f"{TOPIC_PREFIX}/settings"
 TOPIC_STATUS = f"{TOPIC_PREFIX}/status"
 TOPIC_SET = f"{TOPIC_PREFIX}/set"
-TOPIC_PROBE = f"{TOPIC_PREFIX}/__probe__"
 TOPIC_CHARGE_EVENT = f"{TOPIC_PREFIX}/charge_event"
 
 # Port mapping
@@ -41,7 +40,8 @@ PIID_NAMES = {
 # PIID display values
 PIID_DISPLAY = {
     5: {1: "AI模式", 2: "数码生态", 3: "单口模式", 4: "均衡模式"},
-    6: {0: "5分钟", 1: "1分钟", 2: "10分钟", 3: "30分钟", 4: "常亮", 5: "1分钟(设备固件: value=5 也表示1分钟)"},
+    # PIID 6: value 5 是设备固件对 value 1（"1分钟"）的别名，映射为同名选项以匹配 ble-server 端
+    6: {0: "5分钟", 1: "1分钟", 2: "10分钟", 3: "30分钟", 4: "常亮", 5: "1分钟"},
     7: None,  # PIID 7 = bit flags (SCP/MiPPS/UFCS), 不需要显示映射
     13: {0: "English", 1: "中文"},
     15: {0: "关闭", 1: "开启"},

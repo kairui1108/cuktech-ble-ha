@@ -1,7 +1,6 @@
 """Number platform for CUKTECH Charger - MQTT real-time."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from homeassistant.components.number import NumberEntity, NumberMode
@@ -12,8 +11,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import CuktechMQTTCoordinator
 from .base_entity import CuktechBaseEntity, CB_TYPE_SETTINGS
 from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
 
 COUNTDOWN_PIIDS = {
     9: {"name": "C1 倒计时", "icon": "mdi:timer-cog-outline"},

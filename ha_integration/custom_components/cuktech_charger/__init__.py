@@ -22,7 +22,6 @@ from .const import (
     DEVICE_INFO,
     TOPIC_PORT,
     TOPIC_PREFIX,
-    TOPIC_PROBE,
     TOPIC_SETTINGS,
     TOPIC_STATUS,
     TOPIC_SET,
@@ -35,10 +34,6 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH, Platform.SELECT, Platform.BINARY_SENSOR, Platform.NUMBER, Platform.EVENT]
 HEALTH_CHECK_INTERVAL = timedelta(seconds=30)
-
-MQTT_RETRY_COUNT = 8
-MQTT_RETRY_BASE_DELAY = 1
-MQTT_RETRY_MAX_DELAY = 15
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -295,22 +290,14 @@ class CuktechMQTTCoordinator:
         _LOGGER.info("CUKTECH Charger MQTT coordinator unloaded")
 
     async def _async_wait_mqtt_ready(self) -> None:
-        """Wait for MQTT to become available with exponential backoff."""
-        for attempt in range(MQTT_RETRY_COUNT):
-            try:
-                await mqtt.async_publish(self.hass, TOPIC_PROBE, "ready")
-                return
-            except Exception as err:
-                delay = min(MQTT_RETRY_BASE_DELAY * (2 ** attempt), MQTT_RETRY_MAX_DELAY)
-                if attempt < MQTT_RETRY_COUNT - 1:
-                    _LOGGER.debug(
-                        "MQTT not ready, attempt %d/%d, retrying in %ds: %s",
-                        attempt + 1, MQTT_RETRY_COUNT, delay, err,
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    _LOGGER.error("MQTT not ready after %d attempts", MQTT_RETRY_COUNT)
-                    raise ConfigEntryNotReady("MQTT not available")
+        """Wait for the MQTT client (setup) to become available.
+
+        使用官方 mqtt.async_wait_for_mqtt_client()：当 MQTT 集成已加载/客户端可用时
+        立即返回，否则内部等至 AVAILABILITY_TIMEOUT（50s），超时或未启用 MQTT 时返回
+        False，由 HA 稍后重试整个 setup，避免启动时长时间阻塞。
+        """
+        if not await mqtt.async_wait_for_mqtt_client(self.hass):
+            raise ConfigEntryNotReady("MQTT not available")
 
     # --- Device info synchronization (shared logic) ---
 
@@ -331,6 +318,7 @@ class CuktechMQTTCoordinator:
     def _sync_ble_state(self, connected: bool) -> bool:
         """Sync BLE state from actual connection. Returns True if enabled state changed."""
         prev_enabled = self._ble_enabled
+        prev_connected = self._ble_connected
         self._ble_connected = connected
         if connected and not self._ble_enabled:
             self._ble_enabled = True
@@ -338,6 +326,11 @@ class CuktechMQTTCoordinator:
         elif not connected and self._ble_enabled:
             self._ble_enabled = False
             _LOGGER.info("BLE disconnected, syncing switch state")
+        if prev_connected and not connected:
+            # 设备断开：清空端口数据，避免实体展示陈旧读数（设置等保留，重连后由服务器重新发布）
+            self._port_data = {}
+            self._notify_callbacks(self._port_callbacks)
+            _LOGGER.info("BLE disconnected, cleared stale port data")
         return self._ble_enabled != prev_enabled
 
     def _clear_pending_if_confirmed(self) -> None:

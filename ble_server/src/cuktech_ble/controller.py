@@ -132,7 +132,9 @@ class CuktechBLEController:
 
         elif data[2] == 0x00 and len(data) >= 6:
             # 多帧头: 0000 00 XX count_lo count_hi
-            frame_count = data[4] + 0x100 * data[5]
+            # 与 _handle_multiframe 等处的处理一致，限制帧数上限，防止异常/恶意设备
+            # 上报超大 count 导致本协程在 wait_notify 上逐帧挂死数小时
+            frame_count = min(data[4] + 0x100 * data[5], 100)
             data_id = data[3]
             _LOGGER.debug("Multi-frame auth response: %d frames, ID=0x%02x", frame_count, data_id)
 

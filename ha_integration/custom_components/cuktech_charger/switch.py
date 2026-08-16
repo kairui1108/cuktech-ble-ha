@@ -1,7 +1,6 @@
 """Switch platform for CUKTECH Charger - MQTT real-time."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
@@ -12,8 +11,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import CuktechMQTTCoordinator
 from .base_entity import CuktechBaseEntity, CB_TYPE_ALL, CB_TYPE_SETTINGS
 from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
 
 # 各端口支持的协议开关定义
 PROTOCOL_SWITCHES = [

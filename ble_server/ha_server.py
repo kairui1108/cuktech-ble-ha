@@ -674,7 +674,8 @@ class Server:
         use_date = hours > 12
         aligned_now = (int(now_ts) // interval) * interval
         epochs = list(range(aligned_start, aligned_now, interval))
-        raw_rows = self.history.query_history_multi(1, 4, hours, interval)
+        # SQLite 查询为同步阻塞调用，放入线程池执行，避免阻塞事件循环
+        raw_rows = await asyncio.to_thread(self.history.query_history_multi, 1, 4, hours, interval)
 
         def _build_chart(epochs_, labels, raw_rows_):
             port_data = {p: {} for p in range(1, 5)}
@@ -744,7 +745,7 @@ class Server:
         if port not in range(1, 5):
             return web.json_response({"ok": False, "error": "invalid port"}, status=400)
 
-        stats = self.history.get_statistics(port, int(hours))
+        stats = await asyncio.to_thread(self.history.get_statistics, port, int(hours))
         return web.json_response({"ok": True, "data": stats})
 
     async def handle_export(self, request):
@@ -758,7 +759,7 @@ class Server:
         if port not in range(1, 5):
             return web.json_response({"ok": False, "error": "invalid port"}, status=400)
 
-        csv_data = self.history.export_csv(port, int(hours))
+        csv_data = await asyncio.to_thread(self.history.export_csv, port, int(hours))
         return web.Response(
             body=csv_data,
             content_type="text/csv",

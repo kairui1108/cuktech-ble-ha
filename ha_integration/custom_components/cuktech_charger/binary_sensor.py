@@ -1,7 +1,6 @@
 """Binary sensor platform for CUKTECH Charger - MQTT real-time."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
@@ -12,8 +11,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import CuktechMQTTCoordinator
 from .base_entity import CuktechBaseEntity, CB_TYPE_ALL, CB_TYPE_PORT
 from .const import DOMAIN, PORT_NAMES
-
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(

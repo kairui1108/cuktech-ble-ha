@@ -118,3 +118,77 @@ class TestPortHistory:
         assert len(rows) == 4
         ports_in_result = {row["port"] for row in rows}
         assert ports_in_result == {1, 2, 3, 4}
+
+
+class TestBatchCommit:
+    """批量提交（H2）：缓冲写入后读取路径自动 flush，保证写后读一致性。"""
+
+    def test_batch_records_visible_on_read(self, history, mock_ble_data):
+        """多次快速写入（未到提交阈值）后，读取前自动落盘可见。"""
+        for _ in range(3):
+            history.record_port_data(1, mock_ble_data)
+        rows = history.query_history(1, hours=1)
+        assert len(rows) == 3
+
+    def test_flush_commits_pending(self, history, mock_ble_data):
+        """flush() 将缓冲区中的采样强制落盘。"""
+        for _ in range(3):
+            history.record_port_data(1, mock_ble_data)
+        history.flush()
+        assert len(history._pending) == 0
+        rows = history.query_history(1, hours=1)
+        assert len(rows) == 3
+
+    def test_statistics_sees_buffered_records(self, history, mock_ble_data):
+        """统计数据读取前同样 flush 缓冲，samples 计数完整。"""
+        for _ in range(5):
+            history.record_port_data(1, mock_ble_data)
+        stats = history.get_statistics(1, hours=1)
+        assert stats["samples"] == 5
+
+
+class TestSessionCleanup:
+    """会话清理（H5）：闭环会话过期回收 + 崩溃孤儿会话启动回收。"""
+
+    def test_cleanup_removes_expired_closed_sessions(self, history):
+        """过期闭环会话及其采样点应被清理（此前 charge_sessions 永不删除）。"""
+        sid = history.start_session(1, protocol="PD")
+        history.record_charge_point(sid, 20.0, 2.5, 50.0, "PD")
+        history.end_session(sid, 1.0, 50.0, 20.0, 2.5, 600)
+        # 把该会话的 end_time 改到保留期之外
+        history._conn.execute(
+            "UPDATE charge_sessions SET end_time = ? WHERE id = ?",
+            (time.time() - 200000, sid))
+        history._conn.commit()
+
+        history._cleanup_old_data()
+
+        sessions, _ = history.get_sessions(port=1, period="all")
+        assert len(sessions) == 0
+        assert history.get_session_points(sid) == []
+
+    def test_cleanup_keeps_recent_closed_sessions(self, history):
+        """保留期内闭环会话不受清理影响。"""
+        sid = history.start_session(1, protocol="PD")
+        history.end_session(sid, 1.0, 50.0, 20.0, 2.5, 600)
+        history._cleanup_old_data()
+        sessions, _ = history.get_sessions(port=1, period="all")
+        assert any(s["id"] == sid for s in sessions)
+
+    def test_connect_reaps_orphan_sessions(self, temp_db):
+        """崩溃遗留的未结束会话（end_time IS NULL）在下次启动 connect 时被清理。"""
+        from history import PortHistory
+
+        h1 = PortHistory(db_path=temp_db)
+        h1.connect()
+        sid = h1.start_session(1, protocol="PD")
+        h1.record_charge_point(sid, 20.0, 2.5, 50.0, "PD")
+        # 不调用 end_session，模拟进程崩溃
+        h1.close()
+
+        h2 = PortHistory(db_path=temp_db)
+        h2.connect()  # 应回收孤儿会话
+        assert h2.get_session_points(sid) == []
+        sessions, _ = h2.get_sessions(port=1, period="all")
+        assert len(sessions) == 0
+        h2.close()

@@ -19,6 +19,10 @@ DEFAULT_DB_PATH = "port_history.db"
 class PortHistory:
     """SQLite-based port history storage."""
 
+    # 批量提交参数：降低高频采样下的写放大（每次 BLE 推送不再单独 COMMIT）
+    BATCH_SIZE = 50          # 缓冲行数达到该值即强制提交
+    BATCH_INTERVAL = 1.0     # 距上次提交超过该秒数即强制提交
+
     def __init__(self, db_path: str = DEFAULT_DB_PATH, retention_days: int = DEFAULT_RETENTION_DAYS):
         self.db_path = db_path
         self.retention_days = retention_days
@@ -26,6 +30,8 @@ class PortHistory:
         self._db_lock = threading.Lock()  # 保护所有读写操作
         self._last_cleanup = 0
         self._last_wal_checkpoint = 0
+        self._pending: list[tuple] = []   # 待批量写入的 port_history 行
+        self._last_commit = 0.0
 
     def connect(self):
         """Open database connection and create tables."""
@@ -37,12 +43,16 @@ class PortHistory:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA wal_autocheckpoint=1000")  # checkpoint every 1000 pages
         self._create_tables()
+        self._reap_orphan_sessions()
         self._cleanup_old_data()
         _LOGGER.info("History database connected: %s", self.db_path)
 
     def close(self):
         """Close database connection with checkpoint and graceful shutdown."""
         if self._conn:
+            with self._db_lock:
+                # 落盘缓冲区中的采样，避免关闭时丢失最近 ~1s 的数据
+                self._flush_pending()
             try:
                 # Try to checkpoint WAL before closing
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -116,48 +126,102 @@ class PortHistory:
         except Exception:
             pass
 
+    def _reap_orphan_sessions(self):
+        """启动时清理崩溃遗留的未结束会话（end_time IS NULL）及其采样点。
+
+        进程崩溃（未走 on_shutdown 的 _close_active_sessions）会留下
+        end_time IS NULL / total_wh=0 的会话行；重启后内存会话状态已丢失，
+        这类行不可能再被 end_session 更新，属于永久孤儿数据——get_sessions
+        按 total_wh>0 过滤使它们永远不可见、也永远不被清理。
+        仅在启动时执行（运行时正常进行中的会话 end_time IS NULL，不可删）。
+        """
+        if not self._conn:
+            return
+        try:
+            self._conn.execute(
+                """DELETE FROM charge_points WHERE session_id IN
+                   (SELECT id FROM charge_sessions WHERE end_time IS NULL)""")
+            removed = self._conn.execute(
+                "DELETE FROM charge_sessions WHERE end_time IS NULL").rowcount
+            self._conn.commit()
+            if removed:
+                _LOGGER.info("Reaped %d orphan charge session(s) from unclean shutdown", removed)
+        except Exception as e:
+            _LOGGER.error("Failed to reap orphan charge sessions: %s", e)
+
     def _cleanup_old_data(self):
-        """Remove data older than retention period."""
+        """Remove data older than retention period (port samples + closed sessions)."""
         cutoff = time.time() - (self.retention_days * 86400)
         self._conn.execute("DELETE FROM port_history WHERE timestamp < ?", (cutoff,))
-        # Clean charge_points for sessions older than retention
+        # 清理过期闭环会话及其采样点（charge_sessions 行此前从不删除，会无限累积）
         self._conn.execute(
             """DELETE FROM charge_points WHERE session_id IN
                (SELECT id FROM charge_sessions WHERE end_time IS NOT NULL AND end_time < ?)""",
             (cutoff,))
+        self._conn.execute(
+            """DELETE FROM charge_sessions WHERE end_time IS NOT NULL AND end_time < ?""",
+            (cutoff,))
         self._conn.commit()
 
-    def record_port_data(self, port: int, data: dict):
-        """Record port data to database (synchronous, called from async via executor)."""
+    def flush(self):
+        """强制将缓冲区中的采样批量落盘提交。线程安全。"""
         if not self._conn:
             return
         with self._db_lock:
+            self._flush_pending()
+
+    def _flush_pending(self):
+        """将缓冲行批量 INSERT 并提交。调用方必须已持有 _db_lock。"""
+        if not self._pending:
+            return
+        try:
+            self._conn.executemany(
+                """INSERT INTO port_history (timestamp, port, voltage, current, power, active, protocol)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                self._pending,
+            )
+            self._pending.clear()
+            self._conn.commit()
+            self._last_commit = time.time()
+            # 周期性清理/checkpoint 仍挂在提交路径上，但只按时间间隔触发（每 1h / 5min）
+            if self._last_commit - self._last_cleanup > 3600:
+                self._cleanup_old_data()
+                self._last_cleanup = self._last_commit
+            if self._last_commit - self._last_wal_checkpoint > 300:
+                self._checkpoint_wal()
+                self._last_wal_checkpoint = self._last_commit
+        except Exception as e:
+            _LOGGER.error("Failed to record port data: %s", e)
+            self._pending.clear()
             try:
-                self._conn.execute(
-                    """INSERT INTO port_history (timestamp, port, voltage, current, power, active, protocol)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        time.time(),
-                        port,
-                        data.get("voltage"),
-                        data.get("current"),
-                        data.get("power"),
-                        1 if data.get("active") else 0,
-                        data.get("protocol"),
-                    )
-                )
-                self._conn.commit()
-                # Periodic cleanup every hour
-                now = time.time()
-                if now - self._last_cleanup > 3600:
-                    self._cleanup_old_data()
-                    self._last_cleanup = now
-                # Periodic WAL checkpoint every 5 minutes
-                if now - self._last_wal_checkpoint > 300:
-                    self._checkpoint_wal()
-                    self._last_wal_checkpoint = now
-            except Exception as e:
-                _LOGGER.error("Failed to record port data: %s", e)
+                self._conn.rollback()
+            except Exception:
+                pass
+
+    def record_port_data(self, port: int, data: dict):
+        """Record port data to database (synchronous, called from async via executor).
+
+        批量缓冲：攒到 BATCH_SIZE 或距上次提交超过 BATCH_INTERVAL 再批量写入，
+        大幅降低高频采样下的 COMMIT 次数与写放大。读取路径会自动 flush 未落盘
+        的缓冲行，保证"写入后立即读取可见"。
+        """
+        if not self._conn:
+            return
+        row = (
+            time.time(),
+            port,
+            data.get("voltage"),
+            data.get("current"),
+            data.get("power"),
+            1 if data.get("active") else 0,
+            data.get("protocol"),
+        )
+        with self._db_lock:
+            self._pending.append(row)
+            now = time.time()
+            if (len(self._pending) >= self.BATCH_SIZE
+                    or now - self._last_commit >= self.BATCH_INTERVAL):
+                self._flush_pending()
 
     def query_history(
         self,
@@ -174,6 +238,9 @@ class PortHistory:
         """
         if not self._conn:
             return []
+
+        # 落盘缓冲采样，保证"写入后立即读取"的一致性（批量提交引入 ≤1s 缓冲）
+        self.flush()
 
         cutoff = time.time() - (hours * 3600)
 
@@ -207,6 +274,8 @@ class PortHistory:
         """Get statistical summary for a port."""
         if not self._conn:
             return {}
+
+        self.flush()
 
         cutoff = time.time() - (hours * 3600)
         row = self._conn.execute(
@@ -268,6 +337,8 @@ class PortHistory:
         if not self._conn:
             return ""
 
+        self.flush()
+
         cutoff = time.time() - (hours * 3600)
         rows = self._conn.execute(
             """SELECT timestamp, voltage, current, power, active, protocol
@@ -298,6 +369,8 @@ class PortHistory:
         """Query history for multiple ports in a single query."""
         if not self._conn:
             return []
+
+        self.flush()
 
         cutoff = time.time() - (hours * 3600)
         rows = self._conn.execute(

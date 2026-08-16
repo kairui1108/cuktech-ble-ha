@@ -43,6 +43,7 @@ ha_components = types.ModuleType("homeassistant.components")
 ha_components.mqtt = types.ModuleType("homeassistant.components.mqtt")
 ha_components.mqtt.async_publish = AsyncMock()
 ha_components.mqtt.async_subscribe = AsyncMock()
+ha_components.mqtt.async_wait_for_mqtt_client = AsyncMock(return_value=True)
 ha_components.sensor = types.ModuleType("homeassistant.components.sensor")
 ha_components.sensor.SensorEntity = _FakeSensorEntity
 ha_components.sensor.SensorEntityDescription = MagicMock
@@ -125,6 +126,16 @@ def mock_hass():
     loop = MagicMock()
     loop.time.return_value = 1000.0
     hass.loop = loop
+
+    def _create_task(coro):
+        # 模拟 async_create_task：关闭未执行的协程，避免“coroutine never awaited”警告
+        try:
+            coro.close()
+        except Exception:
+            pass
+        return MagicMock()
+
+    hass.async_create_task = MagicMock(side_effect=_create_task)
     return hass
 
 

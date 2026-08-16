@@ -258,6 +258,46 @@ class TestCuktechMQTTCoordinator:
         assert coordinator._ble_connected is False
         assert coordinator._ble_enabled is False
 
+    def test_sync_ble_state_disconnect_clears_port_data(self, coordinator):
+        """BLE 断连（已连接→断开）时应清空端口数据，避免展示陈旧读数。"""
+        coordinator._ble_enabled = True
+        coordinator._ble_connected = True
+        coordinator._port_data = {"1": {"voltage": 20.0}, "2": {"power": 40.0}}
+        cb = MagicMock()
+        coordinator.register_port_callback(cb)
+        result = coordinator._sync_ble_state(False)
+        assert result is True
+        assert coordinator._ble_connected is False
+        assert coordinator._port_data == {}
+        cb.assert_called_once()
+
+    def test_sync_ble_state_disconnect_noop_when_never_connected(self, coordinator):
+        """从未连接过时断连不应误清数据（初始状态 _ble_connected=False）。"""
+        coordinator._port_data = {"1": {"voltage": 20.0}}
+        result = coordinator._sync_ble_state(False)
+        assert result is False
+        assert coordinator._port_data == {"1": {"voltage": 20.0}}  # 无变化
+
+    # --- MQTT readiness tests ---
+
+    @pytest.mark.asyncio
+    async def test_wait_mqtt_ready_success(self, coordinator):
+        """MQTT 客户端可用时 _async_wait_mqtt_ready 正常返回。"""
+        from unittest.mock import patch, AsyncMock
+        with patch('custom_components.cuktech_charger.mqtt.async_wait_for_mqtt_client',
+                   new=AsyncMock(return_value=True)):
+            await coordinator._async_wait_mqtt_ready()  # 不应抛出
+
+    @pytest.mark.asyncio
+    async def test_wait_mqtt_ready_failure(self, coordinator):
+        """MQTT 不可用时抛出 ConfigEntryNotReady，交给 HA 稍后重试 setup。"""
+        from unittest.mock import patch, AsyncMock
+        from homeassistant.exceptions import ConfigEntryNotReady
+        with patch('custom_components.cuktech_charger.mqtt.async_wait_for_mqtt_client',
+                   new=AsyncMock(return_value=False)):
+            with pytest.raises(ConfigEntryNotReady):
+                await coordinator._async_wait_mqtt_ready()
+
     # --- HTTP health check tests ---
 
     @pytest.mark.asyncio

@@ -1,7 +1,6 @@
 """Select platform for CUKTECH Charger - MQTT real-time."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from homeassistant.components.select import SelectEntity
@@ -12,8 +11,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import CuktechMQTTCoordinator
 from .base_entity import CuktechBaseEntity, CB_TYPE_SETTINGS
 from .const import DOMAIN, PIID_DISPLAY, SELECT_PIIDS, SELECT_OPTION_MAP
-
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -59,9 +56,6 @@ class CuktechSelect(CuktechBaseEntity, SelectEntity):
         display = PIID_DISPLAY.get(self._piid, {}).get(v)
         if display is not None:
             return display
-        # PIID 6 value=5 is firmware alias for value=1 ("1分钟")
-        if self._piid == 6 and v == 5:
-            return "1分钟"
         return None
 
     async def async_select_option(self, option: str) -> None:

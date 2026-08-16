@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.cuktech_ble.protocol import DEVICE_MAC, DEVICE_TOKEN, PORT_BITS
@@ -158,3 +160,31 @@ class TestBuildMiotTlv:
         assert r1[0] == 12   # 11 + 1
         assert r2[0] == 15   # 11 + 4
         assert r3[0] == 12   # 11 + 1
+
+
+class TestAuthMultiframeCap:
+    """认证多帧响应帧数上限（H1 回归测试）。"""
+
+    @pytest.mark.asyncio
+    async def test_recv_auth_response_caps_frame_count(self):
+        """异常/恶意设备上报超大帧数时，_recv_auth_response 应把帧数限制在 100。"""
+        from unittest.mock import AsyncMock
+        from src.cuktech_ble.controller import CuktechBLEController
+
+        ctrl = CuktechBLEController(mac="AA:BB:CC:DD:EE:FF", token="aabbccddeeff")
+        ctrl.client = AsyncMock()
+        # 多帧头: [00 00 00 01 count_lo=0xC8 count_hi=0x00] → 声称 200 帧
+        header = bytes([0x00, 0x00, 0x00, 0x01, 0xC8, 0x00])
+        frame = bytes([0x00, 0x01, 0xAA, 0xBB])  # 帧序 0x0100，载荷 0xAABB
+        calls = {"n": 0}
+
+        async def fake_wait_notify(channel, timeout=None):
+            calls["n"] += 1
+            return header if calls["n"] == 1 else frame
+
+        ctrl.wait_notify = fake_wait_notify
+
+        result = await ctrl._recv_auth_response("auth_data")
+        # 帧数被上限到 100：1 次帧头 + 100 次数据帧，而不是 200 次
+        assert calls["n"] == 101
+        assert result == b"\xaa\xbb" * 100

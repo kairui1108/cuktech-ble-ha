@@ -1,7 +1,6 @@
 """Sensor platform for CUKTECH Charger - MQTT real-time."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -17,8 +16,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import CuktechMQTTCoordinator
 from .base_entity import CuktechBaseEntity, CB_TYPE_PORT
 from .const import DOMAIN, PORT_MAP, PORT_NAMES
-
-_LOGGER = logging.getLogger(__name__)
 
 PROTOCOL_OPTIONS = ["idle", "5V", "QC", "AFC", "FCP", "SCP", "PD", "PPS", "UFCS", "Unknown"]
 

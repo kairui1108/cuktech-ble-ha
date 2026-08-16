@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.10] - 2026-08-16
+
+### Fixed
+- BLE 断连时清空端口数据，避免实体展示断连前的陈旧读数（端口值变为 unknown 而非误导性数字）
+- `_async_wait_mqtt_ready` 改用官方 `mqtt.async_wait_for_mqtt_client()`（内部限时 50s），不再阻塞最长 ~90s 的自制重试/探测发布
+
+### Changed
+- 移除 6 个平台文件中未使用的 `logging` / `_LOGGER` 导入（sensor/switch/binary_sensor/select/number/event）
+- 删除不再使用的 `TOPIC_PROBE` 常量与 `MQTT_RETRY_*` 常量
+- 声明开发测试依赖 `pytest` / `pytest-asyncio`（`pyproject.toml [project.optional-dependencies].dev`）
+
+### Tests
+- 补齐 `pytest-asyncio`（此前 `@pytest.mark.asyncio` 用例在本环境无法运行，13 例失败，现全部通过）
+- 新增用例：BLE 断连清空端口数据、MQTT 就绪等待成功/失败（ConfigEntryNotReady）
+- 新增嵌套 CI 工作流 `.github/workflows/tests.yml`（Python 3.11/3.12 矩阵）
+
 ## [1.0.9] - 2026-07-30
 
 ### Added

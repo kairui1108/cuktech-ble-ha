@@ -43,6 +43,7 @@ class TestPIIDDisplay:
         assert display[2] == "10分钟"
         assert display[3] == "30分钟"
         assert display[4] == "常亮"
+        assert display[5] == "1分钟"  # 固件别名 value=5 映射为同一选项
 
     def test_language_options(self):
         """Test language display values."""
@@ -68,6 +69,11 @@ class TestSelectOptionMap:
         assert SELECT_OPTION_MAP[6]["10分钟"] == 2
         assert SELECT_OPTION_MAP[6]["30分钟"] == 3
         assert SELECT_OPTION_MAP[6]["常亮"] == 4
+
+    def test_screen_save_time_value5_maps_to_valid_option(self):
+        """value 5 (固件别名) 必须映射为合法选项之一，不能返回注释串导致 unknown。"""
+        assert PIID_DISPLAY[6][5] in SELECT_PIIDS[6]["options"]
+        assert PIID_DISPLAY[6][5] == "1分钟"
 
     def test_language_map(self):
         """Test language option mapping."""
