@@ -136,12 +136,12 @@
         const PORT_KEY_MAP = { 1: 'c1', 2: 'c2', 3: 'c3', 4: 'a' };
 
         const SETTINGS_CONFIG = [
-            { piid: 5, name: '场景模式', options: [{ value: 1, label: 'AI模式' }, { value: 2, label: '数码生态' }, { value: 3, label: '单口模式' }, { value: 4, label: '均衡模式' }] },
-            { piid: 6, name: '息屏时间', options: [{ value: 1, label: '5分钟' }, { value: 2, label: '10分钟' }, { value: 3, label: '30分钟' }, { value: 4, label: '常亮' }, { value: 5, label: '1分钟' }] },
-            { piid: 13, name: '语言', options: [{ value: 0, label: 'English' }, { value: 1, label: '中文' }] },
-            { piid: 15, name: 'USB-A小电流', options: [{ value: 0, label: '关闭' }, { value: 1, label: '开启' }] },
-            { piid: 19, name: '空闲息屏', options: [{ value: 0, label: '关闭' }, { value: 1, label: '开启' }] },
-            { piid: 20, name: '屏幕方向锁', options: [{ value: 0, label: '关闭' }, { value: 1, label: '开启' }] }
+            { piid: 5, nameKey: 'settings.sceneMode', options: [{ value: 1, labelKey: 'scene.ai' }, { value: 2, labelKey: 'scene.eco' }, { value: 3, labelKey: 'scene.single' }, { value: 4, labelKey: 'scene.balanced' }] },
+            { piid: 6, nameKey: 'settings.screenTimeout', options: [{ value: 1, labelKey: 'settings.min5' }, { value: 2, labelKey: 'settings.min10' }, { value: 3, labelKey: 'settings.min30' }, { value: 4, labelKey: 'settings.alwaysOn' }, { value: 5, labelKey: 'settings.min1' }] },
+            { piid: 13, nameKey: 'settings.deviceLanguage', options: [{ value: 0, label: 'English' }, { value: 1, label: '中文' }] },
+            { piid: 15, nameKey: 'settings.usbATrickle', options: [{ value: 0, labelKey: 'settings.off' }, { value: 1, labelKey: 'settings.on' }] },
+            { piid: 19, nameKey: 'settings.idleScreenOff', options: [{ value: 0, labelKey: 'settings.off' }, { value: 1, labelKey: 'settings.on' }] },
+            { piid: 20, nameKey: 'settings.screenLock', options: [{ value: 0, labelKey: 'settings.off' }, { value: 1, labelKey: 'settings.on' }] }
         ];
 
         let lastSettings = {};
@@ -166,8 +166,8 @@
             setCurrentHours(minutes / 60);
             localStorage.setItem('cuktech-chart-hours', minutes);
             document.querySelectorAll('.time-btn').forEach(btn => {
-                const btnMinutes = btn.textContent === '24小时' ? 1440 : parseInt(btn.textContent);
-                btn.classList.toggle('active', btnMinutes === minutes);
+                const btnMinutes = parseInt(btn.dataset.minutes, 10);
+                if (!isNaN(btnMinutes)) btn.classList.toggle('active', btnMinutes === minutes);
             });
             fetchChartData();
         }
@@ -261,14 +261,14 @@
             if (modalRealTimePort !== null) {
                 modalRealTimePort = null;
                 btn.classList.remove('active');
-                btn.textContent = '⚡ 实时';
+                btn.textContent = I18N.t('modal.realtime');
                 if (modalRealTimeDebounce) { clearTimeout(modalRealTimeDebounce); modalRealTimeDebounce = null; }
                 if (modalRealTimeTimer) { clearInterval(modalRealTimeTimer); modalRealTimeTimer = null; }
                 if (currentModalPort) updateModalChart();
             } else {
                 modalRealTimePort = currentModalPort;
                 btn.classList.add('active');
-                btn.textContent = '⏹ 实时';
+                btn.textContent = I18N.t('modal.realtimeStop');
                 // 后台 2 秒刷新：数据到达时会通过 500ms 去抖更快更新，无数据时图表保持最新
                 if (modalRealTimeTimer) clearInterval(modalRealTimeTimer);
                 modalRealTimeTimer = setInterval(_updateRealTimeModalChart, 2000);
@@ -338,9 +338,9 @@
             modalChart = new Chart(ctx, {
                 type: 'line',
                 data: { labels: [], datasets: [
-                    { label: '电压 (V)', data: [], borderColor: colors.c1, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y' },
-                    { label: '电流 (A)', data: [], borderColor: colors.c3, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y' },
-                    { label: '功率 (W)', data: [], borderColor: colors.a, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y1' },
+                    { label: I18N.t('modal.voltage'), data: [], borderColor: colors.c1, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y' },
+                    { label: I18N.t('modal.current'), data: [], borderColor: colors.c3, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y' },
+                    { label: I18N.t('modal.power'), data: [], borderColor: colors.a, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y1' },
                 ]},
                 options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, interaction: { intersect: false, mode: 'index' },
                     plugins: { legend: { display: true, position: 'top', labels: { color: colors.textDim, font: { size: 11 }, boxWidth: 12, padding: 12 } } },
@@ -354,8 +354,13 @@
 
         function openModal(portId) {
             currentModalPort = portId;
-            document.getElementById('modalTitle').textContent = `${PORT_MAP[portId]} 端口详情`;
-            document.getElementById('modalTitle').style.color = `var(--port-${PORT_KEY_MAP[portId]})`;
+            const titleEl = document.getElementById('modalTitle');
+            // Keep the data-i18n-params in sync so a later applyTranslations
+            // (e.g. server language applied at page load) re-translates the title
+            // with the actually open port instead of the static default.
+            titleEl.setAttribute('data-i18n-params', JSON.stringify({ port: PORT_MAP[portId] }));
+            titleEl.textContent = I18N.t('modal.portDetail', { port: PORT_MAP[portId] });
+            titleEl.style.color = `var(--port-${PORT_KEY_MAP[portId]})`;
             initModalChart();
             updateModalChart();
             renderModalProtocols();
@@ -368,12 +373,12 @@
             const portKey = PORT_KEY_MAP[currentModalPort];
             const sw = protocolSwitches[portKey];
             if (!sw) {
-                container.innerHTML = '<div class="proto-title">协议开关 — 暂无数据</div>';
+                container.innerHTML = `<div class="proto-title">${I18N.t('modal.noData')}</div>`;
                 return;
             }
             const protoKeys = Object.keys(sw);
             const labels = { pd: 'PD', pps: 'PPS', ufcs: 'UFCS', scp: 'SCP' };
-            let html = '<div class="proto-title">协议开关</div><div class="proto-btns">';
+            let html = `<div class="proto-title">${I18N.t('modal.protocolSwitch')}</div><div class="proto-btns">`;
             for (const pk of protoKeys) {
                 // PD 关闭时隐藏 PPS 按钮
                 if ((portKey === 'c1' || portKey === 'c2') && pk === 'pps' && !sw.pd) continue;
@@ -383,9 +388,9 @@
             }
             html += '</div>';
             if (portKey === 'c1' || portKey === 'c2') {
-                html += '<div style="font-size:10px;color:var(--text-dim);margin-top:6px;">关闭PD后PPS也将关闭</div>';
+                html += `<div style="font-size:10px;color:var(--text-dim);margin-top:6px;">${I18N.t('modal.ppsNote')}</div>`;
             } else {
-                html += '<div style="font-size:10px;color:var(--text-dim);margin-top:6px;">需重新插拔端口设备生效</div>';
+                html += `<div style="font-size:10px;color:var(--text-dim);margin-top:6px;">${I18N.t('modal.replugNote')}</div>`;
             }
             container.innerHTML = html;
         }
@@ -417,7 +422,7 @@
             // 关闭弹窗时自动退出实时曲线模式
             if (modalRealTimePort !== null) {
                 const btn = document.getElementById('modalRealTimeBtn');
-                if (btn) { btn.classList.remove('active'); btn.textContent = '⚡ 实时'; }
+                if (btn) { btn.classList.remove('active'); btn.textContent = I18N.t('modal.realtime'); }
                 modalRealTimePort = null;
                 if (modalRealTimeDebounce) { clearTimeout(modalRealTimeDebounce); modalRealTimeDebounce = null; }
                 if (modalRealTimeTimer) { clearInterval(modalRealTimeTimer); modalRealTimeTimer = null; }
@@ -471,7 +476,11 @@
             renderCountdown(data.settings || {});
             updateSummary(data.ports);
             if (data.firmware_version) {
-                document.getElementById('firmwareVersion').textContent = '固件版本：' + data.firmware_version;
+                const fwEl = document.getElementById('firmwareVersion');
+                if (fwEl) {
+                    fwEl.dataset.firmware = data.firmware_version;
+                    fwEl.textContent = I18N.t('common.firmware', { version: data.firmware_version });
+                }
             }
             if (currentModalPort) updateModalChart();
         }
@@ -533,11 +542,14 @@
 
         function updateBleButton() {
             const btn = document.getElementById('bleToggle');
+            if (!btn) return;
             if (bleConnected) {
-                btn.textContent = '断开设备';
+                btn.textContent = I18N.t('common.disconnect');
+                btn.dataset.state = 'disconnect';
                 btn.className = 'btn btn-danger';
             } else {
-                btn.textContent = '连接设备';
+                btn.textContent = I18N.t('common.connect');
+                btn.dataset.state = 'connect';
                 btn.className = 'btn btn-primary';
             }
         }
@@ -569,9 +581,9 @@
                             </label>
                         </div>
                         <div class="port-stats">
-                            <div class="port-stat"><div class="port-stat-value">${port.voltage.toFixed(1)}</div><div class="port-stat-label">电压 V</div></div>
-                            <div class="port-stat"><div class="port-stat-value">${port.current.toFixed(1)}</div><div class="port-stat-label">电流 A</div></div>
-                            <div class="port-stat"><div class="port-stat-value">${port.power.toFixed(1)}</div><div class="port-stat-label">功率 W</div></div>
+                            <div class="port-stat"><div class="port-stat-value">${port.voltage.toFixed(1)}</div><div class="port-stat-label">${I18N.t('power.voltage')}</div></div>
+                            <div class="port-stat"><div class="port-stat-value">${port.current.toFixed(1)}</div><div class="port-stat-label">${I18N.t('power.current')}</div></div>
+                            <div class="port-stat"><div class="port-stat-value">${port.power.toFixed(1)}</div><div class="port-stat-label">${I18N.t('power.power')}</div></div>
                         </div>
                         <div class="port-protocol" style="text-align:center;margin-top:8px;font-size:11px;color:${protocolColor}">${port.protocol}</div>
                     </div>`;
@@ -584,15 +596,21 @@
             openModal(portId);
         }
 
+        function buildSettingsHtml(settings) {
+            let html = '';
+            SETTINGS_CONFIG.forEach(s => {
+                const val = settings[String(s.piid)] ?? s.options[0].value;
+                const name = I18N.t(s.nameKey);
+                const opts = s.options.map(o => `<option value="${o.value}" ${o.value === val ? 'selected' : ''}>${I18N.t(o.labelKey || o.label)}</option>`).join('');
+                html += `<div class="setting-item"><span class="setting-label">${name}</span><select class="setting-select" onchange="setSetting(${s.piid}, parseInt(this.value))">${opts}</select></div>`;
+            });
+            return html;
+        }
+
         function updateSettingsUI(settings) {
             const grid = document.getElementById('settingsGrid');
             if (Object.keys(lastSettings).length === 0) {
-                let html = '';
-                SETTINGS_CONFIG.forEach(s => {
-                    const val = settings[String(s.piid)] ?? s.options[0].value;
-                    html += `<div class="setting-item"><span class="setting-label">${s.name}</span><select class="setting-select" onchange="setSetting(${s.piid}, parseInt(this.value))">${s.options.map(o => `<option value="${o.value}" ${o.value === val ? 'selected' : ''}>${o.label}</option>`).join('')}</select></div>`;
-                });
-                grid.innerHTML = html;
+                grid.innerHTML = buildSettingsHtml(settings);
             } else {
                 SETTINGS_CONFIG.forEach(s => {
                     const select = grid.querySelector(`select[onchange*="${s.piid}"]`);
@@ -638,17 +656,17 @@
                         <div class="countdown-item">
                             <div class="countdown-header">
                                 <span class="countdown-port ${key}">${name}</span>
-                                <span class="countdown-current" id="countdown-status-${key}">未设置</span>
+                                <span class="countdown-current" id="countdown-status-${key}">${I18N.t('common.notSet')}</span>
                             </div>
                             <div class="countdown-input-group">
-                                <input type="number" class="countdown-input" id="countdown-${key}" min="0" max="1440" placeholder="分钟">
-                                <span class="countdown-unit">分钟</span>
+                                <input type="number" class="countdown-input" id="countdown-${key}" min="0" max="1440" placeholder="${I18N.t('countdown.placeholder')}">
+                                <span class="countdown-unit">${I18N.t('countdown.placeholder')}</span>
                             </div>
                             <div class="countdown-quick">
-                                ${QUICK_MINUTES.map(m => `<button class="countdown-quick-btn" onclick="setCountdown('${key}', ${m})">${m}分</button>`).join('')}
+                                ${QUICK_MINUTES.map(m => `<button class="countdown-quick-btn" onclick="setCountdown('${key}', ${m})">${I18N.t('countdown.quick', { count: m })}</button>`).join('')}
                             </div>
                             <div class="countdown-actions">
-                                <button class="countdown-toggle-btn set" id="countdown-btn-${key}" onclick="handleCountdownAction('${key}')">设置</button>
+                                <button class="countdown-toggle-btn set" id="countdown-btn-${key}" onclick="handleCountdownAction('${key}')">${I18N.t('common.set')}</button>
                             </div>
                         </div>`;
                 }
@@ -661,15 +679,15 @@
                 const key = PORT_KEY_MAP[id];
                 const statusEl = document.getElementById(`countdown-status-${key}`);
                 if (statusEl) {
-                    statusEl.textContent = currentVal > 0 ? currentVal + '分钟' : '未设置';
+                    statusEl.textContent = currentVal > 0 ? I18N.t('common.minutes', { count: currentVal }) : I18N.t('common.notSet');
                 }
                 const btn = document.getElementById(`countdown-btn-${key}`);
                 if (btn && !btn.disabled) {
                     if (currentVal > 0) {
-                        btn.textContent = '清除';
+                        btn.textContent = I18N.t('common.clear');
                         btn.className = 'countdown-toggle-btn clear';
                     } else {
-                        btn.textContent = '设置';
+                        btn.textContent = I18N.t('common.set');
                         btn.className = 'countdown-toggle-btn set';
                     }
                 }
@@ -686,17 +704,17 @@
             const btn = document.getElementById(`countdown-btn-${port}`);
             const statusEl = document.getElementById(`countdown-status-${port}`);
             const isClear = minutes === 0;
-            if (btn) { btn.disabled = true; btn.textContent = isClear ? '清除中...' : '设置中...'; }
+            if (btn) { btn.disabled = true; btn.textContent = isClear ? I18N.t('common.clearing') : I18N.t('common.setting'); }
             const piid = COUNTDOWN_PIIDS[id];
             if (!piid) { countdownPending[port] = false; if (btn) { btn.disabled = false; } return; }
             try {
                 await fetch(`${API_BASE}/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid, value: minutes }) });
                 // Immediately update button + status based on result
                 countdownPending[port] = false;
-                if (statusEl) statusEl.textContent = minutes > 0 ? minutes + '分钟' : '未设置';
+                if (statusEl) statusEl.textContent = minutes > 0 ? I18N.t('common.minutes', { count: minutes }) : I18N.t('common.notSet');
                 if (btn) {
                     btn.disabled = false;
-                    btn.textContent = minutes > 0 ? '清除' : '设置';
+                    btn.textContent = minutes > 0 ? I18N.t('common.clear') : I18N.t('common.set');
                     btn.className = `countdown-toggle-btn ${minutes > 0 ? 'clear' : 'set'}`;
                 }
             } catch (e) { console.error('Set countdown error:', e); countdownPending[port] = false; if (btn) { btn.disabled = false; } }
@@ -724,7 +742,7 @@
             if (btn.disabled) return;
             btn.disabled = true;
             try {
-                const enable = btn.textContent === '连接设备';
+                const enable = btn.dataset.state === 'connect';
                 await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: enable }) });
                 // SSE status event will update UI when connection state changes
             } catch (e) { console.error('BLE toggle error:', e); }
@@ -762,8 +780,8 @@
 
         // Set initial active button
         document.querySelectorAll('.time-btn').forEach(btn => {
-            const minutes = btn.textContent === '24小时' ? 1440 : parseInt(btn.textContent);
-            btn.classList.toggle('active', minutes === parseInt(localStorage.getItem('cuktech-chart-hours') || '60'));
+            const btnMinutes = parseInt(btn.dataset.minutes, 10);
+            if (!isNaN(btnMinutes)) btn.classList.toggle('active', btnMinutes === parseInt(localStorage.getItem('cuktech-chart-hours') || '60'));
         });
 
         function initApp() {
@@ -826,8 +844,11 @@
                             updateStatusBadge(msg.connected, msg.authenticated, msg.mqtt_connected);
                             updateBleButton();
                             if (msg.firmware_version) {
-                                document.getElementById('firmwareVersion').textContent =
-                                    '固件版本：' + msg.firmware_version;
+                                const fwEl = document.getElementById('firmwareVersion');
+                                if (fwEl) {
+                                    fwEl.dataset.firmware = msg.firmware_version;
+                                    fwEl.textContent = I18N.t('common.firmware', { version: msg.firmware_version });
+                                }
                             }
                             if (!bleConnected) {
                                 // Disconnect: clear port data
@@ -906,37 +927,37 @@
         function renderBleQuality(ble) {
             const el = document.getElementById('qualityTooltip');
             if (!el) return;
-            const uptimeText = ble.uptime > 0 ? formatDuration(ble.uptime) : '未连接';
-            const lastPushText = ble.last_push_age != null ? `${ble.last_push_age}s前` : '无';
+            const uptimeText = ble.uptime > 0 ? formatDuration(ble.uptime) : I18N.t('quality.notConnected');
+            const lastPushText = ble.last_push_age != null ? I18N.t('quality.secondsAgo', { count: ble.last_push_age }) : I18N.t('quality.none');
             const pushColor = ble.last_push_age != null && ble.last_push_age > 10 ? 'color:var(--warning)' : '';
-            const delayText = ble.next_reconnect_delay != null ? `${Math.round(ble.next_reconnect_delay)}s后` : null;
+            const delayText = ble.next_reconnect_delay != null ? I18N.t('quality.secondsLater', { count: Math.round(ble.next_reconnect_delay) }) : null;
             el.innerHTML = `<div style="font-weight:600;margin-bottom:2px;">BLE <span style="color:${scoreColor(ble.score)}">${ble.score}</span>/100</div>
                 ${qualityBar(ble.score)}
-                <div class="quality-row"><span class="quality-label">连接时长</span><span>${uptimeText}</span></div>
-                <div class="quality-row"><span class="quality-label">最后推送</span><span style="${pushColor}">${lastPushText}</span></div>
-                ${delayText ? `<div class="quality-row"><span class="quality-label">下次重连</span><span style="color:var(--warning)">${delayText}</span></div>` : ''}
-                <div class="quality-row"><span class="quality-label">解密成功</span><span>${ble.decrypt}%</span></div>
-                <div class="quality-row"><span class="quality-label">通知响应</span><span>${ble.notify}%</span></div>
-                <div class="quality-row"><span class="quality-label">连接稳定</span><span>${ble.reconnect_score}%</span></div>
-                <div class="quality-row"><span class="quality-label">5min重连</span><span>${ble.reconnect_count_5m}次</span></div>`;
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.connectionDuration')}</span><span>${uptimeText}</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.lastPush')}</span><span style="${pushColor}">${lastPushText}</span></div>
+                ${delayText ? `<div class="quality-row"><span class="quality-label">${I18N.t('quality.nextReconnect')}</span><span style="color:var(--warning)">${delayText}</span></div>` : ''}
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.decryptSuccess')}</span><span>${ble.decrypt}%</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.notifyResponse')}</span><span>${ble.notify}%</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.connectionStable')}</span><span>${ble.reconnect_score}%</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.reconnect5m')}</span><span>${I18N.t('quality.times', { count: ble.reconnect_count_5m })}</span></div>`;
         }
         function renderMqttQuality(mqtt) {
             const el = document.getElementById('mqttTooltip');
             if (!el) return;
             el.innerHTML = `<div style="font-weight:600;margin-bottom:2px;">MQTT <span style="color:${scoreColor(mqtt.score)}">${mqtt.score}</span>/100</div>
                 ${qualityBar(mqtt.score)}
-                <div class="quality-row"><span class="quality-label">运行时长</span><span>${formatDuration(mqtt.uptime)}</span></div>
-                <div class="quality-row"><span class="quality-label">断连次数</span><span>${mqtt.disconnects}</span></div>
-                <div class="quality-row"><span class="quality-label">发送失败</span><span>${mqtt.publish_failures}</span></div>`;
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.runtime')}</span><span>${formatDuration(mqtt.uptime)}</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.disconnects')}</span><span>${mqtt.disconnects}</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.publishFailures')}</span><span>${mqtt.publish_failures}</span></div>`;
         }
         function renderBemfaQuality(bemfa) {
             const el = document.getElementById('bemfaTooltip');
             if (!el) return;
             el.innerHTML = `<div style="font-weight:600;margin-bottom:2px;">Bemfa <span style="color:${scoreColor(bemfa.score)}">${bemfa.score}</span>/100</div>
                 ${qualityBar(bemfa.score)}
-                <div class="quality-row"><span class="quality-label">运行时长</span><span>${formatDuration(bemfa.uptime)}</span></div>
-                <div class="quality-row"><span class="quality-label">Ping丢包</span><span>${bemfa.ping_lost}/3</span></div>
-                <div class="quality-row"><span class="quality-label">重连次数</span><span>${bemfa.reconnect_count}</span></div>`;
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.runtime')}</span><span>${formatDuration(bemfa.uptime)}</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.pingLost')}</span><span>${bemfa.ping_lost}/3</span></div>
+                <div class="quality-row"><span class="quality-label">${I18N.t('quality.reconnectCount')}</span><span>${bemfa.reconnect_count}</span></div>`;
         }
         // Hover tooltip for each badge
         function setupBadgeTooltip(badgeId, tooltipId) {
@@ -1023,4 +1044,30 @@
         // Charge History auto-refresh
         if (typeof startChargeHistoryAutoRefresh === 'function') {
             startChargeHistoryAutoRefresh('chargeSessionList', 'chargeStats', 'today', 2000);
+        }
+
+        // ── Locale change: re-render JS-built (dynamic) content ──
+        // Static DOM text is re-translated by I18N.applyTranslations() automatically.
+        function rerenderDynamic() {
+            updateBleButton();
+            renderPorts(latestPorts);
+            if (Object.keys(lastSettings).length > 0) {
+                const sg = document.getElementById('settingsGrid');
+                if (sg) sg.innerHTML = buildSettingsHtml(lastSettings);
+            }
+            countdownRendered = false;
+            renderCountdown(lastSettings);
+            const fwEl = document.getElementById('firmwareVersion');
+            if (fwEl && fwEl.dataset.firmware) fwEl.textContent = I18N.t('common.firmware', { version: fwEl.dataset.firmware });
+            if (currentModalPort) {
+                const rtBtn = document.getElementById('modalRealTimeBtn');
+                if (rtBtn) rtBtn.textContent = modalRealTimePort !== null ? I18N.t('modal.realtimeStop') : I18N.t('modal.realtime');
+                initModalChart();
+                updateModalChart();
+                renderModalProtocols();
+            }
+            if (_lastQuality) renderQuality(_lastQuality);
+        }
+        if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
+            I18N.onChange(rerenderDynamic);
         }

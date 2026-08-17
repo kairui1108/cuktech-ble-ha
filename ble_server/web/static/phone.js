@@ -1,6 +1,12 @@
 // ── API & Config ──
 const API_BASE = window.location.origin;
-const SCENE_NAMES = { 1: 'AI模式', 2: '数码生态', 3: '单口模式', 4: '均衡模式' };
+
+// Localized scene names/descriptions (keys into the i18n resource packs)
+function sceneName(mode) { return I18N.t('scene.' + ({ 1: 'ai', 2: 'eco', 3: 'single', 4: 'balanced' }[mode] || 'ai')); }
+function sceneDesc(mode) { return I18N.t('scene.desc' + ({ 1: 'Ai', 2: 'Eco', 3: 'Single', 4: 'Balanced' }[mode] || 'Ai')); }
+// PIID 6 息屏时间: 数组下标即原始值(1-5)，与米家插件一致。index 0 是占位，非有效设备值。
+const SCREEN_TIME_KEYS = ['', 'settings.min5', 'settings.min10', 'settings.min30', 'settings.alwaysOn', 'settings.min1'];
+function screenTimeLabel(idx) { return I18N.t(SCREEN_TIME_KEYS[idx] || 'settings.min5'); }
 
 // Update HTML overlay lines on the combined chart using chart's scale positions
 function drawPeakLines(chart) {
@@ -42,15 +48,7 @@ function drawPeakLines(chart) {
 }
 const SCENE_IMAGES = { 1: 'ai', 2: 'apple', 3: 'single', 4: 'balance' };
 const SCENE_BTN_IMAGES = { 1: 'ai', 2: 'mac', 3: 'single', 4: 'balance' };
-const SCENE_DESCS = {
-    1: '自动识别设备智能匹配最优充电功率',
-    2: '多口同时充电均衡分配功率',
-    3: '单口最大功率输出优先C1口',
-    4: '多个端口均衡分配充电功率',
-};
 const SCENE_PIID = 5;
-// PIID 6 息屏时间: 数组下标即原始值(1-5)，与米家插件一致。index 0 是占位，非有效设备值。
-const SCREEN_TIMES = ['', '5分钟', '10分钟', '30分钟', '常亮', '1分钟'];
 const PORT_KEYS = ['c1', 'c2', 'c3', 'a'];
 const PORT_NAMES = { c1: 'C1', c2: 'C2', c3: 'C3', a: 'USB-A' };
 const PORT_COLORS = { c1: '#FF7A00', c2: '#46B4FF', c3: '#89D8F3', a: '#FFD24B' };
@@ -146,16 +144,16 @@ function updateConnectionUI() {
     if (state.bleConnected) {
         hideToast();
         dot.style.background = '#34C759';
-        status.textContent = '已连接';
+        status.textContent = I18N.t('common.connected');
         status.style.color = 'var(--text)';
-        btn.textContent = '断开设备';
+        btn.textContent = I18N.t('common.disconnect');
         btn.style.background = 'rgba(255,59,48,0.15)';
         btn.style.color = '#FF3B30';
     } else {
         dot.style.background = '#666';
-        status.textContent = '未连接';
+        status.textContent = I18N.t('common.disconnected');
         status.style.color = 'var(--text-dim)';
-        btn.textContent = '连接设备';
+        btn.textContent = I18N.t('common.connect');
         btn.style.background = 'rgba(255,255,255,0.1)';
         btn.style.color = 'var(--text)';
     }
@@ -181,8 +179,8 @@ async function toggleConnection() {
     if (!btn || btn.disabled) return;
     btn.disabled = true;
     const enable = !state.bleConnected;
-    btn.textContent = enable ? '连接中...' : '断开中...';
-    if (enable) toast('正在连接设备，请稍候...', true);
+    btn.textContent = enable ? I18N.t('common.connectingDots') : I18N.t('common.disconnecting');
+    if (enable) toast(I18N.t('phone.connectToast'), true);
     markLocalChange();
     try {
         await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: enable }) });
@@ -229,7 +227,7 @@ function renderDeviceArea() {
         glow.classList.add('active');
         badge.classList.add('show');
         document.getElementById('sceneBadgeIcon').src = `static/plugin_imgs/main_card_scene_icon_${SCENE_IMAGES[state.scene]}.png`;
-        document.getElementById('sceneBadgeText').textContent = SCENE_NAMES[state.scene];
+        document.getElementById('sceneBadgeText').textContent = sceneName(state.scene);
     } else {
         unconnectedImg.classList.remove('hidden');
         deviceContainer.classList.remove('show');
@@ -254,9 +252,9 @@ function renderDeviceArea() {
 }
 
 function renderSceneCard() {
-    document.getElementById('sceneName').textContent = SCENE_NAMES[state.scene];
+    document.getElementById('sceneName').textContent = sceneName(state.scene);
     const desc = document.getElementById('sceneDesc');
-    if (desc) desc.textContent = SCENE_DESCS[state.scene] || '';
+    if (desc) desc.textContent = sceneDesc(state.scene) || '';
     const arrow = document.getElementById('sceneArrow');
     arrow.classList.toggle('show', true);
 
@@ -414,7 +412,7 @@ function renderCharts() {
 
 function renderSettingsUI() {
     const st = document.getElementById('screenTimeVal');
-    if (st) st.innerHTML = SCREEN_TIMES[state.screenTime] + ' <img src="static/plugin_imgs/main_charger_dark_icon_more.png" alt="">';
+    if (st) st.innerHTML = screenTimeLabel(state.screenTime) + ' <img src="static/plugin_imgs/main_charger_dark_icon_more.png" alt="">';
     const tt = document.getElementById('toggleTrickle');
     if (tt) tt.checked = state.trickleEnabled;
 }
@@ -437,9 +435,9 @@ function renderProtocolSwitches() {
         }
         // C1/C2 提示 PD 与 PPS 关联，C3/A 提示需插拔
         if (port === 'c1' || port === 'c2') {
-            html += '<div style="font-size:9px;color:var(--text-dim);margin-top:2px;">关闭PD后PPS也将关闭</div>';
+            html += `<div style="font-size:9px;color:var(--text-dim);margin-top:2px;">${I18N.t('modal.ppsNote')}</div>`;
         } else {
-            html += '<div style="font-size:9px;color:var(--text-dim);margin-top:2px;">需重新插拔端口</div>';
+            html += `<div style="font-size:9px;color:var(--text-dim);margin-top:2px;">${I18N.t('phone.replugNote')}</div>`;
         }
         el.innerHTML = html;
     }
@@ -490,7 +488,7 @@ function renderDelayOff() {
     if (!grid) return;
     // Only show active ports (w > 0)
     const activeKeys = PORT_KEYS.filter(key => state.ports[key].v > 0);
-    if (activeKeys.length === 0) { grid.innerHTML = '<div style="font-size:13px;color:var(--text-dim);text-align:center;padding:12px;">暂无活跃端口</div>'; return; }
+    if (activeKeys.length === 0) { grid.innerHTML = `<div style="font-size:13px;color:var(--text-dim);text-align:center;padding:12px;">${I18N.t('phone.noActivePorts')}</div>`; return; }
     let html = '';
     activeKeys.forEach((key, idx) => {
         const min = delayMinutes[key] || 0;
@@ -502,7 +500,7 @@ function renderDelayOff() {
                     <div style="width:10px;height:10px;border-radius:50%;background:${dotColor};flex-shrink:0;"></div>
                     <span style="font-size:15px;color:var(--text);">${PORT_NAMES[key]}</span>
                 </div>
-                <span id="delayVal_${key}" style="font-size:14px;font-weight:600;color:${min>0?dotColor:'var(--text-dim)'};">${min > 0 ? min + '分钟' : '未设置'}</span>
+                <span id="delayVal_${key}" style="font-size:14px;font-weight:600;color:${min>0?dotColor:'var(--text-dim)'};">${min > 0 ? I18N.t('common.minutes', { count: min }) : I18N.t('common.notSet')}</span>
             </div>
             <input type="range" id="${sliderId}" min="0" max="240" value="${min}" step="1" class="delay-slider"
                 style="background:linear-gradient(to right,${dotColor} ${min/240*100}%,rgba(255,255,255,0.08) ${min/240*100}%); --thumb-color:${dotColor};">
@@ -519,7 +517,7 @@ function renderDelayOff() {
                 delayMinutes[key] = v;
                 const valEl = document.getElementById('delayVal_' + key);
                 if (valEl) {
-                    valEl.textContent = v > 0 ? v + '分钟' : '未设置';
+                    valEl.textContent = v > 0 ? I18N.t('common.minutes', { count: v }) : I18N.t('common.notSet');
                     valEl.style.color = v > 0 ? PORT_COLORS[key] : 'var(--text-dim)';
                 }
                 this.style.background = `linear-gradient(to right,${PORT_COLORS[key]} ${v/240*100}%,rgba(255,255,255,0.08) ${v/240*100}%)`;
@@ -563,7 +561,7 @@ async function cycleScreenTime() {
     // 有效原始值 1-5（1=5分钟,2=10分钟,3=30分钟,4=常亮,5=1分钟），跳过占位的 index 0
     state.screenTime = ((state.screenTime - 1) % 5 + 6) % 5 + 1;
     document.getElementById('screenTimeVal').innerHTML =
-        SCREEN_TIMES[state.screenTime] + ' <img src="static/plugin_imgs/main_charger_dark_icon_more.png" alt="">';
+        screenTimeLabel(state.screenTime) + ' <img src="static/plugin_imgs/main_charger_dark_icon_more.png" alt="">';
     markLocalChange();
     try { await fetch(`${API_BASE}/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid: 6, value: state.screenTime }) }); } catch(e) {}
 }
@@ -785,4 +783,12 @@ function applySettingsUpdate(settings) {
 // ── Charge History ──
 if (typeof startChargeHistoryAutoRefresh === 'function') {
     startChargeHistoryAutoRefresh('chargeSessionList', 'chargeStats', 'today', 2000);
+}
+
+// ── Locale change: re-render all dynamic content ──
+if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
+    I18N.onChange(function () {
+        updateConnectionUI();
+        renderAll();
+    });
 }

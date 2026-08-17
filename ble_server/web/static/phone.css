@@ -322,6 +322,23 @@ select option {
 }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
+/* ── English layout guards ── */
+html[lang="en"] .scene-card-title,
+html[lang="en"] .screen-card-title,
+html[lang="en"] .trickle-card-title,
+html[lang="en"] .port-ctl-title,
+html[lang="en"] .total-power-title,
+html[lang="en"] .full-chart-title,
+html[lang="en"] .mini-stat-label,
+html[lang="en"] .config-label,
+html[lang="en"] .config-hint {
+    letter-spacing: 0;
+    word-break: break-word;
+    line-height: 1.35;
+}
+html[lang="en"] .navbar .nav-title { font-size: 15px; }
+html[lang="en"] .scene-btn .scene-label { font-size: 12px; }
+
 /* ── Charge History ── */
 select, .charge-select {
     background: var(--card-bg, transparent);

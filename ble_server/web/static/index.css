@@ -209,3 +209,21 @@ select option {
     background: var(--card-bg, #252525);
     color: var(--text-dim);
 }
+
+/* ── English layout guards ── */
+.footer { flex-wrap: wrap; row-gap: 6px; }
+.time-btn, .theme-btn, .btn { white-space: nowrap; }
+.setting-item { flex-wrap: wrap; row-gap: 6px; }
+html[lang="en"] .control-label,
+html[lang="en"] .port-stat-label,
+html[lang="en"] .stat-label,
+html[lang="en"] .power-label,
+html[lang="en"] .mini-stat-label,
+html[lang="en"] .setting-label,
+html[lang="en"] .countdown-current,
+html[lang="en"] .quality-label,
+html[lang="en"] .card-title {
+    letter-spacing: 0;
+    word-break: break-word;
+    line-height: 1.35;
+}

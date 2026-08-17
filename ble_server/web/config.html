@@ -3,9 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>CUKTECH 配置</title>
+<title data-i18n="pageTitle.config">CUKTECH 配置</title>
 <link rel="icon" href="/static/favicon.ico">
-<link rel="stylesheet" href="static/phone.css">
+<script src="/static/locales/zh-CN.js?v=3"></script>
+<script src="/static/locales/en.js?v=3"></script>
+<script src="/static/i18n.js?v=3"></script>
+<link rel="stylesheet" href="static/phone.css?v=3">
 <style>
 /* Config page overrides */
 .config-section { margin-top: 12px; }
@@ -18,6 +21,7 @@
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.06);
 }
+.config-row > div:first-child { min-width: 0; } /* 英文长标签可换行，不挤压输入框 */
 body.light .config-row { border-bottom-color: rgba(0,0,0,0.06); }
 .config-row:last-child { border-bottom: none; }
 .config-label { font-size: 15px; color: var(--text); }
@@ -65,7 +69,7 @@ body.light .config-select { border-color: rgba(0,0,0,0.12); }
                 <polyline points="15 18 9 12 15 6"></polyline>
             </svg>
         </div>
-        <div class="nav-title">系统配置</div>
+        <div class="nav-title" data-i18n="config.title">系统配置</div>
         <div class="theme-btn" id="themeBtn" onclick="toggleTheme()" style="width:28px;height:28px;cursor:pointer;font-size:18px;line-height:28px;text-align:center;">☀️</div>
     </div>
 
@@ -74,115 +78,123 @@ body.light .config-select { border-color: rgba(0,0,0,0.12); }
         <!-- BLE Config -->
         <div class="card config-section">
             <div class="config-section-title" style="display:flex;align-items:center;justify-content:space-between;">
-                <span>BLE 设备</span>
-                <span onclick="openXiaomiModal()" style="font-size:10px;color:var(--accent);cursor:pointer;">小米云自动获取 &#8599;</span>
+                <span data-i18n="config.bleDevice">BLE 设备</span>
+                <span onclick="openXiaomiModal()" style="font-size:10px;color:var(--accent);cursor:pointer;" data-i18n="config.xiaomiAuto">小米云自动获取 &#8599;</span>
             </div>
             <div class="config-row">
-                <div><div class="config-label">MAC 地址</div><div class="config-hint">充电器蓝牙 MAC 地址</div></div>
+                <div><div class="config-label" data-i18n="config.mac">MAC 地址</div><div class="config-hint" data-i18n="config.macHint">充电器蓝牙 MAC 地址</div></div>
                 <input class="config-input" id="ble_mac" placeholder="AA:BB:CC:DD:EE:FF">
             </div>
             <div class="config-row">
-                <div><div class="config-label">Token</div><div class="config-hint">设备认证 Token (十六进制)</div></div>
+                <div><div class="config-label">Token</div><div class="config-hint" data-i18n="config.tokenHint">设备认证 Token (十六进制)</div></div>
                 <input class="config-input" id="ble_token" placeholder="Token">
             </div>
             <div class="config-row">
-                <div><div class="config-label">BLE Key</div><div class="config-hint">加密密钥 (十六进制)</div></div>
+                <div><div class="config-label">BLE Key</div><div class="config-hint" data-i18n="config.bleKeyHint">加密密钥 (十六进制)</div></div>
                 <input class="config-input" id="ble_key" placeholder="BLE Key">
             </div>
         </div>
 
         <!-- MQTT Config -->
         <div class="card config-section">
-            <div class="config-section-title">MQTT (Home Assistant)</div>
+            <div class="config-section-title" data-i18n="config.mqttSection">MQTT (Home Assistant)</div>
             <div class="config-row">
-                <div class="config-label">启用 MQTT</div>
+                <div class="config-label" data-i18n="config.enableMqtt">启用 MQTT</div>
                 <label class="toggle"><input type="checkbox" id="mqtt_enabled"><span class="toggle-slider"></span></label>
             </div>
             <div class="config-row">
-                <div><div class="config-label">服务器</div><div class="config-hint">MQTT Broker 地址</div></div>
+                <div><div class="config-label" data-i18n="config.server">服务器</div><div class="config-hint" data-i18n="config.serverHint">MQTT Broker 地址</div></div>
                 <input class="config-input" id="mqtt_host" placeholder="localhost">
             </div>
             <div class="config-row">
-                <div class="config-label">端口</div>
+                <div class="config-label" data-i18n="config.port">端口</div>
                 <input class="config-input" id="mqtt_port" type="number" value="1883" style="width:80px;">
             </div>
             <div class="config-row">
-                <div class="config-label">用户名</div>
-                <input class="config-input" id="mqtt_username" placeholder="可选">
+                <div class="config-label" data-i18n="config.username">用户名</div>
+                <input class="config-input" id="mqtt_username" data-i18n-placeholder="config.optional" placeholder="可选">
             </div>
             <div class="config-row">
-                <div class="config-label">密码</div>
-                <input class="config-input" id="mqtt_password" type="password" placeholder="可选">
+                <div class="config-label" data-i18n="config.password">密码</div>
+                <input class="config-input" id="mqtt_password" type="password" data-i18n-placeholder="config.optional" placeholder="可选">
             </div>
             <div class="config-row">
-                <div><div class="config-label">Topic 前缀</div><div class="config-hint">MQTT 主题前缀</div></div>
+                <div><div class="config-label" data-i18n="config.topicPrefix">Topic 前缀</div><div class="config-hint" data-i18n="config.topicHint">MQTT 主题前缀</div></div>
                 <input class="config-input" id="mqtt_topic" placeholder="cuktech/charger">
             </div>
         </div>
 
         <!-- Bemfa Config -->
         <div class="card config-section">
-            <div class="config-section-title">巴法云 <a href="https://cloud.bemfa.com/tcp/devicemqtt.html" target="_blank" style="font-size:10px;color:var(--accent);font-weight:400;text-transform:none;letter-spacing:0;">注册获取私钥 &#8599;</a></div>
+            <div class="config-section-title"><span data-i18n="config.bemfaSection">巴法云</span> <a href="https://cloud.bemfa.com/tcp/devicemqtt.html" target="_blank" style="font-size:10px;color:var(--accent);font-weight:400;text-transform:none;letter-spacing:0;" data-i18n="config.bemfaRegister">注册获取私钥 &#8599;</a></div>
             <div class="config-row">
-                <div class="config-label">启用巴法云</div>
+                <div class="config-label" data-i18n="config.enableBemfa">启用巴法云</div>
                 <label class="toggle"><input type="checkbox" id="bemfa_enabled"><span class="toggle-slider"></span></label>
             </div>
             <div class="config-row">
-                <div><div class="config-label">私钥</div><div class="config-hint">巴法云用户 私钥</div></div>
-                <input class="config-input" id="bemfa_uid" placeholder="巴法云 私钥">
+                <div><div class="config-label" data-i18n="config.privateKey">私钥</div><div class="config-hint" data-i18n="config.privateKeyHint">巴法云用户 私钥</div></div>
+                <input class="config-input" id="bemfa_uid" data-i18n-placeholder="config.placeholderUid" placeholder="巴法云 私钥">
             </div>
             <div class="config-row">
-                <div><div class="config-label">C1 端口名称</div><div class="config-hint">巴法云设备显示名</div></div>
-                <input class="config-input" id="bemfa_name_c1" placeholder="C口1开关">
+                <div><div class="config-label" data-i18n="config.portName" data-i18n-params='{"port":"C1"}'>C1 端口名称</div><div class="config-hint" data-i18n="config.portNameHint">巴法云设备显示名</div></div>
+                <input class="config-input" id="bemfa_name_c1" data-i18n-placeholder="config.placeholderC1" placeholder="C口1开关">
             </div>
             <div class="config-row">
-                <div><div class="config-label">C2 端口名称</div><div class="config-hint">巴法云设备显示名</div></div>
-                <input class="config-input" id="bemfa_name_c2" placeholder="C口2开关">
+                <div><div class="config-label" data-i18n="config.portName" data-i18n-params='{"port":"C2"}'>C2 端口名称</div><div class="config-hint" data-i18n="config.portNameHint">巴法云设备显示名</div></div>
+                <input class="config-input" id="bemfa_name_c2" data-i18n-placeholder="config.placeholderC2" placeholder="C口2开关">
             </div>
             <div class="config-row">
-                <div><div class="config-label">C3 端口名称</div><div class="config-hint">巴法云设备显示名</div></div>
-                <input class="config-input" id="bemfa_name_c3" placeholder="C口3开关">
+                <div><div class="config-label" data-i18n="config.portName" data-i18n-params='{"port":"C3"}'>C3 端口名称</div><div class="config-hint" data-i18n="config.portNameHint">巴法云设备显示名</div></div>
+                <input class="config-input" id="bemfa_name_c3" data-i18n-placeholder="config.placeholderC3" placeholder="C口3开关">
             </div>
             <div class="config-row">
-                <div><div class="config-label">USB-A 端口名称</div><div class="config-hint">巴法云设备显示名</div></div>
-                <input class="config-input" id="bemfa_name_a" placeholder="USB-A开关">
+                <div><div class="config-label" data-i18n="config.portName" data-i18n-params='{"port":"USB-A"}'>USB-A 端口名称</div><div class="config-hint" data-i18n="config.portNameHint">巴法云设备显示名</div></div>
+                <input class="config-input" id="bemfa_name_a" data-i18n-placeholder="config.placeholderA" placeholder="USB-A开关">
             </div>
             <div class="config-row">
-                <div><div class="config-label">蓝牙状态名称</div><div class="config-hint">巴法云设备显示名</div></div>
-                <input class="config-input" id="bemfa_name_ble" placeholder="蓝牙开关">
+                <div><div class="config-label" data-i18n="config.bleStatusName">蓝牙状态名称</div><div class="config-hint" data-i18n="config.portNameHint">巴法云设备显示名</div></div>
+                <input class="config-input" id="bemfa_name_ble" data-i18n-placeholder="config.placeholderBle" placeholder="蓝牙开关">
             </div>
         </div>
 
         <!-- Server Config -->
         <div class="card config-section">
-            <div class="config-section-title">服务器</div>
+            <div class="config-section-title" data-i18n="config.serverSection">服务器</div>
             <div class="config-row">
-                <div class="config-label">Web 端口</div>
+                <div class="config-label" data-i18n="config.webPort">Web 端口</div>
                 <input class="config-input" id="server_port" type="number" value="8199" style="width:80px;">
             </div>
             <div class="config-row">
-                <div class="config-label">数据保留天数</div>
+                <div class="config-label" data-i18n="config.retention">数据保留天数</div>
                 <input class="config-input" id="server_retention" type="number" value="2" style="width:80px;">
             </div>
             <div class="config-row">
-                <div><div class="config-label">充电会话记录</div><div class="config-hint">即时生效，无需重启；关闭后不再记录充电历史</div></div>
+                <div><div class="config-label" data-i18n="config.webLanguage">界面语言</div><div class="config-hint" data-i18n="config.webLanguageHint">即时生效，无需重启；所有页面自动同步</div></div>
+                <select class="config-select" id="web_language" onchange="setWebLanguage(this.value)" style="min-width:110px;">
+                    <option value="auto" data-i18n="config.langAuto">跟随系统</option>
+                    <option value="zh-CN">中文</option>
+                    <option value="en">English</option>
+                </select>
+            </div>
+            <div class="config-row">
+                <div><div class="config-label" data-i18n="config.sessionRecording">充电会话记录</div><div class="config-hint" data-i18n="config.sessionRecordingHint">即时生效，无需重启；关闭后不再记录充电历史</div></div>
                 <label class="toggle"><input type="checkbox" id="server_session_recording" onchange="toggleSessionRecording(this.checked)"><span class="toggle-slider"></span></label>
             </div>
         </div>
 
         <!-- Status -->
         <div class="card config-section">
-            <div class="config-section-title">当前状态</div>
+            <div class="config-section-title" data-i18n="config.currentStatus">当前状态</div>
             <div class="status-row">
                 <div class="status-dot-sm" id="statusDot"></div>
-                <span id="statusText">加载中...</span>
+                <span id="statusText" data-i18n="common.loading">加载中...</span>
             </div>
         </div>
 
         <!-- Save Button -->
         <div style="padding: 0 0 20px;">
             <button class="btn-save" id="btnSave" onclick="saveConfig()">
-                <span id="btnSaveIcon">&#9881;</span> <span id="btnSaveText">保存配置并重启</span>
+                <span id="btnSaveIcon">&#9881;</span> <span id="btnSaveText" data-i18n="config.saveRestart">保存配置并重启</span>
             </button>
         </div>
 
@@ -192,6 +204,10 @@ body.light .config-select { border-color: rgba(0,0,0,0.12); }
 <script>
 const API = window.location.origin;
 let isDark = true;
+// 配置页状态追踪：语言切换时（applyTranslations 会重放静态文案）用钩子恢复动态状态
+let _configStatus = 'loading';   // 'loading' | 'loaded' | 'error'
+let _configStatusMsg = '';
+let _saving = false;
 
 // Theme (shared with phone.html)
 function toggleTheme() {
@@ -248,6 +264,17 @@ async function loadConfig() {
         document.getElementById('server_port').value = c.server.port || 8199;
         document.getElementById('server_retention').value = c.server.history_retention_days || 2;
 
+        // 界面语言（独立于 config.yaml，DB meta 单源，即时生效）
+        try {
+            const wlRes = await fetch(`${API}/api/web-language`);
+            const wlData = await wlRes.json();
+            if (wlData.ok && wlData.language) {
+                document.getElementById('web_language').value = wlData.language;
+            }
+        } catch (e) {
+            // 加载失败保持默认跟随系统，不阻断配置加载
+        }
+
         // 充电会话记录开关（独立于 config.yaml，DB meta 单源，即时生效）
         try {
             const recRes = await fetch(`${API}/api/session-recording`);
@@ -258,18 +285,22 @@ async function loadConfig() {
         }
 
         document.getElementById('statusDot').className = 'status-dot-sm ok';
-        document.getElementById('statusText').textContent = '配置已加载';
+        _configStatus = 'loaded';
+        document.getElementById('statusText').textContent = I18N.t('config.loaded');
     } catch (e) {
         document.getElementById('statusDot').className = 'status-dot-sm err';
-        document.getElementById('statusText').textContent = '加载失败: ' + e.message;
+        _configStatus = 'error';
+        _configStatusMsg = e.message;
+        document.getElementById('statusText').textContent = I18N.t('config.loadFailed', { msg: e.message });
     }
 }
 
 async function saveConfig() {
     const btn = document.getElementById('btnSave');
     btn.disabled = true;
+    _saving = true;
     document.getElementById('btnSaveIcon').textContent = '⏳';
-    document.getElementById('btnSaveText').textContent = '保存中...';
+    document.getElementById('btnSaveText').textContent = I18N.t('common.saving');
 
     const config = {
         ble: {
@@ -288,11 +319,11 @@ async function saveConfig() {
         bemfa: {
             enabled: document.getElementById('bemfa_enabled').checked,
             uid: document.getElementById('bemfa_uid').value.trim(),
-            name_c1: document.getElementById('bemfa_name_c1').value.trim() || 'C口1开关',
-            name_c2: document.getElementById('bemfa_name_c2').value.trim() || 'C口2开关',
-            name_c3: document.getElementById('bemfa_name_c3').value.trim() || 'C口3开关',
-            name_a: document.getElementById('bemfa_name_a').value.trim() || 'USB-A开关',
-            name_ble: document.getElementById('bemfa_name_ble').value.trim() || '蓝牙开关',
+            name_c1: document.getElementById('bemfa_name_c1').value.trim() || I18N.t('config.placeholderC1'),
+            name_c2: document.getElementById('bemfa_name_c2').value.trim() || I18N.t('config.placeholderC2'),
+            name_c3: document.getElementById('bemfa_name_c3').value.trim() || I18N.t('config.placeholderC3'),
+            name_a: document.getElementById('bemfa_name_a').value.trim() || I18N.t('config.placeholderA'),
+            name_ble: document.getElementById('bemfa_name_ble').value.trim() || I18N.t('config.placeholderBle'),
         },
         server: {
             port: parseInt(document.getElementById('server_port').value) || 8199,
@@ -308,19 +339,21 @@ async function saveConfig() {
         });
         const data = await res.json();
         if (data.ok) {
-            showToast('配置已保存，服务正在重启...');
+            showToast(I18N.t('config.savedRestart'));
             setTimeout(() => window.location.reload(), 5000);
         } else {
-            showToast('保存失败: ' + (data.error || '未知错误'), 5000);
+            showToast(I18N.t('common.saveFailed', { msg: data.error || I18N.t('common.unknownError') }), 5000);
+            _saving = false;
             btn.disabled = false;
             document.getElementById('btnSaveIcon').textContent = '⚙';
-            document.getElementById('btnSaveText').textContent = '保存配置并重启';
+            document.getElementById('btnSaveText').textContent = I18N.t('config.saveRestart');
         }
     } catch (e) {
-        showToast('网络错误: ' + e.message, 5000);
+        showToast(I18N.t('common.networkError', { msg: e.message }), 5000);
+        _saving = false;
         btn.disabled = false;
         document.getElementById('btnSaveIcon').textContent = '⚙';
-        document.getElementById('btnSaveText').textContent = '保存配置并重启';
+        document.getElementById('btnSaveText').textContent = I18N.t('config.saveRestart');
     }
 }
 
@@ -333,14 +366,34 @@ async function toggleSessionRecording(enabled) {
         });
         const data = await res.json();
         if (data.ok) {
-            showToast(enabled ? '已开启充电会话记录' : '已关闭充电会话记录', 3000);
+            showToast(enabled ? I18N.t('config.sessionRecordingOn') : I18N.t('config.sessionRecordingOff'), 3000);
         } else {
             document.getElementById('server_session_recording').checked = !enabled;
-            showToast('设置失败: ' + (data.error || '未知错误'), 4000);
+            showToast(I18N.t('common.setFailed', { msg: data.error || I18N.t('common.unknownError') }), 4000);
         }
     } catch (e) {
         document.getElementById('server_session_recording').checked = !enabled;
-        showToast('网络错误: ' + e.message, 4000);
+        showToast(I18N.t('common.networkError', { msg: e.message }), 4000);
+    }
+}
+
+// ── Web UI language (server-side single source; index/phone follow automatically) ──
+async function setWebLanguage(lang) {
+    try {
+        const res = await fetch(`${API}/api/web-language`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ language: lang })
+        });
+        const data = await res.json();
+        if (data.ok) {
+            I18N.applyServerLanguage(data.language);
+            showToast(data.language === 'auto' ? I18N.t('config.langAutoApplied') : I18N.t('config.langApplied'), 2500);
+        } else {
+            showToast(I18N.t('common.setFailed', { msg: data.error || I18N.t('common.unknownError') }), 4000);
+        }
+    } catch (e) {
+        showToast(I18N.t('common.networkError', { msg: e.message }), 4000);
     }
 }
 
@@ -367,8 +420,8 @@ async function xiaomiStartQR() {
     const status = document.getElementById('xiaomiLoginStatus');
     const server = document.getElementById('xiaomi_server').value;
 
-    btn.disabled = true; btn.textContent = '获取中...';
-    status.textContent = '正在连接小米云...';
+    btn.disabled = true; btn.textContent = I18N.t('config.fetching');
+    status.textContent = I18N.t('config.connectingXiaomi');
     status.style.color = 'var(--text-dim)';
 
     try {
@@ -378,9 +431,9 @@ async function xiaomiStartQR() {
         });
         const data = await res.json();
         if (!data.ok) {
-            status.textContent = data.error || '获取二维码失败';
+            status.textContent = data.error || I18N.t('config.qrFailed');
             status.style.color = 'var(--danger)';
-            btn.disabled = false; btn.textContent = '获取二维码';
+            btn.disabled = false; btn.textContent = I18N.t('config.getQR');
             return;
         }
 
@@ -397,16 +450,16 @@ async function xiaomiStartQR() {
         if (data.qr_image) {
             qrImg.innerHTML = `<img src="${data.qr_image}" style="width:200px;height:200px;">`;
         } else {
-            qrImg.innerHTML = '<div style="padding:40px;color:var(--text-dim);">二维码加载失败</div>';
+            qrImg.innerHTML = `<div style="padding:40px;color:var(--text-dim);">${I18N.t('config.qrLoadFailed')}</div>`;
         }
 
         document.getElementById('xiaomiLoginUrl').value = data.login_url;
         status.textContent = '';
-        btn.disabled = false; btn.textContent = '获取二维码';
+        btn.disabled = false; btn.textContent = I18N.t('config.getQR');
     } catch (e) {
-        status.textContent = '网络错误: ' + e.message;
+        status.textContent = I18N.t('common.networkError', { msg: e.message });
         status.style.color = 'var(--danger)';
-        btn.disabled = false; btn.textContent = '获取二维码';
+        btn.disabled = false; btn.textContent = I18N.t('config.getQR');
         _xiaomiQRActive = false;
     }
 }
@@ -415,8 +468,8 @@ async function xiaomiCompleteQR() {
     const btn = document.getElementById('xiaomiScanBtn');
     const status = document.getElementById('xiaomiQRStatus');
 
-    btn.disabled = true; btn.textContent = '等待扫码...';
-    status.textContent = '请用米家 App 扫描二维码登录';
+    btn.disabled = true; btn.textContent = I18N.t('config.waitingScan');
+    status.textContent = I18N.t('config.scanInstruction');
     status.style.color = 'var(--text-dim)';
 
     // Poll for completion (background long-poll is already running on server)
@@ -438,7 +491,7 @@ async function xiaomiCompleteQR() {
                 // Real error, not just "still waiting"
                 status.textContent = data.error;
                 status.style.color = 'var(--danger)';
-                btn.disabled = false; btn.textContent = '已完成扫码';
+                btn.disabled = false; btn.textContent = I18N.t('config.scanned');
                 _xiaomiQRActive = false;
                 return;
             }
@@ -448,9 +501,9 @@ async function xiaomiCompleteQR() {
         attempts++;
         await new Promise(r => setTimeout(r, 3000));
     }
-    status.textContent = '等待超时，请重新获取二维码';
+    status.textContent = I18N.t('config.scanTimeout');
     status.style.color = 'var(--danger)';
-    btn.disabled = false; btn.textContent = '已完成扫码';
+    btn.disabled = false; btn.textContent = I18N.t('config.scanned');
     _xiaomiQRActive = false;
 }
 
@@ -462,7 +515,7 @@ function showDeviceList(data) {
     const list = document.getElementById('xiaomiDevices');
     const devices = data.cuktech && data.cuktech.length > 0 ? data.cuktech : data.devices;
     if (devices.length === 0) {
-        list.innerHTML = '<div style="text-align:center;color:var(--text-dim);padding:16px;">未找到设备</div>';
+        list.innerHTML = `<div style="text-align:center;color:var(--text-dim);padding:16px;">${I18N.t('config.noDevices')}</div>`;
     } else {
         list.innerHTML = devices.map(d =>
             `<div class="config-row" style="cursor:pointer;border:1px solid var(--card-border);border-radius:8px;padding:10px;margin-bottom:6px;" onclick="selectDevice('${d.did}','${d.mac}','${d.token}')">
@@ -474,7 +527,7 @@ function showDeviceList(data) {
 
 async function selectDevice(did, mac, token) {
     const status = document.getElementById('xiaomiLoginStatus');
-    status.textContent = '正在获取 BLE Key...';
+    status.textContent = I18N.t('config.fetchingBleKey');
     status.style.color = 'var(--text-dim)';
     document.getElementById('xiaomiDeviceList').style.display = 'none';
     document.getElementById('xiaomiQRForm').style.display = 'block';
@@ -491,13 +544,29 @@ async function selectDevice(did, mac, token) {
         document.getElementById('ble_token').value = token;
         document.getElementById('ble_key').value = bleKey;
 
-        status.textContent = '已获取设备信息，请检查后保存';
+        status.textContent = I18N.t('config.deviceInfoGot');
         status.style.color = 'var(--success)';
         setTimeout(closeXiaomiModal, 1500);
     } catch (e) {
-        status.textContent = '获取 BLE Key 失败: ' + e.message;
+        status.textContent = I18N.t('config.bleKeyFailed', { msg: e.message });
         status.style.color = 'var(--danger)';
     }
+}
+
+// ── Locale change: restore dynamic state overwritten by the static re-translation ──
+// (applyTranslations replays data-i18n values, which would otherwise reset the
+//  "当前状态" text and the save-button label to their idle/loading states)
+if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
+    I18N.onChange(function () {
+        const st = document.getElementById('statusText');
+        if (st) {
+            if (_configStatus === 'loaded') st.textContent = I18N.t('config.loaded');
+            else if (_configStatus === 'error') st.textContent = I18N.t('config.loadFailed', { msg: _configStatusMsg });
+            else st.textContent = I18N.t('common.loading');
+        }
+        const btnT = document.getElementById('btnSaveText');
+        if (btnT) btnT.textContent = _saving ? I18N.t('common.saving') : I18N.t('config.saveRestart');
+    });
 }
 </script>
 
@@ -505,48 +574,48 @@ async function selectDevice(did, mac, token) {
 <div id="xiaomiModal" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
     <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:16px;padding:20px;width:90%;max-width:400px;max-height:80vh;overflow-y:auto;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-            <span style="font-size:17px;font-weight:600;color:var(--text);">小米云登录</span>
+            <span style="font-size:17px;font-weight:600;color:var(--text);" data-i18n="config.xiaomiLogin">小米云登录</span>
             <span onclick="closeXiaomiModal()" style="font-size:20px;cursor:pointer;color:var(--text-dim);padding:4px;">&times;</span>
         </div>
 
         <!-- Login Form -->
         <div id="xiaomiLoginForm">
             <div style="margin-bottom:12px;">
-                <div class="config-label" style="margin-bottom:4px;">服务器区域</div>
+                <div class="config-label" style="margin-bottom:4px;" data-i18n="config.serverRegion">服务器区域</div>
                 <select id="xiaomi_server" class="config-select" style="width:100%;">
-                    <option value="cn" selected>中国大陆 (cn)</option>
-                    <option value="de">欧洲 (de)</option>
-                    <option value="us">美国 (us)</option>
-                    <option value="ru">俄罗斯 (ru)</option>
-                    <option value="tw">台湾 (tw)</option>
-                    <option value="sg">新加坡 (sg)</option>
-                    <option value="in">印度 (in)</option>
+                    <option value="cn" selected data-i18n="config.regionCn">中国大陆 (cn)</option>
+                    <option value="de" data-i18n="config.regionDe">欧洲 (de)</option>
+                    <option value="us" data-i18n="config.regionUs">美国 (us)</option>
+                    <option value="ru" data-i18n="config.regionRu">俄罗斯 (ru)</option>
+                    <option value="tw" data-i18n="config.regionTw">台湾 (tw)</option>
+                    <option value="sg" data-i18n="config.regionSg">新加坡 (sg)</option>
+                    <option value="in" data-i18n="config.regionIn">印度 (in)</option>
                 </select>
             </div>
-            <button class="btn-save" id="xiaomiLoginBtn" onclick="xiaomiStartQR()" style="margin-top:0;">获取二维码</button>
+            <button class="btn-save" id="xiaomiLoginBtn" onclick="xiaomiStartQR()" data-i18n="config.getQR" style="margin-top:0;">获取二维码</button>
             <div id="xiaomiLoginStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);text-align:center;min-height:18px;"></div>
         </div>
 
         <!-- QR Code Display -->
         <div id="xiaomiQRForm" style="display:none;">
             <div style="text-align:center;margin-bottom:12px;">
-                <div style="font-size:13px;color:#666;margin-bottom:8px;">使用<strong style="color:#333;">米家 App</strong> 扫描下方二维码</div>
+                <div style="font-size:13px;color:#666;margin-bottom:8px;" data-i18n-html="config.scanWithApp">使用<strong style="color:#333;">米家 App</strong> 扫描下方二维码</div>
                 <div id="xiaomiQRImg" style="display:inline-block;padding:8px;background:#fff;border-radius:8px;"></div>
             </div>
             <div style="margin-bottom:12px;">
-                <div style="font-size:11px;color:#888;margin-bottom:4px;">或复制链接到浏览器打开：</div>
+                <div style="font-size:11px;color:#888;margin-bottom:4px;" data-i18n="config.orOpenLink">或复制链接到浏览器打开：</div>
                 <input class="config-input" id="xiaomiLoginUrl" readonly style="width:100%;text-align:left;font-size:11px;word-break:break-all;">
             </div>
-            <button class="btn-save" id="xiaomiScanBtn" onclick="xiaomiCompleteQR()" style="margin-top:0;">已完成扫码</button>
+            <button class="btn-save" id="xiaomiScanBtn" onclick="xiaomiCompleteQR()" data-i18n="config.scanned" style="margin-top:0;">已完成扫码</button>
             <div id="xiaomiQRStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);text-align:center;min-height:18px;"></div>
         </div>
 
         <!-- Device List -->
         <div id="xiaomiDeviceList" style="display:none;">
-            <div style="font-size:13px;color:var(--text-dim);margin-bottom:10px;">选择充电器设备：</div>
+            <div style="font-size:13px;color:var(--text-dim);margin-bottom:10px;" data-i18n="config.selectCharger">选择充电器设备：</div>
             <div id="xiaomiDevices"></div>
             <div style="margin-top:12px;display:flex;gap:8px;">
-                <button class="btn-save" onclick="closeXiaomiModal()" style="margin-top:0;flex:1;background:rgba(255,255,255,0.06);color:var(--text);">取消</button>
+                <button class="btn-save" onclick="closeXiaomiModal()" data-i18n="common.cancel" style="margin-top:0;flex:1;background:rgba(255,255,255,0.06);color:var(--text);">取消</button>
             </div>
         </div>
     </div>

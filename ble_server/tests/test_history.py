@@ -180,6 +180,44 @@ class TestRuntimeMeta:
         history.close()
         assert history.get_session_recording() is True
 
+    def test_web_language_default_auto(self, history):
+        """meta 缺失时默认为 auto（跟随系统）。"""
+        assert history.get_web_language() == "auto"
+
+    def test_web_language_set_get(self, history):
+        """set/get 往返。"""
+        history.set_web_language("zh-CN")
+        assert history.get_web_language() == "zh-CN"
+        history.set_web_language("en")
+        assert history.get_web_language() == "en"
+        history.set_web_language("auto")
+        assert history.get_web_language() == "auto"
+
+    def test_web_language_normalizes(self, history):
+        """读取时归一化大小写/变体；未知值回退 auto。"""
+        history.set_web_language("zh-cn")
+        assert history.get_web_language() == "zh-CN"
+        history.set_web_language("ZH-HANS")
+        assert history.get_web_language() == "zh-CN"
+        history.set_web_language("en-us")
+        assert history.get_web_language() == "en"
+        history.set_web_language("de")
+        assert history.get_web_language() == "auto"
+
+    def test_web_language_persists_across_reconnect(self, temp_db):
+        """语言偏好写入 DB 后，重连/重启仍然生效。"""
+        from history import PortHistory
+
+        h1 = PortHistory(db_path=temp_db)
+        h1.connect()
+        h1.set_web_language("en")
+        h1.close()
+
+        h2 = PortHistory(db_path=temp_db)
+        h2.connect()
+        assert h2.get_web_language() == "en"
+        h2.close()
+
 
 class TestSessionCleanup:
     """会话清理（H5）：闭环会话过期回收 + 崩溃孤儿会话启动回收。"""

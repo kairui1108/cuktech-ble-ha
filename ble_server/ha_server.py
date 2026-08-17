@@ -669,6 +669,34 @@ class Server:
         _LOGGER.info("Charge session recording %s", "enabled" if enabled else "disabled")
         return web.json_response({"ok": True, "enabled": enabled})
 
+    async def handle_web_language(self, request):
+        """GET/POST /api/web-language — Web UI language (DB meta, instant).
+
+        GET 返回当前语言偏好（'auto' | 'zh-CN' | 'en'），POST 持久化到
+        history.db 的 meta 表（单源，随数据库备份/清除），即时生效、无需重启。
+        'auto' 表示跟随浏览器/系统语言（回退中文）。
+        """
+        if request.method == "GET":
+            lang = self.history.get_web_language() if self.history else "auto"
+            return web.json_response({"ok": True, "language": lang})
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        raw = str(data.get("language", "")).strip().lower()
+        if raw in ("zh", "zh-cn", "zh-hans"):
+            canonical = "zh-CN"
+        elif raw == "en":
+            canonical = "en"
+        elif raw == "auto":
+            canonical = "auto"
+        else:
+            return web.json_response({"ok": False, "error": "invalid language"}, status=400)
+        if self.history:
+            self.history.set_web_language(canonical)
+        _LOGGER.info("Web UI language set to %s", canonical)
+        return web.json_response({"ok": True, "language": canonical})
+
     async def handle_chart(self, request):
         """Get chart-ready data for all ports with caching and ETag."""
         try:
@@ -1492,6 +1520,8 @@ app.router.add_get("/api/log-level", lambda r: get_server().handle_log_level(r))
 app.router.add_post("/api/log-level", lambda r: get_server().handle_log_level(r))
 app.router.add_get("/api/session-recording", lambda r: get_server().handle_session_recording(r))
 app.router.add_post("/api/session-recording", lambda r: get_server().handle_session_recording(r))
+app.router.add_get("/api/web-language", lambda r: get_server().handle_web_language(r))
+app.router.add_post("/api/web-language", lambda r: get_server().handle_web_language(r))
 app.router.add_get("/api/chart", lambda r: get_server().handle_chart(r))
 app.router.add_get("/api/statistics/{port}", lambda r: get_server().handle_statistics(r))
 app.router.add_get("/api/export/{port}", lambda r: get_server().handle_export(r))

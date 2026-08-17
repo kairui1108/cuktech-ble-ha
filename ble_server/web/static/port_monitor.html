@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/static/locales/zh-CN.js?v=3"></script>
+    <script src="/static/locales/en.js?v=3"></script>
+    <script src="/static/i18n.js?v=3"></script>
     <link rel="preload" href="/static/chart.umd.min.js" as="script">
     <script src="/static/chart.umd.min.js"></script>
     <script src="/static/chart-loader.js"></script>
@@ -63,21 +66,21 @@
 </head>
 <body>
     <div class="card">
-        <div class="card-title">端口监控</div>
+        <div class="card-title" data-i18n="index.portMonitor">端口监控</div>
         <div class="port-grid" id="portGrid"></div>
     </div>
 
     <div class="modal-overlay" id="portModal">
         <div class="modal">
             <div class="modal-header">
-                <span class="modal-title" id="modalTitle">C1 端口详情</span>
+                <span class="modal-title" id="modalTitle" data-i18n="modal.portDetail" data-i18n-params='{"port":"C1"}'>C1 端口详情</span>
                 <button class="modal-close" onclick="closeModal()">&times;</button>
             </div>
             <div class="modal-stats">
-                <div class="power-item"><div class="power-value" id="modalVoltage">0.0</div><div class="power-label">电压 V</div></div>
-                <div class="power-item"><div class="power-value success" id="modalCurrent">0.0</div><div class="power-label">电流 A</div></div>
-                <div class="power-item"><div class="power-value warning" id="modalPower">0.0</div><div class="power-label">功率 W</div></div>
-                <div class="power-item"><div class="power-value" id="modalProtocol">idle</div><div class="power-label">实时充电协议</div></div>
+                <div class="power-item"><div class="power-value" id="modalVoltage">0.0</div><div class="power-label" data-i18n="power.voltage">电压 V</div></div>
+                <div class="power-item"><div class="power-value success" id="modalCurrent">0.0</div><div class="power-label" data-i18n="power.current">电流 A</div></div>
+                <div class="power-item"><div class="power-value warning" id="modalPower">0.0</div><div class="power-label" data-i18n="power.power">功率 W</div></div>
+                <div class="power-item"><div class="power-value" id="modalProtocol">idle</div><div class="power-label" data-i18n="modal.protocol">实时充电协议</div></div>
             </div>
             <div class="modal-chart-container"><canvas id="modalChart"></canvas></div>
         </div>
@@ -105,9 +108,9 @@
                             </label>
                         </div>
                         <div class="port-stats">
-                            <div class="port-stat"><div class="port-stat-value">${port.voltage.toFixed(1)}</div><div class="port-stat-label">电压 V</div></div>
-                            <div class="port-stat"><div class="port-stat-value">${port.current.toFixed(1)}</div><div class="port-stat-label">电流 A</div></div>
-                            <div class="port-stat"><div class="port-stat-value">${port.power.toFixed(1)}</div><div class="port-stat-label">功率 W</div></div>
+                            <div class="port-stat"><div class="port-stat-value">${port.voltage.toFixed(1)}</div><div class="port-stat-label">${I18N.t('power.voltage')}</div></div>
+                            <div class="port-stat"><div class="port-stat-value">${port.current.toFixed(1)}</div><div class="port-stat-label">${I18N.t('power.current')}</div></div>
+                            <div class="port-stat"><div class="port-stat-value">${port.power.toFixed(1)}</div><div class="port-stat-label">${I18N.t('power.power')}</div></div>
                         </div>
                         <div class="port-protocol">${port.protocol}</div>
                     </div>`;
@@ -122,8 +125,13 @@
 
         function openModal(portId) {
             currentModalPort = portId;
-            document.getElementById('modalTitle').textContent = `${PORT_MAP[portId]} 端口详情`;
-            document.getElementById('modalTitle').style.color = `var(--port-${PORT_KEY_MAP[portId]})`;
+            const titleEl = document.getElementById('modalTitle');
+            // Keep data-i18n-params in sync with the actually open port so a later
+            // applyTranslations (e.g. server language applied at page load)
+            // re-translates the title with the correct port.
+            titleEl.setAttribute('data-i18n-params', JSON.stringify({ port: PORT_MAP[portId] }));
+            titleEl.textContent = I18N.t('modal.portDetail', { port: PORT_MAP[portId] });
+            titleEl.style.color = `var(--port-${PORT_KEY_MAP[portId]})`;
             initModalChart();
             fetchModalData();
             fetchModalProtocol();
@@ -141,9 +149,9 @@
             modalChart = new Chart(ctx, {
                 type: 'line',
                 data: { labels: [], datasets: [
-                    { label: '电压 (V)', data: [], borderColor: '#03a9f4', borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y' },
-                    { label: '电流 (A)', data: [], borderColor: '#389e3d', borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y' },
-                    { label: '功率 (W)', data: [], borderColor: '#ffa42b', borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y1' },
+                    { label: I18N.t('modal.voltage'), data: [], borderColor: '#03a9f4', borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y' },
+                    { label: I18N.t('modal.current'), data: [], borderColor: '#389e3d', borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y' },
+                    { label: I18N.t('modal.power'), data: [], borderColor: '#ffa42b', borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y1' },
                 ]},
                 options: {
                     responsive: true, maintainAspectRatio: false, animation: { duration: 0 },
@@ -251,6 +259,17 @@
                 }
             } catch (err) {}
         };
+        // Locale change: re-render cards and modal (labels are localized)
+        if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
+            I18N.onChange(function () {
+                renderPorts(latestPorts);
+                if (currentModalPort) {
+                    initModalChart();
+                    fetchModalData();
+                    fetchModalProtocol();
+                }
+            });
+        }
     </script>
 </body>
 </html>

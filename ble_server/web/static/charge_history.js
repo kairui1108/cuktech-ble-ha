@@ -13,7 +13,7 @@ function fmtTime(ts) {
     const m = String(d.getMinutes()).padStart(2, '0');
     if (isToday) return `${h}:${m}`;
     const yesterday = new Date(today - 86400000);
-    if (d >= yesterday) return `昨天 ${h}:${m}`;
+    if (d >= yesterday) return I18N.t('charge.yesterdayTime', { time: `${h}:${m}` });
     return `${d.getMonth()+1}/${d.getDate()} ${h}:${m}`;
 }
 
@@ -66,10 +66,10 @@ function renderStats(containerId, stats) {
     const s = `color:var(--text)`;
     const l = `color:var(--text-dim)`;
     el.innerHTML = `
-        <div class="mini-stat"><div class="mini-stat-value" style="${s}">${stats.total_wh ? stats.total_wh.toFixed(1) : '0'}</div><div class="mini-stat-label" style="${l}">总充电 Wh</div></div>
-        <div class="mini-stat"><div class="mini-stat-value" style="${s}">${stats.session_count || 0}</div><div class="mini-stat-label" style="${l}">充电次数</div></div>
-        <div class="mini-stat"><div class="mini-stat-value" style="${s}">${stats.avg_power_w ? stats.avg_power_w.toFixed(1) : '0'}</div><div class="mini-stat-label" style="${l}">平均功率 W</div></div>
-        <div class="mini-stat"><div class="mini-stat-value" style="${s}">${stats.peak_power_w ? stats.peak_power_w.toFixed(1) : '0'}</div><div class="mini-stat-label" style="${l}">峰值功率 W</div></div>`;
+        <div class="mini-stat"><div class="mini-stat-value" style="${s}">${stats.total_wh ? stats.total_wh.toFixed(1) : '0'}</div><div class="mini-stat-label" style="${l}">${I18N.t('charge.totalWh')}</div></div>
+        <div class="mini-stat"><div class="mini-stat-value" style="${s}">${stats.session_count || 0}</div><div class="mini-stat-label" style="${l}">${I18N.t('charge.sessionCount')}</div></div>
+        <div class="mini-stat"><div class="mini-stat-value" style="${s}">${stats.avg_power_w ? stats.avg_power_w.toFixed(1) : '0'}</div><div class="mini-stat-label" style="${l}">${I18N.t('charge.avgPower')}</div></div>
+        <div class="mini-stat"><div class="mini-stat-value" style="${s}">${stats.peak_power_w ? stats.peak_power_w.toFixed(1) : '0'}</div><div class="mini-stat-label" style="${l}">${I18N.t('charge.peakPower')}</div></div>`;
 }
 
 // Render session list
@@ -85,7 +85,7 @@ function renderSessionList(containerId, sessions, onClick) {
         return true;
     });
     if (filtered.length === 0) {
-        el.innerHTML = '<div style="text-align:center;color:var(--text-dim);padding:16px;font-size:13px;">暂无充电记录</div>';
+        el.innerHTML = `<div style="text-align:center;color:var(--text-dim);padding:16px;font-size:13px;">${I18N.t('charge.noRecords')}</div>`;
         return;
     }
     const portNames = {1:'C1', 2:'C2', 3:'C3', 4:'A'};
@@ -118,7 +118,7 @@ function renderSessionList(containerId, sessions, onClick) {
                 <span style="font-size:12px;color:var(--text-dim);flex-shrink:0;">${fmtTime(s.start_time)}${!isActive && s.end_time ? ' ~ ' + fmtTime(s.end_time) : ''}</span>
                 ${protoHtml}
             </div>
-            <span style="font-size:13px;font-weight:600;color:${isActive ? 'var(--success,#34C759)' : 'var(--text)'};flex-shrink:0;margin-left:8px;">电量：${wh}Wh</span>
+            <span style="font-size:13px;font-weight:600;color:${isActive ? 'var(--success,#34C759)' : 'var(--text)'};flex-shrink:0;margin-left:8px;">${I18N.t('charge.energy', { wh: wh })}</span>
         </div>`;
     }).join('');
 }
@@ -203,11 +203,11 @@ function renderSessionChart(points) {
                 tooltip: {
                     callbacks: {
                         label: function(ctx) {
-                            return '功率: ' + ctx.parsed.y.toFixed(1) + 'W';
+                            return I18N.t('charge.powerTooltip', { power: ctx.parsed.y.toFixed(1) });
                         },
                         afterLabel: function(ctx) {
                             const p = points[ctx.dataIndex];
-                            return p && p.protocol ? '协议: ' + p.protocol : '';
+                            return p && p.protocol ? I18N.t('charge.protocolTooltip', { protocol: p.protocol }) : '';
                         }
                     }
                 }
@@ -307,9 +307,19 @@ function renderPagination(containerId, data) {
     const disStyle = btnStyle + 'opacity:0.4;cursor:not-allowed;';
     pag.innerHTML = `
         <button onclick="chGoPage(${Math.max(1, data.page - 1)})" ${data.page <= 1 ? 'disabled' : ''}
-            style="${data.page <= 1 ? disStyle : btnStyle}">上一页</button>
+            style="${data.page <= 1 ? disStyle : btnStyle}">${I18N.t('charge.prevPage')}</button>
         <span style="color:var(--text-dim);">${data.page} / ${data.pages}</span>
         <button onclick="chGoPage(${Math.min(data.pages, data.page + 1)})" ${data.page >= data.pages - 1 ? 'disabled' : ''}
-            style="${data.page >= data.pages - 1 ? disStyle : btnStyle}">下一页</button>`;
+            style="${data.page >= data.pages - 1 ? disStyle : btnStyle}">${I18N.t('charge.nextPage')}</button>`;
     el.appendChild(pag);
+}
+
+// ── Locale change: refresh dynamic charge-history content ──
+if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
+    I18N.onChange(function () {
+        if (window._chContainerId) {
+            refreshChargeHistory();
+            if (_currentSessionId) showSessionDetail(_currentSessionId);
+        }
+    });
 }

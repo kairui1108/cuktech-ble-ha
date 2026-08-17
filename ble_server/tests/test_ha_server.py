@@ -416,3 +416,83 @@ class TestSessionRecordingAPI:
         assert body["enabled"] is False
         assert s.ble.record_sessions is False
         s.ble.resume_recording_sessions.assert_not_called()
+
+
+class TestWebLanguageAPI:
+    """/api/web-language 界面语言接口（DB meta 持久化，config.html 为唯一设置入口）。"""
+
+    @pytest.fixture
+    def server(self, real_history):
+        """Create a Server instance with real history."""
+        from ha_server import Server
+        s = Server.__new__(Server)
+        s.history = real_history
+        return s
+
+    @pytest.mark.asyncio
+    async def test_get_default_auto(self, server):
+        """GET 返回当前语言偏好，默认 auto（跟随系统）。"""
+        request = AsyncMock()
+        request.method = "GET"
+        result = await server.handle_web_language(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert body["language"] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_post_explicit_and_persists(self, server):
+        """POST 显式语言后即时生效并持久化到 DB meta。"""
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"language": "en"})
+        result = await server.handle_web_language(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert body["language"] == "en"
+        assert server.history.get_web_language() == "en"  # 重启后仍生效
+
+    @pytest.mark.asyncio
+    async def test_post_auto_resets(self, server):
+        """切回 auto 后持久化为 auto。"""
+        server.history.set_web_language("zh-CN")
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"language": "auto"})
+        result = await server.handle_web_language(request)
+        body = json.loads(result.body)
+        assert body["language"] == "auto"
+        assert server.history.get_web_language() == "auto"
+
+    @pytest.mark.asyncio
+    async def test_post_normalizes(self, server):
+        """大小写/变体归一化为规范值。"""
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"language": "ZH-CN"})
+        result = await server.handle_web_language(request)
+        body = json.loads(result.body)
+        assert body["language"] == "zh-CN"
+        assert server.history.get_web_language() == "zh-CN"
+
+    @pytest.mark.asyncio
+    async def test_post_rejects_invalid_language(self, server):
+        """不支持的语言值时拒绝。"""
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"language": "fr"})
+        result = await server.handle_web_language(request)
+        assert result.status == 400
+
+    @pytest.mark.asyncio
+    async def test_post_without_history_ok(self):
+        """history 未连接/不可用时 POST 不崩溃。"""
+        from ha_server import Server
+        s = Server.__new__(Server)
+        s.history = None
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"language": "en"})
+        result = await s.handle_web_language(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert body["language"] == "en"

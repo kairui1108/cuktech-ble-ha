@@ -3,15 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CUKTECH 10 GaN Charger Ultra</title>
+    <title data-i18n="pageTitle.index">CUKTECH 10 GaN Charger Ultra</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="preload" href="/static/chart.umd.min.js" as="script">
     <link rel="preload" href="/static/charger.png" as="image">
+    <script src="/static/locales/zh-CN.js?v=3"></script>
+    <script src="/static/locales/en.js?v=3"></script>
+    <script src="/static/i18n.js?v=3"></script>
     <script defer src="/static/chart.umd.min.js"></script>
-    <script defer src="/static/charge_history.js?v=2"></script>
+    <script defer src="/static/charge_history.js?v=3"></script>
     <script src="/static/chart-loader.js"></script>
     <script src="/static/chart-config.js"></script>
-    <link rel="stylesheet" href="static/index.css">
+    <link rel="stylesheet" href="static/index.css?v=3">
 </head>
 <body>
     <div class="container">
@@ -48,7 +51,7 @@
                 <div class="charger-controls">
                     <div class="control-box">
                         <div class="control-label" style="display: flex; justify-content: space-between; align-items: baseline;">
-                            <span>连接状态</span>
+                            <span data-i18n="index.connectionStatus">连接状态</span>
                             <span id="firmwareVersion" style="font-weight: 400; font-size: 10px;"></span>
                         </div>
                         <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
@@ -76,52 +79,51 @@
                         </div>
                     </div>
                     <div class="control-box">
-                        <div class="control-label">BLE 控制</div>
+                        <div class="control-label" data-i18n="index.bleControl">BLE 控制</div>
                         <div class="btn-group">
-                            <button class="btn btn-primary" id="bleToggle" onclick="bleToggle()">连接设备</button>
-                            <button class="btn btn-secondary" onclick="bleRestart()">重启</button>
+                            <button class="btn btn-primary" id="bleToggle" onclick="bleToggle()" data-i18n="common.connect">连接设备</button>
+                            <button class="btn btn-secondary" onclick="bleRestart()" data-i18n="common.restart">重启</button>
                         </div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-value" id="totalPower">0.0</div>
-                        <div class="stat-label">总功率 (W)</div>
+                        <div class="stat-label" data-i18n="power.total">总功率 (W)</div>
                     </div>
                     <div class="stat-box">
                         <div class="stat-value warning" id="maxVoltage">0.0</div>
-                        <div class="stat-label">最高电压 (V)</div>
+                        <div class="stat-label" data-i18n="power.maxVoltage">最高电压 (V)</div>
                     </div>
                 </div>
             </div>
         </div>
 
         <div class="card">
-            <div class="card-title">
-                功率曲线
+            <div class="card-title"><span data-i18n="index.powerChart">功率曲线</span>
                 <div style="margin-left: auto; display: flex; gap: 4px;">
-                    <button class="time-btn" onclick="setTimeRange(30)">30分</button>
-                    <button class="time-btn active" onclick="setTimeRange(60)">60分</button>
-                    <button class="time-btn" onclick="setTimeRange(90)">90分</button>
-                    <button class="time-btn" onclick="setTimeRange(120)">120分</button>
-                    <button class="time-btn" onclick="setTimeRange(1440)">24小时</button>
+                    <button class="time-btn" data-minutes="30" onclick="setTimeRange(30)" data-i18n="index.range30">30分</button>
+                    <button class="time-btn active" data-minutes="60" onclick="setTimeRange(60)" data-i18n="index.range60">60分</button>
+                    <button class="time-btn" data-minutes="90" onclick="setTimeRange(90)" data-i18n="index.range90">90分</button>
+                    <button class="time-btn" data-minutes="120" onclick="setTimeRange(120)" data-i18n="index.range120">120分</button>
+                    <button class="time-btn" data-minutes="1440" onclick="setTimeRange(1440)" data-i18n="index.range1440">24小时</button>
                 </div>
             </div>
             <div class="chart-container"><canvas id="powerChart"></canvas></div>
         </div>
 
         <div class="card">
-            <div class="card-title">端口监控 <span style="font-size:10px;color:var(--text-dim);text-transform:none;letter-spacing:0">(点击查看详情)</span></div>
+            <div class="card-title"><span data-i18n="index.portMonitor">端口监控</span> <span style="font-size:10px;color:var(--text-dim);text-transform:none;letter-spacing:0" data-i18n="index.clickForDetail">(点击查看详情)</span></div>
             <div class="port-grid" id="portGrid"></div>
         </div>
 
         <!-- Charge History Card -->
         <div class="card">
-            <div class="card-title">充电记录
+            <div class="card-title"><span data-i18n="index.chargeHistory">充电记录</span>
                 <select id="chargePeriod" onchange="startChargeHistoryAutoRefresh('chargeSessionList','chargeStats',this.value,30000)" style="margin-left:auto;background:var(--card-bg);border:1px solid var(--card-border);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--text-dim);">
-                    <option value="today">今日</option>
-                    <option value="yesterday">昨日</option>
-                    <option value="week">本周</option>
-                    <option value="month">本月</option>
-                    <option value="all">全部</option>
+                    <option value="today" data-i18n="charge.today">今日</option>
+                    <option value="yesterday" data-i18n="charge.yesterday">昨日</option>
+                    <option value="week" data-i18n="charge.week">本周</option>
+                    <option value="month" data-i18n="charge.month">本月</option>
+                    <option value="all" data-i18n="charge.all">全部</option>
                 </select>
             </div>
             <div id="chargeStats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;text-align:center;justify-items:center;"></div>
@@ -133,70 +135,70 @@
                     <span id="sdDuration" style="font-size:13px;color:var(--text-dim);"></span>
                 </div>
                 <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:8px;">
-                    <span style="font-size:11px;color:var(--text-dim);">精度</span>
+                    <span style="font-size:11px;color:var(--text-dim);" data-i18n="charge.accuracy">精度</span>
                     <select onchange="setDownsample(this.value)" style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:6px;padding:2px 8px;font-size:11px;color:var(--text-dim);">
-                        <option value="0">全部</option>
-                        <option value="100">100点</option>
-                        <option value="200">200点</option>
-                        <option value="300" selected>300点</option>
-                        <option value="600">600点</option>
+                        <option value="0" data-i18n="charge.allPoints">全部</option>
+                        <option value="100" data-i18n="charge.points100">100点</option>
+                        <option value="200" data-i18n="charge.points200">200点</option>
+                        <option value="300" selected data-i18n="charge.points300">300点</option>
+                        <option value="600" data-i18n="charge.points600">600点</option>
                     </select>
                 </div>
                 <div style="height:160px;"><canvas id="sessionChart"></canvas></div>
                 <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;">
-                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdEnergy">0</div><div style="font-size:11px;color:var(--text-dim);">电量 Wh</div></div>
-                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgP">0</div><div style="font-size:11px;color:var(--text-dim);">均功率 W</div></div>
-                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdPeakP">0</div><div style="font-size:11px;color:var(--text-dim);">峰功率 W</div></div>
+                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdEnergy">0</div><div style="font-size:11px;color:var(--text-dim);" data-i18n="charge.energyUnit">电量 Wh</div></div>
+                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgP">0</div><div style="font-size:11px;color:var(--text-dim);" data-i18n="charge.avgPowerUnit">均功率 W</div></div>
+                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdPeakP">0</div><div style="font-size:11px;color:var(--text-dim);" data-i18n="charge.peakPowerUnit">峰功率 W</div></div>
                 </div>
                 <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;">
-                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgV">0</div><div style="font-size:11px;color:var(--text-dim);">均电压 V</div></div>
-                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgI">0</div><div style="font-size:11px;color:var(--text-dim);">均电流 A</div></div>
-                    <div style="text-align:center;padding-top:6px;"><button onclick="closeSessionDetail()" style="background:rgba(255,59,48,0.1);border:1px solid rgba(255,59,48,0.3);color:#FF3B30;border-radius:8px;padding:8px 20px;font-size:12px;cursor:pointer;">关闭</button></div>
+                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgV">0</div><div style="font-size:11px;color:var(--text-dim);" data-i18n="charge.avgVoltageUnit">均电压 V</div></div>
+                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgI">0</div><div style="font-size:11px;color:var(--text-dim);" data-i18n="charge.avgCurrentUnit">均电流 A</div></div>
+                    <div style="text-align:center;padding-top:6px;"><button onclick="closeSessionDetail()" data-i18n="common.close" style="background:rgba(255,59,48,0.1);border:1px solid rgba(255,59,48,0.3);color:#FF3B30;border-radius:8px;padding:8px 20px;font-size:12px;cursor:pointer;">关闭</button></div>
                 </div>
             </div>
         </div>
 
         <div class="card">
-            <div class="card-title">倒计时设置</div>
+            <div class="card-title" data-i18n="countdown.title">倒计时设置</div>
             <div class="countdown-grid" id="countdownGrid"></div>
         </div>
 
         <div class="card">
-            <div class="card-title">设备设置</div>
+            <div class="card-title" data-i18n="index.deviceSettings">设备设置</div>
             <div class="settings-grid" id="settingsGrid"></div>
         </div>
 
         <div class="footer">
             <a href="https://github.com/kairui1108/cuktech-ble-server" target="_blank" style="color: var(--accent); text-decoration: none;">CUKTECH-BLE-HA Web</a>
             <span style="margin: 0 12px; color: var(--text-dim);">|</span>
-            <a href="config.html" style="color: var(--text-dim); text-decoration: none; font-size: 13px;">&#9881; 配置</a>
+            <a href="config.html" style="color: var(--text-dim); text-decoration: none; font-size: 13px;"><span aria-hidden="true">&#9881;</span> <span data-i18n="index.config">配置</span></a>
             <span style="margin: 0 12px; color: var(--text-dim);">|</span>
             <div class="theme-switcher" id="themeSwitcher">
-                <button class="theme-btn" onclick="toggleThemeMenu()" id="themeBtn">🎨 主题</button>
+                <button class="theme-btn" onclick="toggleThemeMenu()" id="themeBtn">🎨 <span data-i18n="common.theme">主题</span></button>
                 <div class="theme-menu" id="themeMenu">
                     <div class="theme-option" onclick="setTheme('ha-dark')" data-theme="ha-dark">
-                        <span class="theme-dot" style="background: #1c1c1c;"></span> 暗色
+                        <span class="theme-dot" style="background: #1c1c1c;"></span> <span data-i18n="index.themeDark">暗色</span>
                     </div>
                     <div class="theme-option" onclick="setTheme('deep-blue')" data-theme="deep-blue">
-                        <span class="theme-dot" style="background: #0f0f1a;"></span> 深蓝
+                        <span class="theme-dot" style="background: #0f0f1a;"></span> <span data-i18n="index.themeDeepBlue">深蓝</span>
                     </div>
                     <div class="theme-option" onclick="setTheme('ocean')" data-theme="ocean">
-                        <span class="theme-dot" style="background: #0a1628;"></span> 海洋
+                        <span class="theme-dot" style="background: #0a1628;"></span> <span data-i18n="index.themeOcean">海洋</span>
                     </div>
                     <div class="theme-option" onclick="setTheme('gray')" data-theme="gray">
-                        <span class="theme-dot" style="background: #2d2d2d;"></span> 灰色
+                        <span class="theme-dot" style="background: #2d2d2d;"></span> <span data-i18n="index.themeGray">灰色</span>
                     </div>
                     <div class="theme-option" onclick="setTheme('light')" data-theme="light">
-                        <span class="theme-dot" style="background: #f5f5f5;"></span> 浅色
+                        <span class="theme-dot" style="background: #f5f5f5;"></span> <span data-i18n="index.themeLight">浅色</span>
                     </div>
                     <div class="theme-option" onclick="setTheme('system')" data-theme="system">
-                        <span class="theme-dot" style="background: linear-gradient(135deg, #1c1c1c 50%, #f5f5f5 50%);"></span> 跟随系统
+                        <span class="theme-dot" style="background: linear-gradient(135deg, #1c1c1c 50%, #f5f5f5 50%);"></span> <span data-i18n="index.themeSystem">跟随系统</span>
                     </div>
                 </div>
             </div>
             <span style="margin: 0 12px; color: var(--text-dim);">|</span>
             <div class="theme-switcher" id="logLevelSwitcher">
-                <button class="theme-btn" onclick="toggleLogLevelMenu()" id="logLevelBtn">📋 日志</button>
+                <button class="theme-btn" onclick="toggleLogLevelMenu()" id="logLevelBtn">📋 <span data-i18n="common.logs">日志</span></button>
                 <div class="theme-menu" id="logLevelMenu">
                     <div class="theme-option" onclick="setLogLevel('debug')" data-level="debug">Debug</div>
                     <div class="theme-option" onclick="setLogLevel('info')" data-level="info">Info</div>
@@ -210,23 +212,23 @@
     <div class="modal-overlay" id="portModal">
         <div class="modal">
             <div class="modal-header">
-                <span class="modal-title" id="modalTitle">C1 端口详情</span>
+                <span class="modal-title" id="modalTitle" data-i18n="modal.portDetail" data-i18n-params='{"port":"C1"}'>C1 端口详情</span>
                 <button class="modal-close" onclick="closeModal()">&times;</button>
             </div>
             <div class="modal-stats">
-                <div class="power-item"><div class="power-value" id="modalVoltage">0.0</div><div class="power-label">电压 (V)</div></div>
-                <div class="power-item"><div class="power-value success" id="modalCurrent">0.0</div><div class="power-label">电流 (A)</div></div>
-                <div class="power-item"><div class="power-value warning" id="modalPower">0.0</div><div class="power-label">功率 (W)</div></div>
-                <div class="power-item"><div class="power-value" id="modalProtocol">idle</div><div class="power-label">实时充电协议</div></div>
+                <div class="power-item"><div class="power-value" id="modalVoltage">0.0</div><div class="power-label" data-i18n="modal.voltage">电压 (V)</div></div>
+                <div class="power-item"><div class="power-value success" id="modalCurrent">0.0</div><div class="power-label" data-i18n="modal.current">电流 (A)</div></div>
+                <div class="power-item"><div class="power-value warning" id="modalPower">0.0</div><div class="power-label" data-i18n="modal.power">功率 (W)</div></div>
+                <div class="power-item"><div class="power-value" id="modalProtocol">idle</div><div class="power-label" data-i18n="modal.protocol">实时充电协议</div></div>
             </div>
             <div style="display:flex;justify-content:flex-end;gap:4px;margin:4px 0;">
-                <button class="time-btn" id="modalRealTimeBtn" onclick="toggleModalRealTime()" style="font-size:10px;padding:2px 8px;">⚡ 实时</button>
+                <button class="time-btn" id="modalRealTimeBtn" onclick="toggleModalRealTime()" data-i18n="modal.realtime" style="font-size:10px;padding:2px 8px;">⚡ 实时</button>
             </div>
             <div class="modal-chart-container"><canvas id="modalChart"></canvas></div>
             <div class="modal-protocols" id="modalProtocols"></div>
         </div>
     </div>
 
-    <script defer src="/static/app.js"></script>
+    <script defer src="/static/app.js?v=3"></script>
 </body>
 </html>

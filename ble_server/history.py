@@ -161,6 +161,22 @@ class PortHistory:
         """Persist the charge session recording toggle (DB meta, survives restart)."""
         self.set_meta("session_recording", "true" if enabled else "false")
 
+    def get_web_language(self) -> str:
+        """Web UI language preference (DB meta, default 'auto' = follow system).
+
+        Returns 'auto' (follow system), 'zh-CN' or 'en'.
+        """
+        value = self.get_meta("web_language", "auto").strip().lower()
+        if value in ("zh", "zh-cn", "zh-hans"):
+            return "zh-CN"
+        if value.startswith("en"):
+            return "en"
+        return "auto"
+
+    def set_web_language(self, lang: str) -> None:
+        """Persist the Web UI language preference (DB meta, survives restart)."""
+        self.set_meta("web_language", lang)
+
     def _checkpoint_wal(self):
         """Run WAL checkpoint if enough pages have accumulated."""
         try:
