@@ -92,6 +92,7 @@ The firmware includes a complete built-in web UI. Once connected, open the ESP32
 - Protocol switching (PD / PPS / UFCS / SCP)
 - Scene mode selection
 - BLE connection toggle
+- **UI language**: Simplified Chinese and English (English shown by default for any other browser language); auto-detected from the browser language, or set manually once on the config page ("Display → Interface Language", remembered per browser)
 
 ## File Structure
 
