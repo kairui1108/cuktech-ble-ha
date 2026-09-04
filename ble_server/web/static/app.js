@@ -400,16 +400,21 @@
             btn.disabled = true;
             const port = btn.dataset.port;
             const proto = btn.dataset.proto;
+            // 按钮当前是否开启（渲染 state 的唯一权威来源）。用显式 action
+            // (on/off) 而非后端 toggle，并让乐观更新写入这个确定值——
+            // 避免「SSE 广播已成真→前端再用 ! 反转」的竞态把按钮状态改回错误值，
+            // 导致需刷新页面才显示正确（ha 侧改协议走纯 SSE 无此问题）。
+            const wasOn = !!(protocolSwitches[port] && protocolSwitches[port][proto]);
+            const action = wasOn ? 'off' : 'on';
             try {
                 const res = await fetch(`${API_BASE}/api/protocol`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ port, protocol: proto })
+                    body: JSON.stringify({ port, protocol: proto, action })
                 });
                 const data = await res.json();
                 if (data.ok) {
-                    // Toggle local state optimistically
-                    const key = PORT_KEY_TO_ID[port];
-                    if (protocolSwitches[port]) protocolSwitches[port][proto] = !protocolSwitches[port][proto];
+                    // 显式设置确定值（而非 ! 取反），与 SSE 广播收敛到同一结果，顺序无关
+                    if (protocolSwitches[port]) protocolSwitches[port][proto] = action === 'on';
                     renderModalProtocols();
                 }
             } catch (e) { console.error('Protocol toggle error:', e); }

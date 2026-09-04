@@ -448,14 +448,21 @@ async function phoneToggleProtocol(btn) {
     btn.disabled = true;
     const port = btn.dataset.port;
     const proto = btn.dataset.proto;
+    // 用显式 action + 确定值，避免「SSE 广播已成真→再用 ! 反转」的竞态，
+    // 以及「fetch 失败仍乐观取反」的双重 bug（与 index 页同源修复）。
+    const wasOn = !!(state.protocolSwitches[port] && state.protocolSwitches[port][proto]);
+    const action = wasOn ? 'off' : 'on';
     try {
-        await fetch(`${API_BASE}/api/protocol`, {
+        const res = await fetch(`${API_BASE}/api/protocol`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ port, protocol: proto })
+            body: JSON.stringify({ port, protocol: proto, action })
         });
-        // 乐观更新
-        if (state.protocolSwitches[port]) state.protocolSwitches[port][proto] = !state.protocolSwitches[port][proto];
-        renderProtocolSwitches();
+        const data = await res.json();
+        // 仅在成功时优化更新；写入确定值（非 ! 取反），与 SSE 收敛一致
+        if (data && data.ok && state.protocolSwitches[port]) {
+            state.protocolSwitches[port][proto] = action === 'on';
+            renderProtocolSwitches();
+        }
     } catch (e) { console.error('Protocol toggle error:', e); }
     finally { btn.disabled = false; }
 }
