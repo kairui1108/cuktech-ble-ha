@@ -226,7 +226,7 @@ cp config.yaml.example config.yaml
 ## Known Limitations
 
 - **Single Device**: Current architecture supports only one charger at a time. Multi-device support is planned for future releases.
-- **Protocol Detection**: Hardware protocol codes (PIID 17/18) are consistent with the Xiaomi Home app, refreshed every ~60s — protocol changes during the interval may appear delayed; falls back to heuristic inference when hardware codes are unavailable
+- **Protocol Detection**: Protocol is derived from the authoritative firmware push (PIID 17/18, consistent with the Xiaomi Home app) and updates immediately on PD/PPS change — no periodic 60s refresh lag. A coarse voltage-based inference is used only in an extreme cold start (when PIID 17 is never received and its read fails).
 - **Platform Support**: Development and testing are done exclusively on Linux. Compatibility with other platforms (macOS, Windows) has not been verified — use at your own risk.
 
 ## Protocol Support

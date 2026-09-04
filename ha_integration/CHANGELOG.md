@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.1.0] - 2026-09-22
+
+### Fixed
+- Charge event dedup used `session_id` as key; ble_server sends `session_id=0` for unrecorded sessions, so two real distinct events on the same port would falsely collide and the second was silently dropped. Now dedupes by `(port, end_time)`, which is always present and unique per event (regression-tested for the `session_id=0` case)
+- Event entity now inherits `CuktechBaseEntity` (`CB_TYPE_CHARGE`), eliminating duplicated `device_info`/`available`/callback-registration code
+- Numeric type-safety across platforms:
+  - Sensor values coerced to `float` (ble_server may send strings like `"20.5"`); invalid values return `unknown` and are logged instead of raising
+  - `TotalPowerSensor` no longer raises `TypeError` when a port's `power` is `None`/a string
+  - Setting/port switches coerce via `int()` instead of `bool()`, fixing the `bool("0") is True` trap and `str & int` bitwise `TypeError`
+- MQTT handlers now guard non-`dict` JSON payloads instead of falling into broad exception branches
+- `config_flow` releases aiohttp connections via `async with` + `read()` instead of leaking them to GC
+
+### Added
+- Availability flip notification: health-check-driven `available` changes now notify entities, so the UI no longer stays stuck "available" when MQTT drops
+- BLE control rollback: if both the MQTT and HTTP channels fail, the switch reverts to its prior state instead of showing a false "on" with no correction source
+- Bounded charge-event history (`deque(maxlen=50)`) and explicit ordering for event-dedup key eviction
+- Independent `protocol_codec` module: PIID 21 protocol bit decode/encode extracted into pure, unit-testable functions
+- `strings.json` / `translations/zh-Hans.json`: added `reauth_confirm` step and `reauth_successful` abort, keeping both translation packs symmetric
+
+### Changed
+- Port subscriptions iterate `PORT_MAP` (single source of truth) instead of hardcoded `("c1","c2","c3","a")`
+- Protocol switches, setting/port switch configs, countdown PIIDs and health/HTTP timeouts centralized in `const.py` (magic values removed)
+
+### Tests
+- Added 16 regression cases: charge-event dedup (incl. `session_id=0` collision), BLE rollback on both-channel failure, health-check availability change/stable notify, numeric validation (string/invalid/None/`"0"`), event-entity lifecycle
+
 ## [1.0.10] - 2026-08-16
 
 ### Fixed
