@@ -1314,6 +1314,17 @@ _static_cache = {}
 _GZIP_TYPES = (".js", ".css", ".html", ".svg", ".json", ".txt")
 
 
+def _static_cache_key(static_dir, fpath) -> str:
+    """构造静态缓存 key (/static/<相对路径>)。
+
+    用 .as_posix() 统一为正斜杠：Windows 上 Path.relative_to() 返回的路径用
+    反斜杠（如 plugin_imgs\\logo.png），与浏览器请求的 /static/plugin_imgs/logo.png
+    不匹配，handle_cached_static 会查不到缓存而返回 404。根目录文件不受影响，
+    子目录文件（plugin_imgs/*、locales/* 等）必须用本函数。
+    """
+    return "/static/" + fpath.relative_to(static_dir).as_posix()
+
+
 def _cache_static_files():
     """递归扫描 static 目录，预加载并预压缩所有文件到内存。"""
     static_dir = WEB_DIR / "static"
@@ -1322,8 +1333,7 @@ def _cache_static_files():
     for fpath in static_dir.rglob("*"):
         if not fpath.is_file():
             continue
-        rel = str(fpath.relative_to(static_dir))
-        key = f"/static/{rel}"
+        key = _static_cache_key(static_dir, fpath)
         raw = fpath.read_bytes()
         ext = fpath.suffix.lower()
         # 按后缀推断 content-type

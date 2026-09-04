@@ -496,3 +496,53 @@ class TestWebLanguageAPI:
         body = json.loads(result.body)
         assert body["ok"] is True
         assert body["language"] == "en"
+
+
+class TestStaticCacheKeys:
+    """静态缓存 key 的 Windows 路径兼容性（反斜杠 → 404 bug 回归测试）。"""
+
+    def test_windows_separator_on_subdir_key(self):
+        """Windows 上 Path.relative_to() 产出反斜杠，_static_cache_key 必须输出正斜杠，
+        否则 /static/plugin_imgs/logo.png、/static/locales/zh-CN.js 会 404。"""
+        import ha_server
+        from pathlib import PureWindowsPath
+
+        static = PureWindowsPath("C:/x/ble_server/web/static")
+        files = [
+            PureWindowsPath("C:/x/ble_server/web/static/app.js"),
+            PureWindowsPath("C:/x/ble_server/web/static/plugin_imgs/logo.png"),
+            PureWindowsPath("C:/x/ble_server/web/static/locales/zh-CN.js"),
+        ]
+        keys = {ha_server._static_cache_key(static, f) for f in files}
+        assert "/static/app.js" in keys
+        assert "/static/plugin_imgs/logo.png" in keys
+        assert "/static/locales/zh-CN.js" in keys
+        # 决不产生反斜杠 key（否则 request.path 精确匹配查不到）
+        assert not any("\\" in k for k in keys)
+
+    def test_cache_scan_subdir_files_present(self, tmp_path, monkeypatch):
+        """_cache_static_files 全量扫描包含子目录文件，且 key 无反斜杠。"""
+        import ha_server
+
+        static = tmp_path / "web" / "static"
+        (static / "plugin_imgs").mkdir(parents=True)
+        (static / "locales").mkdir()
+        (static / "app.js").write_text("var x = 1;", encoding="utf-8")
+        (static / "plugin_imgs" / "logo.png").write_bytes(b"\x89PNG\r\n")
+        (static / "locales" / "zh-CN.js").write_text("window.I18N_RESOURCES={};", encoding="utf-8")
+
+        old_dir = ha_server.WEB_DIR
+        old_cache = ha_server._static_cache
+        try:
+            ha_server.WEB_DIR = tmp_path / "web"
+            ha_server._static_cache = {}
+            ha_server._cache_static_files()
+            keys = set(ha_server._static_cache.keys())
+        finally:
+            ha_server.WEB_DIR = old_dir
+            ha_server._static_cache = old_cache
+
+        assert "/static/app.js" in keys
+        assert "/static/plugin_imgs/logo.png" in keys
+        assert "/static/locales/zh-CN.js" in keys
+        assert not any("\\" in k for k in keys)
