@@ -36,7 +36,7 @@ class TestEdgeCaseFixes:
         unified = decode_port(1, payload)
         assert v2["protocol"] == "PPS", f"期望 PPS, 得到 {v2['protocol']}"
         assert unified["protocol"] == "PPS", f"统一接口应为 PPS, 得到 {unified['protocol']}"
-        print(f"   V2: {v2['protocol']} conf={v2['_confidence']:.0%}")
+        print(f"   V2: {v2['protocol']}")
         print(f"   统一: {unified['protocol']}")
         print("✅ 通过\n")
 

@@ -45,6 +45,7 @@ class BLEManager:
     RECONNECT_JITTER = 0.25      # ±25% jitter on reconnect delays
     CIRCUIT_BREAKER_MAX_FAIL = 20  # consecutive failures before cooling off
     CIRCUIT_BREAKER_COOLDOWN = 300  # 5 minutes
+    MAX_AUTH_FAILURES = 15  # consecutive auth failures before restarting process
 
     def __init__(self, mac, token, state, config):
         self.mac = mac
@@ -393,6 +394,25 @@ class BLEManager:
         except Exception as err:
             _LOGGER.error("Failed to publish charge event: %s", err)
 
+    @staticmethod
+    def _auth_backoff_delay(auth_fail_count: int) -> int:
+        """认证失败后的分钟级退避延迟（表驱动，与设备会话清除节奏对齐）。
+
+        ≥5 次: 10 分钟（设备 BLE 会话需足够时间清除）
+        ≥3 次: 5 分钟
+        否则: 2 * 次数，封顶 3 分钟
+        """
+        if auth_fail_count >= 5:
+            return 600
+        if auth_fail_count >= 3:
+            return 300
+        return min(120 * auth_fail_count, 180)
+
+    @staticmethod
+    def _should_restart_process(auth_fail_count: int) -> bool:
+        """连续认证失败达到阈值后，重启整个进程以恢复 BLE 会话。"""
+        return auth_fail_count >= BLEManager.MAX_AUTH_FAILURES
+
     def _get_reconnect_delay(self):
         """Calculate exponential backoff delay with jitter."""
         delay = min(
@@ -482,17 +502,32 @@ class BLEManager:
                     self._reconnect_attempts = 0  # reset: auth failure has its own counter
                     self._auth_fail_count += 1
                     await self._force_disconnect_bluetooth()
-                    if self._auth_fail_count >= 5:
+                    if self._should_restart_process(self._auth_fail_count):
+                        _LOGGER.critical(
+                            "Auth failed %d times consecutively. "
+                            "Restarting process to recover BLE session.",
+                            self._auth_fail_count)
+                        self._publish_status(
+                            {"connected": False, "error": "auth_stuck_restarting"},
+                            retain=True)
+                        # 给 MQTT/SSE 一点时间发送状态，然后退出进程
+                        # 外部进程管理器 (systemd / supervisor / 脚本) 会自动重启。
+                        # 注: os._exit 不会执行 finally 中的 _disconnect() 清理，
+                        # 但进程随即整体退出，BLE/GATT 句柄随进程回收，
+                        # 会话残留由进程管理器重启兜底，无需在退出前手动断开。
+                        await asyncio.sleep(2)
+                        os._exit(1)
+                    elif self._auth_fail_count >= 5:
                         _LOGGER.error(
                             "Auth failed %d times consecutively. "
                             "Device session is stuck. Please power-cycle the charger "
                             "(unplug and replug) to reset its BLE session.",
                             self._auth_fail_count)
                         self._publish_status({"connected": False, "error": "device_session_stuck"}, retain=True)
-                        # 等待 5 分钟后自动重试（给用户时间手动重启）
-                        delay = 300
+                        # 等待 10 分钟后自动重试（给设备足够时间清除 BLE 会话）
+                        delay = self._auth_backoff_delay(self._auth_fail_count)
                     else:
-                        delay = min(60 * self._auth_fail_count, 180)
+                        delay = self._auth_backoff_delay(self._auth_fail_count)
                     _LOGGER.warning("Auth failed %d times, reset adapter and waiting %ds...",
                                     self._auth_fail_count, delay)
                 elif last_error and ('POWERED_OFF' in str(last_error) or 'No powered Bluetooth' in str(last_error)):
@@ -546,6 +581,8 @@ class BLEManager:
 
         # 先清理 BlueZ 残留扫描状态（避免 InProgress 错误）
         await self._stop_ble_scan()
+        # 等待 BlueZ 清理扫描状态，避免与 BleakScanner 内部扫描冲突
+        await asyncio.sleep(0.5)
 
         from bleak import BleakScanner
         try:
@@ -600,7 +637,7 @@ class BLEManager:
         await self._read_initial_settings()
 
         # 处理认证后设备推送的初始端口数据
-        if self.ctrl.init_push_frames:
+        if self.ctrl and self.ctrl.init_push_frames:
             _LOGGER.info("Processing %d init push frames", len(self.ctrl.init_push_frames))
             for frame in self.ctrl.init_push_frames:
                 await self._try_process_inline_frame(frame)
@@ -710,7 +747,8 @@ class BLEManager:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(proc.communicate(), timeout=5)
-            await asyncio.sleep(1)
+            # 等待 BLE 芯片完全下电
+            await asyncio.sleep(3)
             proc = await asyncio.create_subprocess_exec(
                 "bluetoothctl", "power", "on",
                 stdout=asyncio.subprocess.DEVNULL,
@@ -1144,6 +1182,29 @@ class BLEManager:
             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x03, 0x00]), response=False)
         await self._try_process_inline_frame(data)
 
+    async def _handle_hw_protocol_push(self, piid: int, val32: int):
+        """处理 PIID 17/18 协议号推送（固件 PD/PPS 协商变更时主动推送）。
+
+        布局对齐米家 parseC1C2ProtocolInfo（u32, MSB→LSB）:
+          PIID17: [C1_proto][C1_power][C2_proto][C2_power]
+          PIID18: [C3_proto][C3_power][A_proto ][A_power ]
+        即时更新 hw_protocol 缓存与 pdo_caps，并向前端广播协议开关状态。
+        """
+        hi_proto = (val32 >> 24) & 0xFF
+        lo_proto = (val32 >> 8) & 0xFF
+        if piid == 17:
+            await self.state.set_hw_protocol_codes(hi_proto, lo_proto)
+            pdo_key, high_port, low_port = "c1c2", "c1", "c2"
+        else:
+            await self.state.set_hw_protocol_codes_c3a(hi_proto, lo_proto)
+            pdo_key, high_port, low_port = "c3a", "c3", "a"
+        pdo_caps = dict(self.state.pdo_caps)
+        pdo_caps[pdo_key] = decode_pdo_caps(val32, high_port, low_port)
+        await self.state.update_pdo_caps(pdo_caps)
+        self.state.settings[str(piid)] = val32
+        _LOGGER.info("PIID%d hw_protocol push: hi=%d lo=%d (raw=0x%08X)",
+                     piid, hi_proto, lo_proto, val32)
+
     async def _try_process_inline_frame(self, raw_data):
         """Try to decrypt and process a raw BLE frame as inline port data.
         
@@ -1174,6 +1235,14 @@ class BLEManager:
         self._decrypt_failures = 0
         b4 = pt[4]
         piid = pt[7] if len(pt) > 7 else -1
+
+        # PIID 17/18 协议号推送（固件在 PD/PPS 协商变更时主动推送，对齐米家
+        # parseC1C2ProtocolInfo）：value = u32，[proto_hi][pwr_hi][proto_lo][pwr_lo]。
+        # 即时更新 hw_protocol 缓存，消除 60s 刷新周期内的协议显示滞后。
+        if b4 == 0x04 and piid in (17, 18):
+            if len(pt) >= 16:
+                await self._handle_hw_protocol_push(piid, int.from_bytes(pt[12:16], 'little'))
+            return
 
         # 优先使用 PIID 17 的硬件协议代码 (c1_c2_protocol Spec 属性)
         # 与米家 parseC1C2ProtocolInfo 一致: byte[0]=C1, byte[2]=C2

@@ -188,3 +188,47 @@ class TestAuthMultiframeCap:
         # 帧数被上限到 100：1 次帧头 + 100 次数据帧，而不是 200 次
         assert calls["n"] == 101
         assert result == b"\xaa\xbb" * 100
+
+
+class TestSendEncryptedClearQueue:
+    """ble-warnings P2: _send_encrypted 写命令前清空 cmd_send 队列。
+
+    回归场景: cmd_send 通道残留设备越带推送帧/过期响应时，
+    wait_notify("cmd_send") 必须读到空队列（等待 RCV_RDY/RCV_OK），
+    而不是先取到陈旧帧触发虚假 "CMD_SEND no RCV_RDY/RCV_OK" 警告。
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_encrypted_clears_cmd_send_before_wait(self):
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from src.cuktech_ble.controller import CuktechBLEController
+
+        ctrl = CuktechBLEController(mac="AA:BB:CC:DD:EE:FF", token="aabbccddeeff")
+        ctrl.client = MagicMock()
+        ctrl.client.write_gatt_char = AsyncMock()
+
+        # 预置一条陈旧/越带帧（即文档中 000001050100 6 字节特征）
+        q = ctrl._notify_queues.setdefault("cmd_send", asyncio.Queue())
+        q.put_nowait(b"\x00\x00\x01\x05\x01\x00")
+
+        # 拦截 wait_notify，记录调用瞬间 cmd_send 是否已清空
+        states = []
+
+        async def fake_wait_notify(name, timeout=5.0):
+            que = ctrl._notify_queues.get(name)
+            states.append((name, que.empty() if que else True))
+            return None  # 返回 None → _send_encrypted 判定 "no RCV_RDY" → False
+
+        with patch.object(ctrl, "_encrypt", return_value=b"\x01\x00\xaa\xbb") as m_enc:
+            with patch.object(ctrl, "wait_notify", side_effect=fake_wait_notify):
+                result = await ctrl._send_encrypted(b"\x00\x10\x10\x00")
+
+        # 关键断言: 两次 wait_notify("cmd_send") 调用时队列都应为空（陈旧帧已被丢弃）
+        wait_calls = [name for name, _ in states]
+        assert "cmd_send" in wait_calls
+        assert all(empty for name, empty in states if name == "cmd_send"), \
+            f"cmd_send 队列写入前未被清空: {states}"
+        assert m_enc.called
+        # header 帧确实通过 GATT 写入
+        assert ctrl.client.write_gatt_char.called

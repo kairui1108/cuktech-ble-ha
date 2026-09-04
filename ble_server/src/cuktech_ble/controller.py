@@ -111,6 +111,23 @@ class CuktechBLEController:
         except asyncio.QueueEmpty:
             return None
 
+    def _clear_queue(self, name):
+        """非阻塞清空指定通知队列中积压的过期数据。
+
+        cmd_send 通道上会混入设备在命令间隙推送的越带帧；写命令前若不清理，
+        `wait_notify("cmd_send")` 会先取到陈旧数据而非期待的 RCV_RDY/RCV_OK，
+        触发虚假的 "CMD_SEND no RCV_RDY/RCV_OK" 警告。发送前清空是协议安全的：
+        此刻尚未写入命令，队列里不可能有当前命令的合法响应。
+        """
+        queue = self._notify_queues.get(name)
+        if not queue:
+            return
+        while True:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
     async def _recv_auth_response(self, channel, label="数据"):
         """接收认证响应数据，自动处理内联和多帧两种格式。
 
@@ -722,6 +739,10 @@ class CuktechBLEController:
         3. 写入 0100 + 加密数据 (帧号=1)
         4. 等待 00000100 (RCV_OK)
         """
+        # 写命令前清空 cmd_send 队列中的过期响应/越带推送帧
+        # （否则 wait_notify("cmd_send") 会先读到陈旧数据 → 虚假 CMD_SEND 警告）
+        self._clear_queue("cmd_send")
+
         encrypted = self._encrypt(plaintext)
 
         # 发送头部: 告知设备我们要发送 1 帧数据
@@ -892,13 +913,14 @@ class CuktechBLEController:
                 continue
             elif b4 == 0x04 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
                 val = None
-                # 值从 pt[11] 开始（经 CLI 实测验证）
-                if len(pt) >= 12:
+                # Result 帧布局: [.., pt9=err_hi, pt10=err_lo, pt11=len, pt12=type,
+                #                 pt13..=value] — 与 GET Result 同构
+                if len(pt) >= 14:
                     vlen = pt[11] if len(pt) > 11 else 1
-                    if vlen >= 4 and len(pt) >= 15:
-                        val = int.from_bytes(pt[11:15], 'little')
+                    if vlen >= 4 and len(pt) >= 17:
+                        val = int.from_bytes(pt[13:17], 'little')
                     else:
-                        val = pt[11]
+                        val = pt[13] if len(pt) > 13 else None
                 return {'piid': piid, 'value': val, 'raw': pt}
 
             # Don't swallow live port pushes received while awaiting SET ACK/
@@ -937,6 +959,11 @@ class CuktechBLEController:
             b4 = pt[4]; pt_siid = pt[6] if len(pt) > 6 else -1; pt_piid = pt[7] if len(pt) > 7 else -1
 
             if b4 == 0x03 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
+                # pt[9:11] 为错误码（非零 = 设备拒绝该 GET，value 区无意义）
+                if len(pt) > 10 and (pt[9] or pt[10]):
+                    _LOGGER.debug("GET siid=%d piid=%d device error=0x%02x%02x",
+                                  siid, piid, pt[9], pt[10])
+                    return None
                 result_value = None
                 if len(pt) >= 14:
                     val_len = pt[11] if len(pt) > 11 else 1

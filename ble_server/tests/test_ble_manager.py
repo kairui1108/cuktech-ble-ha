@@ -896,3 +896,25 @@ class TestSessionRecording:
         mgr._close_resumed_orphan(1, 100)
         await asyncio.sleep(0.05)
         mgr._history.delete_session.assert_called_once_with(100)
+
+
+class TestAuthBackoff:
+    """认证失败退避纯函数（Spec 审查补充：退避/熔断行为需可测）。"""
+
+    def test_backoff_delay_ladder(self):
+        """阶梯延迟: ≥5次→600s, 3-4次→300s, 1-2次→min(120n,180)。"""
+        from ble_manager import BLEManager
+        assert BLEManager._auth_backoff_delay(1) == 120
+        assert BLEManager._auth_backoff_delay(2) == 180   # 240 被 180 封顶
+        assert BLEManager._auth_backoff_delay(3) == 300
+        assert BLEManager._auth_backoff_delay(4) == 300
+        assert BLEManager._auth_backoff_delay(5) == 600
+        assert BLEManager._auth_backoff_delay(14) == 600
+        assert BLEManager._auth_backoff_delay(0) == 0      # 首次失败立即重试
+
+    def test_should_restart_process_threshold(self):
+        """达到 MAX_AUTH_FAILURES(15) 才重启进程。"""
+        from ble_manager import BLEManager
+        assert BLEManager._should_restart_process(14) is False
+        assert BLEManager._should_restart_process(15) is True
+        assert BLEManager._should_restart_process(100) is True

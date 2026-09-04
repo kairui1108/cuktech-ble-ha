@@ -1,47 +1,24 @@
 """
-充电协议检测模块 - 对齐米家App
+充电协议检测模块 - 对齐米家App + 固件逆向验证 (v3)
 
-米家 App 酷态科插件协议映射表:
-  protocol 1/2 → "5V"    普通充电
-  protocol 3   → "QC"    Quick Charge
-  protocol 4   → "AFC"   Samsung AFC
-  protocol 5   → "FCP"   Huawei FCP
-  protocol 6   → "SCP"   Huawei SCP
-  protocol 7   → "PD"    USB-PD Fixed
-  protocol 8/9 → "PPS"   PD PPS
-  protocol 10  → "UFCS"  融合快充
+权威数据源: PIID 17/18 (c1_c2_protocol / c3_a_protocol)
+  固件在 PD/PPS 协商变更时主动推送, 由 ble_manager._handle_hw_protocol_push
+  即时写入 state 缓存。协议号为米家编制: 7=PD 8/9=PPS 10=UFCS 3=QC ...
 
-注意: MiOT 模式下无法直接获取硬件协议号 (1-10)。
-本模块通过电压、原始 code 字节、端口类型进行启发式估算。
+历史版本(v2)曾用推送帧的 code 字节做启发式推断。固件反汇编证实该字节是
+PDO 档位索引/硬件状态码而非协议号(20V PD 充电中在 0x0B/0x04 跳变),
+基于它的规则属于相关性巧合, 已在 v3 移除。
+
+保留的最小兜底(仅电压规则): PIID17 从未到达且 GET 失败的冷启动场景。
 """
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional, List
-import time
+from typing import Dict, Optional
 
 
 # ============================================================
-# P0: 协议检测缓存 — 稳定充电时跳过重复计算
-# ============================================================
-_proto_cache: Dict[tuple, int] = {}
-_PROTO_CACHE_MAX = 64
-
-# 置信度衰减：记录每个端口上次协议变化时间
-_last_proto_change: Dict[int, float] = {}
-_CONFIDENCE_HALF_LIFE = 300  # 5 分钟半衰期
-
-
-def _cache_key(piid: int, raw: 'RawPortData', pdo_data: Optional[Dict],
-               switches: Optional[Dict]) -> tuple:
-    """生成缓存 key（仅关键判据）."""
-    pdo_hash = hash(str(sorted((pdo_data or {}).items()))) if pdo_data else 0
-    sw_hash = hash(str(sorted((switches or {}).items()))) if switches else 0
-    return (piid, raw.code, raw.voltage_raw, raw.current_raw, pdo_hash, sw_hash)
-
-
-# ============================================================
-# 米家协议映射表 (与米家App完全一致)
+# 米家协议映射表 
 # ============================================================
 MIJIA_PROTOCOLS: Dict[int, str] = {
     0: "idle",
@@ -61,14 +38,6 @@ MIJIA_PROTOCOLS: Dict[int, str] = {
 def get_mijia_protocol_name(proto_num: int) -> str:
     """根据米家协议号返回协议名称."""
     return MIJIA_PROTOCOLS.get(proto_num, f"Unknown (0x{proto_num:02X})")
-
-
-# ============================================================
-# 标准电压档位 (单位: V)
-# ============================================================
-PD_FIXED_VOLTAGES = [5.0, 9.0, 12.0, 15.0, 20.0]
-QC_VOLTAGES = [5.0, 9.0, 12.0, 20.0]
-PPS_VOLTAGE_RANGE = (3.0, 21.0)  # PPS 电压范围
 
 
 # ============================================================
@@ -98,7 +67,7 @@ class RawPortData:
     """从 BLE 解密后的原始端口数据."""
     in_use: bool
     status_raw: int     # 原始 status 字节 (0x00=空闲, 0x01=单口, 0x11=C3+A合并)
-    code: int           # 原始 code 字节 (非米家协议号)
+    code: int           # 原始 code 字节 (PDO 档位索引/硬件状态码 — 非协议号!)
     current_raw: int    # 原始电流 (×10 mA)
     voltage_raw: int    # 原始电压 (×10 mV)
 
@@ -130,164 +99,52 @@ class RawPortData:
 
 
 # ============================================================
-# 协议号估算 (核心逻辑)
+# 最小兜底 (仅当 PIID17/18 从未到达时使用; 正常路径不进入)
 # ============================================================
-
-def _calc_voltage_match_score(voltage: float, refs: List[float], tolerance: float = 0.5) -> float:
-    """计算电压与参考档位的匹配度 (0.0 ~ 1.0)."""
-    if not refs:
-        return 0.0
-    min_dist = min(abs(voltage - r) for r in refs)
-    if min_dist >= tolerance:
-        return 0.0
-    return 1.0 - min_dist / tolerance
+PD_FIXED_VOLTAGES = [5.0, 9.0, 12.0, 15.0, 20.0]
 
 
-def _estimate_pd_subtype(voltage: float, code: int) -> int:
+def _fallback_by_voltage(piid: int, voltage: float) -> int:
+    """纯电压兜底: 仅在 hw_protocol 缺失时使用.
+
+    规则基于 USB-PD 物理规范（非 code 字节相关性）:
+      - PD Fixed 档位固定为 5/9/12/15/20V
+      - PPS 特征是 3.3-21V 连续可调 → 电压偏离所有固定档的高压 C 口输出必为 PPS
+    粗粒度: 不区分 AFC/FCP/SCP (无硬件依据的猜测比粗粒度更糟)。
     """
-    估算 C1/C2 端口的 PD 子类型.
+    if piid == 4:
+        return 3 if voltage > 5.5 else 1
+    if piid == 3:
+        if voltage >= 15.0:
+            return 7
+        return 3 if voltage >= 8.5 else 1
+    # C1/C2
+    if voltage <= 5.5:
+        return 1
+    if any(abs(voltage - v) < 0.25 for v in PD_FIXED_VOLTAGES):
+        return 7   # 精准落在 PD 固定档 → PD Fixed
+    return 8       # 非档位连续电压 → PPS
 
-    设备固件的 code byte 不严格区分 PD Fixed vs PPS (如 code=0x04 既可能
-    是 PD 也可能是 PPS)。通过电压与 PD 标准档位的距离来判定:
-      - 低压段 (<12V): PPS 非常常见，仅极精准匹配 PD 档位才判 PD
-      - 高压段 (≥12V): PD 常见，宽松匹配 PD 档位即判 PD
 
-    Args:
-        voltage: 实际电压
-        code: 原始 code 字节
+def estimate_protocol_number(piid: int, raw: 'RawPortData', pdo_data=None,
+                             protocol_switches=None,
+                             hw_protocol: Optional[int] = None) -> int:
+    """协议号判定入口.
 
-    Returns:
-        米家协议号: 7=PD, 8=PPS
+    优先级:
+      1. hw_protocol ∈ 1-10 (PIID17/18 推送或 GET, 米家编制) — 权威
+      2. hw_protocol 为 MiOT code (>10, C3/A 口特例) → 映射回米家编号
+      3. 电压兜底 (仅 hw_protocol 缺失时; 粗粒度)
     """
-    min_dist = min(abs(voltage - v) for v in PD_FIXED_VOLTAGES)
-
-    if voltage < 12.0:
-        # 低压段: PPS 极常见 (3-12V 全程覆盖)
-        if round(min_dist, 4) <= 0.05:
-            return 7  # 极精准匹配 PD 标准档位 → PD
-        return 8      # 默认 PPS
-
-    # 高压段 (≥12V): PD 更常见 (PPS 极少超过 15V)
-    if round(min_dist, 4) <= 0.3:
-        return 7      # PD
-    if PPS_VOLTAGE_RANGE[0] <= voltage <= PPS_VOLTAGE_RANGE[1]:
-        return 8      # PPS
-    return 7          # PD
-
-
-def estimate_protocol_number(piid: int, raw: RawPortData, pdo_data: Optional[Dict] = None,
-                              protocol_switches: Optional[Dict] = None,
-                              hw_protocol: Optional[int] = None) -> int:
-    """
-    估算米家协议号 (1-11).
-
-    当 hw_protocol 提供时直接使用 (BLE Spec 帧的硬件协议号)。
-    否则通过启发式推断。
-    """
-    key = _cache_key(piid, raw, pdo_data, protocol_switches)
     if hw_protocol is not None and hw_protocol > 0:
-        return hw_protocol  # 硬件协议号不走缓存
-    if key in _proto_cache:
-        return _proto_cache[key]
+        if hw_protocol <= 10:
+            return hw_protocol
+        # C3/A 口的 MiOT code (0x60=USB-A, 0x70=QC, 0x80=PD) → 米家编号
+        mapped = {0x70: 3, 0x80: 7}.get(hw_protocol)
+        if mapped:
+            return mapped
 
-    voltage = raw.voltage
-    code = raw.code
-    result = _estimate_protocol_number_impl(piid, raw, pdo_data, protocol_switches, hw_protocol)
-
-    # 缓存结果（LRU 简化：超限清空）
-    if len(_proto_cache) >= _PROTO_CACHE_MAX:
-        _proto_cache.clear()
-    _proto_cache[key] = result
-    return result
-
-
-def _estimate_protocol_number_impl(piid: int, raw: RawPortData, pdo_data: Optional[Dict],
-                                    protocol_switches: Optional[Dict],
-                                    hw_protocol: Optional[int] = None) -> int:
-    """实际协议估算逻辑.
-    
-    Args:
-        hw_protocol: BLE Spec 硬件协议号 (1-11)，来自 0f20 TLV value bits 15-8。
-                     当提供时直接使用，跳过启发式推断。
-    """
-    voltage = raw.voltage
-    code = raw.code
-
-    # BLE Spec 帧: 有硬件协议号时直接使用 (与 parsePortInfo 一致)
-    if hw_protocol is not None and hw_protocol > 0:
-        return hw_protocol
-
-    if piid in (1, 2):
-        # ===== C1/C2: Type-C 全系列 PD =====
-
-        # PD 关闭时端口只能输出 5V
-        if protocol_switches:
-            port_key = {1: "c1", 2: "c2"}.get(piid)
-            sw = protocol_switches.get(port_key, {})
-            if not sw.get("pd", True) and voltage > 0:
-                return 1  # 5V
-
-        if code == 0x08:       return 8   # PPS 明确标识
-        if code == 0x70:
-            match_score = _calc_voltage_match_score(voltage, PD_FIXED_VOLTAGES)
-            if match_score > 0.9:
-                return 7  # PD
-            return 3      # QC
-
-        # PD 系列 code: 接入 PDO 数据对齐米家判断逻辑
-        if code in (0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0A, 0x0B, 0x30):
-            pdo_kind = pdo_data.get("kind") if pdo_data else None
-            pps_enabled = (protocol_switches or {}).get({1:"c1",2:"c2"}[piid], {}).get("pps", True)
-            if pdo_kind == "PD PPS":
-                # P1: PDO 明确说 PPS，若 PPS 开关关了 → 直接判 PD
-                if not pps_enabled:
-                    return 7
-                min_dist = min(abs(voltage - v) for v in PD_FIXED_VOLTAGES)
-                if round(min_dist, 4) <= 0.20:  # P3: 放宽到 0.20
-                    return 7  # 精准匹配 PD 档位
-                return 8      # 默认 PPS
-            elif pdo_kind == "PD Fixed":
-                # PDO 说 PD Fixed 但 PIID21 中 PPS 是开的 → PDO 可能是动态值
-                if pps_enabled and voltage < 12.0:
-                    return _estimate_pd_subtype(voltage, code)
-                return 7
-            # P1: PDO 缺失时，若 PPS 开关关了 → 直接判 PD
-            if not pps_enabled and voltage > 0:
-                return 7
-            return _estimate_pd_subtype(voltage, code)
-        
-        # 其他 code: 电压法兜底
-        match_score = _calc_voltage_match_score(voltage, PD_FIXED_VOLTAGES)
-        if match_score > 0.7:  return 7
-        if PPS_VOLTAGE_RANGE[0] <= voltage <= PPS_VOLTAGE_RANGE[1]: return 8
-        return 0
-    
-    elif piid == 3:
-        # ===== C3: 混合口 =====
-        if code == 0x70:
-            # P2: code=0x70 是 PD 和 QC 共享，参考 PDO 数据区分
-            pdo_kind = pdo_data.get("kind") if pdo_data else None
-            if pdo_kind in ("PD Fixed", "PD PPS"):
-                return 7  # PDO 明确说 PD
-            if pdo_kind == "QC":
-                return 3  # PDO 明确说 QC
-            # 无 PDO 数据时，默认 QC（C3 首次协商多为 QC）
-            return 3
-
-        # 电压优先策略 (对齐米家实测结果)
-        if voltage >= 15.0:    return 7   # 15V+ → PD
-        if voltage >= 8.5:     return 3   # 8.5-15V → C3 倾向 QC
-        if voltage <= 5.5:     return 1   # 5.5V- → 5V
-        # 过渡区 (5.5-8.5V)
-        return 3 if voltage > 6.0 else 1
-    
-    elif piid == 4:
-        # ===== USB-A =====
-        if code == 0x70:       return 3   # QC 明确标识
-        if voltage > 5.5:      return 3   # QC
-        if voltage > 0:        return 1   # 5V
-    
-    return 0
+    return _fallback_by_voltage(piid, raw.voltage)
 
 
 # ============================================================
@@ -297,18 +154,19 @@ def _estimate_protocol_number_impl(piid: int, raw: RawPortData, pdo_data: Option
 def decode_port_v2(
     piid: int,
     payload: bytes,
-    pdo_data: Optional[Dict] = None,
+    pdo_data=None,
     thresholds=None,
-    protocol_switches: Optional[Dict] = None,
+    protocol_switches=None,
     hw_protocol: Optional[int] = None,
 ) -> Optional[Dict]:
-    """解码端口数据 (V2).
+    """解码端口数据 (v3).
 
     Args:
         piid: 端口 ID (1-4)
         payload: 解密后的 MiOT 属性负载
-        pdo_data: PDO 能力信息 (PIID 17/18)
-        protocol_switches: PIID 21 当前协议开关状态
+        pdo_data: 兼容参数 (v3 不再使用 — kind 字节语义已由固件证伪)
+        protocol_switches: PIID 21 协议开关 (兼容参数)
+        hw_protocol: PIID17/18 权威协议号 (优先)
 
     Returns:
         端口数据字典，或 None
@@ -321,29 +179,12 @@ def decode_port_v2(
 
     if not is_active:
         protocol = "idle"
-        confidence = 1.0
         method = "no_load"
     else:
-        proto_num = estimate_protocol_number(piid, raw, pdo_data, protocol_switches, hw_protocol)
+        proto_num = estimate_protocol_number(
+            piid, raw, pdo_data, protocol_switches, hw_protocol)
         protocol = get_mijia_protocol_name(proto_num)
         method = f"proto_{proto_num}"
-
-        # P5: 置信度衰减 — 协议越久未变越不可靠
-        now = time.time()
-        last_change = _last_proto_change.get(piid, 0)
-        if proto_num > 0:
-            if last_change == 0 or proto_num != _proto_cache.get(
-                    _cache_key(piid, raw, pdo_data, protocol_switches)):
-                # 首次检测或协议变化，重置衰减计时
-                _last_proto_change[piid] = now
-                confidence = 0.90
-            else:
-                # 协议未变，按半衰期衰减
-                elapsed = now - _last_proto_change[piid]
-                decay = max(0.40, 0.90 * (0.5 ** (elapsed / _CONFIDENCE_HALF_LIFE)))
-                confidence = round(decay, 2)
-        else:
-            confidence = 0.30
 
     return {
         "voltage": round(raw.voltage, 1),
@@ -352,8 +193,6 @@ def decode_port_v2(
         "active": is_active,
         "status_raw": raw.status_raw,
         "protocol": protocol,
-        "_confidence": confidence,
-        "_detection_method": method,
         "_raw_code": f"0x{raw.code:02X}",
         "_proto_num": proto_num if is_active else None,
     }
@@ -364,4 +203,6 @@ def decode_port_v2(
 # ============================================================
 def decode_port(piid, pt, pdo_data=None, protocol_switches=None, hw_protocol=None):
     """向后兼容接口."""
-    return decode_port_v2(piid, pt, pdo_data, protocol_switches=protocol_switches, hw_protocol=hw_protocol)
+    return decode_port_v2(piid, pt, pdo_data,
+                          protocol_switches=protocol_switches,
+                          hw_protocol=hw_protocol)

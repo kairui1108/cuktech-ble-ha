@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from src.cuktech_ble.protocol import PDO_KIND_BY_HIGH_BYTE
+from src.cuktech_ble.protocol import PDO_KIND_BY_HIGH_BYTE  # noqa: F401 (兼容外部引用)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -254,16 +254,28 @@ def decode_port(piid, pt, pdo_data=None, protocol_switches=None, hw_protocol=Non
 
 
 def decode_pdo_caps(value, high_port, low_port):
+    """解析 PIID 17/18 (c1_c2_protocol / c3_a_protocol) 的 u32 值.
+
+    布局对齐米家 parseC1C2ProtocolInfo（u32, MSB→LSB）:
+      [hi_proto][hi_power_w][lo_proto][lo_power_w]
+    每个半字: 高字节 = 米家协议号 (1-10), 低字节 = 协商功率上限 (W)。
+
+    Returns:
+        {high_port: {"proto": int|None, "power_w": int|None},
+         low_port:  {...}}
+    """
     low_half = value & 0xFFFF
     high_half = (value >> 16) & 0xFFFF
-    def _cap(half):
-        byte = half & 0xFF
-        return byte or None
-    def _kind(half):
-        if (half & 0xFF) == 0:
-            return None
-        return PDO_KIND_BY_HIGH_BYTE.get((half >> 8) & 0xFF)
+
+    def _parse(half):
+        proto = (half >> 8) & 0xFF
+        power_w = half & 0xFF
+        return {
+            "proto": proto or None,
+            "power_w": power_w or None,
+        }
+
     return {
-        low_port: {"cap": _cap(low_half), "kind": _kind(low_half)},
-        high_port: {"cap": _cap(high_half), "kind": _kind(high_half)},
+        high_port: _parse(high_half),
+        low_port: _parse(low_half),
     }

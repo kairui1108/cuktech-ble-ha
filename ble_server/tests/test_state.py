@@ -72,24 +72,38 @@ class TestDecodePort:
 
 
 class TestDecodePdoCaps:
-    """Test PDO capability decoding."""
+    """Test PIID 17/18 protocol/power decoding (v3 semantics).
+
+    布局对齐米家 parseC1C2ProtocolInfo (u32, MSB→LSB):
+      [hi_proto][hi_power_w][lo_proto][lo_power_w]
+    """
 
     def test_basic_decode(self):
-        """Test basic PDO capability decoding."""
-        # value = 0x08010701: low_half=0x0701 (PD Fixed), high_half=0x0801 (PD PPS)
-        # Function signature: decode_pdo_caps(value, high_port, low_port)
-        # high_port="c1" gets high_half (PD PPS), low_port="c2" gets low_half (PD Fixed)
+        # value = 0x08010701:
+        #   high_half=0x0801 → c1: proto=8(PPS), power_w=1
+        #   low_half =0x0701 → c2: proto=7(PD),  power_w=1
         value = 0x08010701
         result = decode_pdo_caps(value, "c1", "c2")
-        assert result["c1"]["kind"] == "PD PPS"  # high_port gets high_half
-        assert result["c2"]["kind"] == "PD Fixed"  # low_port gets low_half
+        assert result["c1"]["proto"] == 8
+        assert result["c1"]["power_w"] == 1
+        assert result["c2"]["proto"] == 7
+        assert result["c2"]["power_w"] == 1
 
     def test_empty_caps(self):
-        """Test decoding with empty capabilities."""
         value = 0x00000000
         result = decode_pdo_caps(value, "c1", "c2")
-        assert result["c1"]["kind"] is None
-        assert result["c2"]["kind"] is None
+        assert result["c1"]["proto"] is None
+        assert result["c1"]["power_w"] is None
+        assert result["c2"]["proto"] is None
+        assert result["c2"]["power_w"] is None
+
+    def test_real_device_value(self):
+        """真机实测值: PIID17=0x09430764 (C1 PPS/67W, C2 PD/100W)."""
+        result = decode_pdo_caps(0x09430764, "c1", "c2")
+        assert result["c1"]["proto"] == 9   # PPS
+        assert result["c1"]["power_w"] == 67
+        assert result["c2"]["proto"] == 7   # PD
+        assert result["c2"]["power_w"] == 100
 
 
 class TestChargerState:
