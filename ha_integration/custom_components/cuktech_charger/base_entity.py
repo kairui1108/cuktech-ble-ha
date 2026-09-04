@@ -10,6 +10,7 @@ from .const import DOMAIN
 CB_TYPE_PORT = "port"
 CB_TYPE_SETTINGS = "settings"
 CB_TYPE_ALL = "all"
+CB_TYPE_CHARGE = "charge"
 
 
 class CuktechBaseEntity:
@@ -29,6 +30,8 @@ class CuktechBaseEntity:
             coordinator.register_port_callback(self._update)
         elif callback_type == CB_TYPE_SETTINGS:
             coordinator.register_settings_callback(self._update)
+        elif callback_type == CB_TYPE_CHARGE:
+            coordinator.register_charge_event_callback(self._update)
         else:
             coordinator.register_callback(self._update)
 
@@ -38,6 +41,8 @@ class CuktechBaseEntity:
             self.coordinator.unregister_port_callback(self._update)
         elif self._callback_type == CB_TYPE_SETTINGS:
             self.coordinator.unregister_settings_callback(self._update)
+        elif self._callback_type == CB_TYPE_CHARGE:
+            self.coordinator.unregister_charge_event_callback(self._update)
         else:
             self.coordinator.unregister_callback(self._update)
         await super().async_will_remove_from_hass()

@@ -1,4 +1,6 @@
 """Constants for CUKTECH Charger integration."""
+from datetime import timedelta
+
 DOMAIN = "cuktech_charger"
 CONF_SERVER_URL = "server_url"
 DEFAULT_SERVER_URL = "http://localhost:8199"
@@ -79,6 +81,46 @@ PROTOCOL_BITS = {
     "a":  {"ufcs": 24, "scp": 25},
 }
 
+# ── 各端口支持的协议开关 (switch 平台) ──
+PROTOCOL_SWITCHES = [
+    ("c1", "pd", "C1 PD"),
+    ("c1", "pps", "C1 PPS"),
+    ("c1", "ufcs", "C1 UFCS"),
+    ("c2", "pd", "C2 PD"),
+    ("c2", "pps", "C2 PPS"),
+    ("c2", "ufcs", "C2 UFCS"),
+    ("c3", "ufcs", "C3 UFCS"),
+    ("c3", "scp", "C3 SCP"),
+    ("a", "ufcs", "USB-A UFCS"),
+    ("a", "scp", "USB-A SCP"),
+]
+
+# ── 布尔设置开关 (switch 平台) ──
+SETTING_PIIDS = {
+    15: {"name": "USB-A小电流", "icon": "mdi:usb-port"},
+    19: {"name": "空闲息屏", "icon": "mdi:monitor-off"},
+    20: {"name": "屏幕方向锁", "icon": "mdi:screen-rotation-lock"},
+}
+
+# ── 端口电源开关 (switch 平台) ──
+PORT_SWITCHES = {
+    "c1": {"name": "C1 端口", "icon": "mdi:usb-c-port", "bit": 0},
+    "c2": {"name": "C2 端口", "icon": "mdi:usb-c-port", "bit": 1},
+    "c3": {"name": "C3 端口", "icon": "mdi:usb-c-port", "bit": 2},
+    "a":  {"name": "USB-A 端口", "icon": "mdi:usb-port", "bit": 3},
+}
+
+# ── 倒计时 (number 平台): piid -> 配置 ──
+COUNTDOWN_PIIDS = {
+    9: {"name": "C1 倒计时", "icon": "mdi:timer-cog-outline"},
+    10: {"name": "C2 倒计时", "icon": "mdi:timer-cog-outline"},
+    11: {"name": "C3 倒计时", "icon": "mdi:timer-cog-outline"},
+    12: {"name": "USB-A 倒计时", "icon": "mdi:timer-cog-outline"},
+}
+
+# ── 传感器协议选项 ──
+PROTOCOL_OPTIONS = ["idle", "5V", "QC", "AFC", "FCP", "SCP", "PD", "PPS", "UFCS", "Unknown"]
+
 # Device info
 DEVICE_INFO = {
     "name": "酷态科10号超级电能充Ultra 充电器",
@@ -86,3 +128,10 @@ DEVICE_INFO = {
     "model": "njcuk.fitting.ad1204",
     "sw_version": "",
 }
+
+# ── 运行时常量 (coordinator 使用，避免魔法值散落) ──
+HEALTH_CHECK_INTERVAL = timedelta(seconds=30)   # HTTP 健康检查周期
+HTTP_TIMEOUT = 10                                # HTTP 请求超时 (秒)
+BLE_OPERATION_TIMEOUT = 30                       # BLE 开关操作超时 (秒)
+CHARGE_EVENT_BUFFER = 50                         # 充电事件缓冲上限 (条)
+STATUS_STALE_SECONDS = 30                        # 状态消息超过此秒数视为过期 (与检查周期一致)

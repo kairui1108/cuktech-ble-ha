@@ -1,6 +1,7 @@
 """Switch platform for CUKTECH Charger - MQTT real-time."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
@@ -10,34 +11,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
 from .base_entity import CuktechBaseEntity, CB_TYPE_ALL, CB_TYPE_SETTINGS
-from .const import DOMAIN
+from .const import DOMAIN, PROTOCOL_SWITCHES, SETTING_PIIDS, PORT_SWITCHES
 
-# 各端口支持的协议开关定义
-PROTOCOL_SWITCHES = [
-    ("c1", "pd", "C1 PD"),
-    ("c1", "pps", "C1 PPS"),
-    ("c1", "ufcs", "C1 UFCS"),
-    ("c2", "pd", "C2 PD"),
-    ("c2", "pps", "C2 PPS"),
-    ("c2", "ufcs", "C2 UFCS"),
-    ("c3", "ufcs", "C3 UFCS"),
-    ("c3", "scp", "C3 SCP"),
-    ("a", "ufcs", "USB-A UFCS"),
-    ("a", "scp", "USB-A SCP"),
-]
-
-SETTING_PIIDS = {
-    15: {"name": "USB-A小电流", "icon": "mdi:usb-port"},
-    19: {"name": "空闲息屏", "icon": "mdi:monitor-off"},
-    20: {"name": "屏幕方向锁", "icon": "mdi:screen-rotation-lock"},
-}
-
-PORT_SWITCHES = {
-    "c1": {"name": "C1 端口", "icon": "mdi:usb-c-port", "bit": 0},
-    "c2": {"name": "C2 端口", "icon": "mdi:usb-c-port", "bit": 1},
-    "c3": {"name": "C3 端口", "icon": "mdi:usb-c-port", "bit": 2},
-    "a": {"name": "USB-A 端口", "icon": "mdi:usb-port", "bit": 3},
-}
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -69,11 +45,6 @@ class CuktechConnectionSwitch(CuktechBaseEntity, SwitchEntity):
         """Initialize the switch."""
         self._attr_unique_id = f"{entry.entry_id}_ble_control"
         super().__init__(coord, entry, CB_TYPE_ALL)
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self.coordinator.available
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -120,7 +91,14 @@ class CuktechSettingSwitch(CuktechBaseEntity, SwitchEntity):
         if not self.coordinator.data:
             return None
         v = self.coordinator.data.get(str(self._piid))
-        return bool(v) if v is not None else None
+        if v is None:
+            return None
+        # 兼容数值与字符串 ("0"/"1"): bool("0") 为 True 是陷阱，必须显式转 int
+        try:
+            return int(v) != 0
+        except (TypeError, ValueError):
+            _LOGGER.warning("Invalid setting value for piid=%s: %r", self._piid, v)
+            return None
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the entity on."""
@@ -160,6 +138,12 @@ class CuktechPortSwitch(CuktechBaseEntity, SwitchEntity):
             return None
         port_ctl = self.coordinator.data.get("16")
         if port_ctl is None:
+            return None
+        # 兼容数值与字符串 (如 "15")：统一转 int，避免字符串与位运算抛 TypeError
+        try:
+            port_ctl = int(port_ctl)
+        except (TypeError, ValueError):
+            _LOGGER.warning("Invalid port control value: %r", port_ctl)
             return None
         return bool(port_ctl & (1 << self._bit))
 

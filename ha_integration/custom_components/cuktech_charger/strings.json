@@ -8,6 +8,20 @@
           "name": "Device Name",
           "server_url": "BLE Server URL"
         }
+      },
+      "reauth": {
+        "title": "Reauthenticate",
+        "description": "The connection details of the CUKTECH BLE server have changed. Please re-enter them.",
+        "data": {
+          "server_url": "BLE Server URL"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate",
+        "description": "The connection details of the CUKTECH BLE server have changed. Please verify and re-enter them.",
+        "data": {
+          "server_url": "BLE Server URL"
+        }
       }
     },
     "error": {
@@ -15,7 +29,8 @@
       "unknown": "Unexpected error"
     },
     "abort": {
-      "already_configured": "Device is already configured"
+      "already_configured": "Device is already configured",
+      "reauth_successful": "Re-authentication successful"
     }
   }
 }

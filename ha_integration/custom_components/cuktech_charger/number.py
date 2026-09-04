@@ -10,14 +10,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
 from .base_entity import CuktechBaseEntity, CB_TYPE_SETTINGS
-from .const import DOMAIN
-
-COUNTDOWN_PIIDS = {
-    9: {"name": "C1 倒计时", "icon": "mdi:timer-cog-outline"},
-    10: {"name": "C2 倒计时", "icon": "mdi:timer-cog-outline"},
-    11: {"name": "C3 倒计时", "icon": "mdi:timer-cog-outline"},
-    12: {"name": "USB-A 倒计时", "icon": "mdi:timer-cog-outline"},
-}
+from .const import DOMAIN, COUNTDOWN_PIIDS
 
 
 async def async_setup_entry(

@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import timedelta
+from collections import deque
 from typing import Any
 
 import homeassistant.components.mqtt as mqtt
@@ -27,13 +27,20 @@ from .const import (
     TOPIC_SET,
     TOPIC_CHARGE_EVENT,
     PORT_MAP,
-    PROTOCOL_BITS,
+    HEALTH_CHECK_INTERVAL,
+    HTTP_TIMEOUT,
+    BLE_OPERATION_TIMEOUT,
+    CHARGE_EVENT_BUFFER,
+    STATUS_STALE_SECONDS,
+)
+from .protocol_codec import (
+    decode_protocol_switches,
+    encode_protocol_switches,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH, Platform.SELECT, Platform.BINARY_SENSOR, Platform.NUMBER, Platform.EVENT]
-HEALTH_CHECK_INTERVAL = timedelta(seconds=30)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -78,6 +85,8 @@ class CuktechMQTTCoordinator:
         self._settings_callbacks: list = []
         self._unsub: list = []
         self._available = False
+        # 注意: 字段名为历史遗留，实际语义是「最近一条 status 消息里的
+        # BLE 设备 connected 标记」，而非 MQTT 客户端是否连接。
         self._mqtt_connected = False
         self._health_check_unsub = None
         self._last_status_time: float = -999
@@ -90,8 +99,13 @@ class CuktechMQTTCoordinator:
         self._ble_pending: bool = False
         self._ble_lock = asyncio.Lock()
         self._ble_timeout_task: asyncio.Task | None = None
-        self._charge_events: list[dict] = []
+        # 有界缓冲: 自动丢弃最旧的事件，避免长时间运行内存增长
+        self._charge_events: deque[dict] = deque(maxlen=CHARGE_EVENT_BUFFER)
         self._charge_event_callbacks: list = []
+        # 已处理事件的去重键: set 提供 O(1) 查找，deque 维护插入顺序以便裁剪最旧的键。
+        # 依赖 set 迭代顺序裁剪是不可靠的 (set 无序)，故用 deque 显式记录顺序。
+        self._charge_event_keys: set = set()
+        self._charge_event_key_order: deque = deque()
 
     @property
     def available(self) -> bool:
@@ -188,40 +202,7 @@ class CuktechMQTTCoordinator:
     @property
     def protocol_switches(self) -> dict[str, dict[str, bool]]:
         """Return decoded protocol switches from PIID 21."""
-        v = self._settings.get("21", 0)
-        result = {}
-        for port, protos in PROTOCOL_BITS.items():
-            result[port] = {}
-            for proto, bit in protos.items():
-                result[port][proto] = bool(v & (1 << bit))
-        return result
-
-    @staticmethod
-    def _encode_protocol_extend(switches: dict) -> int:
-        """Encode protocol switch dict to PIID 21 value."""
-        def _c1c2_flags(ps):
-            if not ps:
-                return 0
-            v = 0x08  # 保留位固定为 1
-            if ps.get("pd"):   v |= 0x01
-            if ps.get("pps"):  v |= 0x02
-            if ps.get("ufcs"): v |= 0x04
-            return v
-
-        c1 = _c1c2_flags(switches.get("c1"))
-        c2 = _c1c2_flags(switches.get("c2"))
-
-        def _c3a_flags(ps):
-            if not ps:
-                return 0
-            v = 0
-            if ps.get("ufcs"): v |= 0x01
-            if ps.get("scp"):  v |= 0x02
-            return v
-
-        c3 = _c3a_flags(switches.get("c3"))
-        a = _c3a_flags(switches.get("a"))
-        return (a << 24) | (c3 << 16) | (c2 << 8) | c1
+        return decode_protocol_switches(self._settings.get("21", 0))
 
     @property
     def device_info(self) -> dict[str, Any]:
@@ -238,7 +219,8 @@ class CuktechMQTTCoordinator:
         """Set up MQTT subscriptions."""
         await self._async_wait_mqtt_ready()
 
-        for port_name in ("c1", "c2", "c3", "a"):
+        # 端口名统一取自 PORT_MAP (const.py 单一数据源)，避免此处硬编码漂移
+        for port_name in PORT_MAP:
             unsub = await mqtt.async_subscribe(
                 self.hass, f"{TOPIC_PORT}/{port_name}", self._on_port_message
             )
@@ -356,6 +338,9 @@ class CuktechMQTTCoordinator:
         """Handle port data message."""
         try:
             payload = json.loads(msg.payload)
+            if not isinstance(payload, dict):
+                _LOGGER.debug("Port message payload is not an object, ignored: %r", payload)
+                return
             topic_parts = msg.topic.split("/")
             port_name = topic_parts[-1]
             piid = PORT_MAP.get(port_name)
@@ -375,6 +360,9 @@ class CuktechMQTTCoordinator:
         """Handle settings message."""
         try:
             payload = json.loads(msg.payload)
+            if not isinstance(payload, dict):
+                _LOGGER.debug("Settings message payload is not an object, ignored: %r", payload)
+                return
             _LOGGER.debug("Settings updated: %s", list(payload.keys()))
             self._settings = payload
             self._notify_callbacks(self._settings_callbacks)
@@ -388,6 +376,9 @@ class CuktechMQTTCoordinator:
         """Handle status message from MQTT."""
         try:
             payload = json.loads(msg.payload)
+            if not isinstance(payload, dict):
+                _LOGGER.debug("Status message payload is not an object, ignored: %r", payload)
+                return
             was_available = self._available
             prev_ble_connected = self._ble_connected
             connected = payload.get("connected", False)
@@ -424,12 +415,30 @@ class CuktechMQTTCoordinator:
         """Handle charge completion event from MQTT."""
         try:
             payload = json.loads(msg.payload)
+            if not isinstance(payload, dict):
+                _LOGGER.debug("Charge event payload is not an object, ignored: %r", payload)
+                return
             if payload.get("event") != "charge_end":
                 return
+            # 去重: MQTT 重投递 / 服务器重启后重发同一事件时不应重复触发。
+            # 不能只用 session_id: ble_server 在记录关闭/会话未落库时
+            # session_id 恒为 0，同一端口两次真实不同的未落库事件会碰撞，
+            # 使后一次被误判为重复而丢弃。故以 (port, end_time) 为键：
+            # 两者在每条事件里都始终存在且唯一 (同一端口两次结束时间不会
+            # 精确到同一秒)，跨端口又有 port 区分。
+            dedup_key = (payload.get("port"), payload.get("end_time"))
+            if dedup_key in self._charge_event_keys:
+                _LOGGER.debug("Ignoring duplicate charge event (key=%s)", dedup_key)
+                return
+            self._charge_event_keys.add(dedup_key)
+            # 用 deque 记录插入顺序；超出上限时丢弃最旧的键，与事件缓冲同步。
+            # 顺序由插入决定，不依赖 set 的迭代顺序。
+            self._charge_event_key_order.append(dedup_key)
+            while len(self._charge_event_keys) > CHARGE_EVENT_BUFFER:
+                oldest = self._charge_event_key_order.popleft()
+                self._charge_event_keys.discard(oldest)
+
             self._charge_events.append(payload)
-            # Keep only last 50 events
-            if len(self._charge_events) > 50:
-                self._charge_events = self._charge_events[-50:]
             _LOGGER.info("Charge event: port=%s energy=%.1fWh duration=%ds",
                          payload.get("port"), payload.get("energy_wh", 0),
                          payload.get("duration_sec", 0))
@@ -458,17 +467,19 @@ class CuktechMQTTCoordinator:
 
     def _update_availability(self) -> None:
         """Update availability based on MQTT status and HTTP health."""
-        http_recent = (self.hass.loop.time() - self._last_status_time) < 30
+        http_recent = (self.hass.loop.time() - self._last_status_time) < STATUS_STALE_SECONDS
         self._available = self._mqtt_connected or http_recent
 
     async def _async_health_check(self, _now) -> None:
         """Check if BLE server is reachable via HTTP."""
         session = async_get_clientsession(self.hass)
+        was_available = self._available
         try:
             url = f"{self.server_url}/api/status"
-            async with session.get(url, timeout=10) as resp:
+            async with session.get(url, timeout=HTTP_TIMEOUT) as resp:
+                # body 必须在 async with 块内读取，连接退出上下文后即关闭，
+                # 之后调用 resp.json()/resp.read() 会抛异常。
                 if resp.status == 200:
-                    was_available = self._available
                     self._last_status_time = self.hass.loop.time()
                     self._health_failures = 0
                     self._update_availability()
@@ -476,20 +487,33 @@ class CuktechMQTTCoordinator:
                         _LOGGER.info("BLE server is now available (HTTP)")
                     # Fallback: also read connection status and device info from HTTP if MQTT not connected
                     if not self._mqtt_connected:
-                        await self._async_health_check_parse_body(resp)
+                        try:
+                            data = await resp.json()
+                        except Exception as err:
+                            _LOGGER.warning(
+                                "Failed to parse health check JSON response: %s", err
+                            )
+                        else:
+                            await self._async_health_check_parse_body(data)
                 else:
                     self._log_health_failure(
                         f"BLE server returned HTTP status {resp.status}"
                     )
                     self._available = self._mqtt_connected
+                    await resp.read()  # 读完 body，确保连接完全复用/释放
         except Exception as err:
             self._log_health_failure("BLE server HTTP health check failed", str(err))
             self._available = self._mqtt_connected
+        # 可用性翻转时通知实体刷新（实体 available 是动态属性，需要一次
+        # write_ha_state 才会更新前端；仅在变化时广播，避免每 30s 全量刷新）
+        if self._available != was_available:
+            _LOGGER.debug("Availability changed via health check: %s -> %s",
+                          was_available, self._available)
+            self._notify_all()
 
-    async def _async_health_check_parse_body(self, resp) -> None:
-        """Parse health check JSON body and sync device info."""
+    async def _async_health_check_parse_body(self, data: dict) -> None:
+        """Parse health check JSON body (already parsed) and sync device info."""
         try:
-            data = await resp.json()
             info_changed = self._sync_device_info_from_payload(data)
             ble_conn = data.get("connected", False)
             if self._ble_connected != ble_conn:
@@ -512,12 +536,13 @@ class CuktechMQTTCoordinator:
                 self._ble_timeout_task.cancel()
                 self._ble_timeout_task = None
 
+            prev_enabled = self._ble_enabled
             self._ble_enabled = enable
             self._ble_pending = True
             self._notify_callbacks(self._callbacks)
 
             async def _clear_pending_after_delay() -> None:
-                await asyncio.sleep(30)
+                await asyncio.sleep(BLE_OPERATION_TIMEOUT)
                 if self._ble_pending:
                     self._ble_pending = False
                     self._notify_callbacks(self._callbacks)
@@ -542,7 +567,7 @@ class CuktechMQTTCoordinator:
                 try:
                     session = async_get_clientsession(self.hass)
                     url = f"{self.server_url}/api/enable"
-                    async with session.post(url, json={"enabled": enable}, timeout=30) as resp:
+                    async with session.post(url, json={"enabled": enable}, timeout=BLE_OPERATION_TIMEOUT) as resp:
                         if resp.status == 200:
                             _LOGGER.info("BLE connection %s via HTTP (fallback)", "enabled" if enable else "disabled")
                             success = True
@@ -550,10 +575,18 @@ class CuktechMQTTCoordinator:
                     _LOGGER.warning("HTTP BLE control also failed: %s", err)
 
             self._ble_pending = False
-            self._notify_callbacks(self._callbacks)
             if self._ble_timeout_task is not None and not self._ble_timeout_task.done():
                 self._ble_timeout_task.cancel()
             self._ble_timeout_task = None
+            if not success:
+                # 两个通道都失败: 回滚到操作前的状态，避免开关显示"已开"
+                # 但实际未建立连接且无纠正来源 (设备离线时不会推送 status 纠正)
+                self._ble_enabled = prev_enabled
+                _LOGGER.warning(
+                    "BLE %s failed on both MQTT and HTTP, reverting switch state",
+                    "enable" if enable else "disable",
+                )
+            self._notify_callbacks(self._callbacks)
             return success
 
     async def async_set_value(self, piid: int, value: Any) -> None:
@@ -582,5 +615,5 @@ class CuktechMQTTCoordinator:
                 _LOGGER.error("Unknown protocol switch: %s.%s", port, protocol)
                 return
             switches[port][protocol] = on
-            value = self._encode_protocol_extend(switches)
+            value = encode_protocol_switches(switches)
             await self.async_set_value(21, value)

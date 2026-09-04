@@ -349,3 +349,82 @@ class TestEntityLifecycle:
         num.hass = MagicMock()
         await num.async_set_native_value(30.0)
         coord.async_set_value.assert_called_once_with(9, 30)
+
+
+class TestNumericValidation:
+    """高4 回归测试: 数值字段类型校验。"""
+
+    def test_port_sensor_string_value_converted(self, mock_hass, mock_entry):
+        """字符串数值应转 float，不触发 HA 数值转换告警。"""
+        from custom_components.cuktech_charger.sensor import CuktechPortSensor
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        coord._port_data = {"1": {"voltage": "20.5", "current": 2.0, "power": 40.0}}
+        sensor = CuktechPortSensor(coord, mock_entry, 1, "c1", "voltage")
+        assert sensor.native_value == 20.5
+
+    def test_port_sensor_invalid_value_returns_none(self, mock_hass, mock_entry):
+        """非法数值应返回 None 而不是抛异常。"""
+        from custom_components.cuktech_charger.sensor import CuktechPortSensor
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        coord._port_data = {"1": {"voltage": "abc", "current": 2.0, "power": 40.0}}
+        sensor = CuktechPortSensor(coord, mock_entry, 1, "c1", "voltage")
+        assert sensor.native_value is None
+
+    def test_total_power_handles_none(self, mock_hass, mock_entry):
+        """端口 power 为 None 时 TotalPower 不应抛 TypeError。"""
+        from custom_components.cuktech_charger.sensor import CuktechTotalPowerSensor
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        coord._port_data = {
+            "1": {"active": True, "power": None},
+            "2": {"active": True, "power": "12.5"},
+            "3": {"active": False, "power": 100.0},
+            "4": {"active": True, "power": 0.0},
+        }
+        sensor = CuktechTotalPowerSensor(coord, mock_entry)
+        assert sensor.native_value == 12.5
+
+    def test_setting_switch_string_zero_is_off(self, mock_hass, mock_entry):
+        """bool("0") 陷阱: 字符串 '0' 应判定为关而非开。"""
+        from custom_components.cuktech_charger.switch import CuktechSettingSwitch
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        coord._settings = {"15": "0"}
+        sw = CuktechSettingSwitch(coord, mock_entry, 15, "USB-A小电流", "mdi:usb-port")
+        assert sw.is_on is False
+
+    def test_setting_switch_invalid_value_returns_none(self, mock_hass, mock_entry):
+        """非法设置值应返回 None (未知) 而非抛异常。"""
+        from custom_components.cuktech_charger.switch import CuktechSettingSwitch
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        coord._settings = {"15": "not-a-number"}
+        sw = CuktechSettingSwitch(coord, mock_entry, 15, "USB-A小电流", "mdi:usb-port")
+        assert sw.is_on is None
+
+
+class TestChargeEventEntity:
+    """中7 回归测试: 事件实体继承基类后的生命周期与触发。"""
+
+    def test_event_entity_inherits_base_properties(self, mock_hass, mock_entry):
+        """事件实体应复用基类 available/device_info。"""
+        from custom_components.cuktech_charger.event import CuktechChargeEvent
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        coord._available = True
+        ent = CuktechChargeEvent(coord, mock_entry)
+        assert ent.available is True
+        assert ent._attr_has_entity_name is True
+
+    def test_event_entity_registers_charge_callback(self, mock_hass, mock_entry):
+        """构造时应注册 charge 事件回调 (基类 CB_TYPE_CHARGE)。"""
+        from custom_components.cuktech_charger.event import CuktechChargeEvent
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        ent = CuktechChargeEvent(coord, mock_entry)
+        assert ent._update in coord._charge_event_callbacks
+
+    @pytest.mark.asyncio
+    async def test_event_entity_unregisters_on_remove(self, mock_hass, mock_entry):
+        """移除实体时应注销 charge 回调。"""
+        from custom_components.cuktech_charger.event import CuktechChargeEvent
+        coord = CuktechMQTTCoordinator(mock_hass, mock_entry)
+        ent = CuktechChargeEvent(coord, mock_entry)
+        assert ent._update in coord._charge_event_callbacks
+        await ent.async_will_remove_from_hass()
+        assert ent._update not in coord._charge_event_callbacks

@@ -1,6 +1,7 @@
 """Sensor platform for CUKTECH Charger - MQTT real-time."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -15,9 +16,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
 from .base_entity import CuktechBaseEntity, CB_TYPE_PORT
-from .const import DOMAIN, PORT_MAP, PORT_NAMES
+from .const import DOMAIN, PORT_MAP, PORT_NAMES, PROTOCOL_OPTIONS
 
-PROTOCOL_OPTIONS = ["idle", "5V", "QC", "AFC", "FCP", "SCP", "PD", "PPS", "UFCS", "Unknown"]
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -70,7 +71,16 @@ class CuktechPortSensor(CuktechBaseEntity, SensorEntity):
         pd = self.coordinator.port_data.get(str(self._piid))
         if pd is None:
             return None
-        return pd.get(self._sensor_type)
+        value = pd.get(self._sensor_type)
+        if value is None:
+            return None
+        # ble_server 可能下发字符串 (如 "20.5")；统一转 float，避免 HA 数值转换告警
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            _LOGGER.warning("Invalid numeric %s for port %s: %r",
+                            self._sensor_type, self._port_name, value)
+            return None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -101,7 +111,11 @@ class CuktechTotalPowerSensor(CuktechBaseEntity, SensorEntity):
         for piid in PORT_MAP.values():
             pd = self.coordinator.port_data.get(str(piid))
             if pd and pd.get("active"):
-                total += pd.get("power", 0)
+                # power 可能为 None 或字符串，统一转 float，避免 total += None 抛 TypeError
+                try:
+                    total += float(pd.get("power") or 0)
+                except (TypeError, ValueError):
+                    _LOGGER.warning("Invalid power value for port %s: %r", piid, pd.get("power"))
         return round(total, 1)
 
 

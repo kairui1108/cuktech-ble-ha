@@ -15,6 +15,13 @@
         "data": {
           "server_url": "BLE 服务器地址"
         }
+      },
+      "reauth_confirm": {
+        "title": "重新认证",
+        "description": "BLE 服务器连接信息已更改，请核对并重新输入。",
+        "data": {
+          "server_url": "BLE 服务器地址"
+        }
       }
     },
     "error": {
@@ -22,7 +29,8 @@
       "unknown": "未知错误"
     },
     "abort": {
-      "already_configured": "设备已配置"
+      "already_configured": "设备已配置",
+      "reauth_successful": "重新认证成功"
     }
   }
 }

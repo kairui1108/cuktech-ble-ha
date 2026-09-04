@@ -8,16 +8,8 @@ from unittest.mock import MagicMock, AsyncMock
 # conftest.py already mocks homeassistant modules
 sys.path.insert(0, str(Path(__file__).parent.parent / "custom_components"))
 
+from conftest import AsyncContextManager
 from custom_components.cuktech_charger import CuktechMQTTCoordinator
-
-
-class _AsyncContextManager:
-    def __init__(self, resp):
-        self._resp = resp
-    async def __aenter__(self):
-        return self._resp
-    async def __aexit__(self, *args):
-        return False
 
 
 class TestCuktechMQTTCoordinator:
@@ -310,7 +302,7 @@ class TestCuktechMQTTCoordinator:
         mock_resp.json = AsyncMock(return_value={"connected": True, "firmware_version": "v1.0.0"})
 
         session = MagicMock()
-        session.get = MagicMock(return_value=_AsyncContextManager(mock_resp))
+        session.get = MagicMock(return_value=AsyncContextManager(mock_resp))
 
         with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
             await coordinator._async_health_check(None)
@@ -339,9 +331,10 @@ class TestCuktechMQTTCoordinator:
 
         mock_resp = MagicMock()
         mock_resp.status = 503
+        mock_resp.read = AsyncMock(return_value=b"")
 
         session = MagicMock()
-        session.get = MagicMock(return_value=_AsyncContextManager(mock_resp))
+        session.get = MagicMock(return_value=AsyncContextManager(mock_resp))
 
         with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
             await coordinator._async_health_check(None)
@@ -358,7 +351,7 @@ class TestCuktechMQTTCoordinator:
         mock_resp.json = AsyncMock(side_effect=Exception("Parse error"))
 
         session = MagicMock()
-        session.get = MagicMock(return_value=_AsyncContextManager(mock_resp))
+        session.get = MagicMock(return_value=AsyncContextManager(mock_resp))
 
         with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
             await coordinator._async_health_check(None)
@@ -428,36 +421,39 @@ class TestCuktechMQTTCoordinator:
         assert sw["a"]["ufcs"] is False
 
     def test_encode_protocol_extend_all_on(self, coordinator):
-        """Test _encode_protocol_extend: all ON."""
+        """Test encode_protocol_switches: all ON."""
+        from custom_components.cuktech_charger.protocol_codec import encode_protocol_switches
         switches = {
             "c1": {"pd": True, "pps": True, "ufcs": True},
             "c2": {"pd": True, "pps": True, "ufcs": True},
             "c3": {"ufcs": True, "scp": True},
             "a":  {"ufcs": True, "scp": True},
         }
-        result = coordinator._encode_protocol_extend(switches)
+        result = encode_protocol_switches(switches)
         assert result == 0x03030F0F
 
     def test_encode_protocol_extend_single(self, coordinator):
-        """Test _encode_protocol_extend: single protocol."""
+        """Test encode_protocol_switches: single protocol."""
+        from custom_components.cuktech_charger.protocol_codec import encode_protocol_switches
         switches = {
             "c1": {"pd": True, "pps": False, "ufcs": False},
             "c2": {"pd": False, "pps": False, "ufcs": False},
             "c3": {"ufcs": False, "scp": False},
             "a":  {"ufcs": False, "scp": False},
         }
-        result = coordinator._encode_protocol_extend(switches)
+        result = encode_protocol_switches(switches)
         assert result == 0x00000809
 
     def test_protocol_switches_roundtrip(self, coordinator):
         """Test encode then decode roundtrip."""
+        from custom_components.cuktech_charger.protocol_codec import encode_protocol_switches
         original = {
             "c1": {"pd": True, "pps": False, "ufcs": True},
             "c2": {"pd": False, "pps": True, "ufcs": False},
             "c3": {"ufcs": True, "scp": False},
             "a":  {"ufcs": False, "scp": True},
         }
-        encoded = coordinator._encode_protocol_extend(original)
+        encoded = encode_protocol_switches(original)
         coordinator._settings = {"21": encoded}
         decoded = coordinator.protocol_switches
         for port in ["c1", "c2", "c3", "a"]:
@@ -497,3 +493,139 @@ class TestCuktechMQTTCoordinator:
             await coord.async_set_protocol("invalid", "pd", True)
             mock_mqtt.async_publish.assert_not_called()
             assert coord._settings["21"] == 0
+
+    # --- BLE 控制回滚 (高2 回归测试) ---
+
+    @pytest.mark.asyncio
+    async def test_async_enable_ble_both_fail_reverts(self, coordinator):
+        """MQTT 与 HTTP 都失败时，开关状态应回滚到操作前，避免误显示已开启。"""
+        from unittest.mock import patch, AsyncMock
+
+        coordinator._ble_enabled = False
+        coordinator.server_url = "http://localhost:8199"
+        # MQTT 发布失败
+        with patch('custom_components.cuktech_charger.mqtt') as mock_mqtt:
+            mock_mqtt.async_publish = AsyncMock(side_effect=Exception("MQTT down"))
+            # HTTP 兜底也失败 (用普通 MagicMock 使 post() 立即抛异常，
+            # 避免 AsyncMock 返回未 await 的 coroutine 触发 RuntimeWarning)
+            session = MagicMock()
+            session.post = MagicMock(side_effect=Exception("HTTP down"))
+            with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
+                ok = await coordinator.async_enable_ble(True)
+        assert ok is False
+        # 回滚: 仍为 False (用户意图未达成, 不保留乐观值)
+        assert coordinator._ble_enabled is False
+        assert coordinator._ble_pending is False
+
+    @pytest.mark.asyncio
+    async def test_async_enable_ble_success_keeps_state(self, coordinator):
+        """MQTT 成功时保持开启状态。"""
+        from unittest.mock import patch, AsyncMock
+
+        coordinator._ble_enabled = False
+        with patch('custom_components.cuktech_charger.mqtt') as mock_mqtt:
+            mock_mqtt.async_publish = AsyncMock()
+            ok = await coordinator.async_enable_ble(True)
+        assert ok is True
+        assert coordinator._ble_enabled is True
+
+    # --- 事件去重 (高3 回归测试) ---
+
+    def test_charge_event_dedup_by_port_endtime(self, coordinator):
+        """相同 (port, end_time) 的重复事件只触发一次回调 (MQTT 重投递去重)。"""
+        cb = MagicMock()
+        coordinator.register_charge_event_callback(cb)
+        msg = MagicMock()
+        msg.payload = json.dumps({
+            "event": "charge_end", "port": "c1", "session_id": "s1",
+            "end_time": "2026-01-01 12:00:00", "energy_wh": 10.0,
+        }).encode()
+        coordinator._on_charge_event(msg)
+        coordinator._on_charge_event(msg)  # 重投递
+        assert cb.call_count == 1
+
+    def test_charge_event_unrecorded_session_zero_collision(self, coordinator):
+        """回归 (P0): 记录关闭时 ble_server 的 session_id 恒为 0，
+        同一端口两次真实但未落库的结束事件不得因键碰撞被丢弃。"""
+        cb = MagicMock()
+        coordinator.register_charge_event_callback(cb)
+        m1 = MagicMock(); m1.payload = json.dumps({
+            "event": "charge_end", "port": "c1", "session_id": 0, "recorded": False,
+            "end_time": "2026-01-01 12:00:00",
+        }).encode()
+        m2 = MagicMock(); m2.payload = json.dumps({
+            "event": "charge_end", "port": "c1", "session_id": 0, "recorded": False,
+            "end_time": "2026-01-01 13:00:00",
+        }).encode()
+        coordinator._on_charge_event(m1)
+        coordinator._on_charge_event(m2)
+        assert cb.call_count == 2  # 两条真实事件都须触发，不能被 session_id=0 碰撞吞掉
+
+    def test_charge_event_different_session_both_fire(self, coordinator):
+        """不同 (port, end_time) 的事件都应触发 (与 session_id 无关)。"""
+        cb = MagicMock()
+        coordinator.register_charge_event_callback(cb)
+        m1 = MagicMock(); m1.payload = json.dumps({
+            "event": "charge_end", "port": "c1", "session_id": "s1",
+            "end_time": "2026-01-01 12:00:00",
+        }).encode()
+        m2 = MagicMock(); m2.payload = json.dumps({
+            "event": "charge_end", "port": "c2", "session_id": "s2",
+            "end_time": "2026-01-01 12:00:00",
+        }).encode()
+        coordinator._on_charge_event(m1)
+        coordinator._on_charge_event(m2)
+        assert cb.call_count == 2
+
+    def test_charge_event_non_charge_ignored(self, coordinator):
+        """非 charge_end 事件应被忽略。"""
+        cb = MagicMock()
+        coordinator.register_charge_event_callback(cb)
+        msg = MagicMock()
+        msg.payload = json.dumps({"event": "other"}).encode()
+        coordinator._on_charge_event(msg)
+        assert cb.call_count == 0
+
+    # --- HTTP 健康检查可用性通知 (高1 回归测试) ---
+
+    @pytest.mark.asyncio
+    async def test_health_check_availability_change_notifies(self, coordinator):
+        """可用性翻转时应通知实体 (UI 需要 write_ha_state 刷新)。"""
+        from unittest.mock import patch
+
+        cb = MagicMock()
+        coordinator.register_callback(cb)
+        coordinator._mqtt_connected = False
+        coordinator._last_status_time = -999  # HTTP 过期
+
+        # 首次健康检查成功 → available 从 False 变 True → 应通知
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"connected": True})
+        session = MagicMock()
+        session.get = MagicMock(return_value=AsyncContextManager(mock_resp))
+        with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
+            await coordinator._async_health_check(None)
+        assert coordinator.available is True
+        cb.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_health_check_no_notify_when_stable(self, coordinator):
+        """可用性未变化时不应通知 (避免每 30s 全量刷新)。"""
+        from unittest.mock import patch
+
+        cb = MagicMock()
+        coordinator.register_callback(cb)
+        coordinator._mqtt_connected = True  # 已可用
+        coordinator._last_status_time = 1000.0
+        coordinator._available = True  # 与上述状态一致，避免误判为翻转
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"connected": True})
+        session = MagicMock()
+        session.get = MagicMock(return_value=AsyncContextManager(mock_resp))
+        with patch('custom_components.cuktech_charger.async_get_clientsession', return_value=session):
+            await coordinator._async_health_check(None)
+        assert coordinator.available is True
+        cb.assert_not_called()

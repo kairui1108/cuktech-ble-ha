@@ -1,7 +1,11 @@
 """Shared fixtures for CUKTECH HA Integration tests."""
 import sys
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock
+
+# 使测试模块可通过 `import conftest` 复用共享辅助类 (AsyncContextManager 等)
+sys.path.insert(0, str(Path(__file__).parent))
 
 
 class _FakeEntity:
@@ -27,6 +31,12 @@ class _FakeSelectEntity(_FakeEntity):
 
 class _FakeNumberEntity(_FakeEntity):
     pass
+
+
+class _FakeEventEntity(_FakeEntity):
+    async def async_will_remove_from_hass(self) -> None:
+        """模拟 EventEntity 的移除钩子 (真实 HA 中存在)。"""
+        return None
 
 
 ha_core = types.ModuleType("homeassistant.core")
@@ -61,6 +71,9 @@ ha_components.select.SelectEntity = _FakeSelectEntity
 ha_components.number = types.ModuleType("homeassistant.components.number")
 ha_components.number.NumberEntity = _FakeNumberEntity
 ha_components.number.NumberMode = MagicMock()
+ha_components.event = types.ModuleType("homeassistant.components.event")
+ha_components.event.EventEntity = _FakeEventEntity
+ha_components.event.EventEntityDescription = MagicMock
 
 ha_exceptions = types.ModuleType("homeassistant.exceptions")
 ha_exceptions.ConfigEntryNotReady = type("ConfigEntryNotReady", (Exception,), {})
@@ -112,9 +125,23 @@ sys.modules['homeassistant.components.binary_sensor'] = ha_components.binary_sen
 sys.modules['homeassistant.components.switch'] = ha_components.switch
 sys.modules['homeassistant.components.select'] = ha_components.select
 sys.modules['homeassistant.components.number'] = ha_components.number
+sys.modules['homeassistant.components.event'] = ha_components.event
 
 
 import pytest
+
+
+class AsyncContextManager:
+    """异步上下文管理器包装，模拟 aiohttp 的 `async with session.get(...) as resp`。"""
+
+    def __init__(self, resp):
+        self._resp = resp
+
+    async def __aenter__(self):
+        return self._resp
+
+    async def __aexit__(self, *args):
+        return False
 
 
 @pytest.fixture

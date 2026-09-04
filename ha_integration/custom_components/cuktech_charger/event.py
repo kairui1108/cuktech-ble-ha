@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
+from .base_entity import CuktechBaseEntity, CB_TYPE_CHARGE
 from .const import DOMAIN
 
 EVENT_DESCRIPTION = EventEntityDescription(
@@ -27,10 +28,9 @@ async def async_setup_entry(
     async_add_entities([CuktechChargeEvent(coord, entry)])
 
 
-class CuktechChargeEvent(EventEntity):
+class CuktechChargeEvent(CuktechBaseEntity, EventEntity):
     """Event entity for charge completion notifications."""
 
-    _attr_has_entity_name = True
     entity_description = EVENT_DESCRIPTION
 
     def __init__(
@@ -39,39 +39,18 @@ class CuktechChargeEvent(EventEntity):
         entry: ConfigEntry,
     ) -> None:
         """Initialize the event entity."""
-        self.coordinator = coord
-        self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_charge_event"
-
-    async def async_added_to_hass(self) -> None:
-        """Register callback when added to hass."""
-        await super().async_added_to_hass()
-        self.coordinator.register_charge_event_callback(self._update)
-
-    async def async_will_remove_from_hass(self) -> None:
-        """Unregister callback when removed."""
-        self.coordinator.unregister_charge_event_callback(self._update)
-        await super().async_will_remove_from_hass()
+        super().__init__(coord, entry, CB_TYPE_CHARGE)
 
     @callback
     def _update(self) -> None:
-        """Handle charge event."""
+        """Handle charge event (override base: trigger event, not state write)."""
         if self.hass is None:
             return
         event = self.coordinator.last_charge_event
         if event is None:
             return
         self._trigger_event("charge_end", event)
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Return device info."""
-        return {"identifiers": {(DOMAIN, self._entry.entry_id)}, **self.coordinator.device_info}
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self.coordinator.available
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

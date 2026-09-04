@@ -3,11 +3,19 @@ import sys
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
-from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "custom_components"))
 
+from conftest import AsyncContextManager
 from custom_components.cuktech_charger.const import DOMAIN, DEFAULT_SERVER_URL
+
+
+def _resp(status=200):
+    """构造一个 async-with 兼容的 mock response (支持 async with + .read())。"""
+    resp = MagicMock()
+    resp.status = status
+    resp.read = AsyncMock(return_value=b"")
+    return AsyncContextManager(resp)
 
 
 class TestConfigFlowValidation:
@@ -18,7 +26,7 @@ class TestConfigFlowValidation:
         """Test successful validation with reachable server."""
         hass = MagicMock()
         session = MagicMock()
-        session.get = AsyncMock(return_value=SimpleNamespace(status=200))
+        session.get = MagicMock(return_value=_resp(200))
 
         with patch('custom_components.cuktech_charger.config_flow.async_get_clientsession', return_value=session):
             from custom_components.cuktech_charger.config_flow import validate_input
@@ -30,7 +38,7 @@ class TestConfigFlowValidation:
         """Test validation fails when server is unreachable."""
         hass = MagicMock()
         session = MagicMock()
-        session.get = AsyncMock(side_effect=Exception("Connection refused"))
+        session.get = MagicMock(side_effect=Exception("Connection refused"))
 
         with patch('custom_components.cuktech_charger.config_flow.async_get_clientsession', return_value=session):
             from custom_components.cuktech_charger.config_flow import validate_input
@@ -42,7 +50,7 @@ class TestConfigFlowValidation:
         """Test validation fails with non-200 status."""
         hass = MagicMock()
         session = MagicMock()
-        session.get = AsyncMock(return_value=SimpleNamespace(status=500))
+        session.get = MagicMock(return_value=_resp(500))
 
         with patch('custom_components.cuktech_charger.config_flow.async_get_clientsession', return_value=session):
             from custom_components.cuktech_charger.config_flow import validate_input
@@ -80,7 +88,7 @@ class TestConfigFlowStep:
         hass = MagicMock()
         flow = self._make_flow(hass)
         session = MagicMock()
-        session.get = AsyncMock(return_value=SimpleNamespace(status=200))
+        session.get = MagicMock(return_value=_resp(200))
 
         with patch('custom_components.cuktech_charger.config_flow.async_get_clientsession', return_value=session):
             result = await flow.async_step_user({"name": "Test", "server_url": "http://localhost:8199"})
@@ -97,7 +105,7 @@ class TestConfigFlowStep:
         hass = MagicMock()
         flow = self._make_flow(hass)
         session = MagicMock()
-        session.get = AsyncMock(return_value=SimpleNamespace(status=200))
+        session.get = MagicMock(return_value=_resp(200))
 
         with patch('custom_components.cuktech_charger.config_flow.async_get_clientsession', return_value=session):
             await flow.async_step_user({"name": "Test", "server_url": "http://localhost:8199"})
@@ -110,7 +118,7 @@ class TestConfigFlowStep:
         hass = MagicMock()
         flow = self._make_flow(hass)
         session = MagicMock()
-        session.get = AsyncMock(side_effect=Exception("Connection refused"))
+        session.get = MagicMock(side_effect=Exception("Connection refused"))
 
         with patch('custom_components.cuktech_charger.config_flow.async_get_clientsession', return_value=session):
             result = await flow.async_step_user({"name": "Test", "server_url": "http://unreachable:9999"})
@@ -124,7 +132,7 @@ class TestConfigFlowStep:
         hass = MagicMock()
         flow = self._make_flow(hass)
         session = MagicMock()
-        session.get = AsyncMock(return_value=SimpleNamespace(status=200))
+        session.get = MagicMock(return_value=_resp(200))
 
         from homeassistant.data_entry_flow import AbortFlow
         flow._abort_if_unique_id_configured = MagicMock(side_effect=AbortFlow("already_configured"))

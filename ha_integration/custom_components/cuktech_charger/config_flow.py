@@ -39,9 +39,11 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     session = async_get_clientsession(hass)
     try:
         url = f"{server_url}/api/status"
-        resp = await session.get(url, timeout=10)
-        if resp.status != 200:
-            raise ValueError(f"Server returned status {resp.status}")
+        # async with 确保连接被释放，避免泄漏给 GC
+        async with session.get(url, timeout=10) as resp:
+            if resp.status != 200:
+                raise ValueError(f"Server returned status {resp.status}")
+            await resp.read()  # 读取 body，确保连接完全复用/释放
     except ValueError:
         raise
     except Exception as err:
