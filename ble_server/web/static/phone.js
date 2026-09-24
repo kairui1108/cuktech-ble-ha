@@ -204,6 +204,7 @@ function renderAll() {
     renderRateCard();
     renderCharts();
     renderPowerDist();
+    renderChargeLimit();
     renderDelayOff();
     renderSettingsUI();
     renderProtocolSwitches();
@@ -485,6 +486,110 @@ function renderPowerDist() {
         const pct = (x.w / total * 100).toFixed(0);
         return `<span style="color:${x.color};${x.w > 0 ? '' : 'opacity:0.3;'}">${x.name} ${pct}%</span>`;
     }).join('');
+}
+
+// ── Charge Limit (充到指定 Wh 自动关断) ──
+// 数据契约/请求形状/交互语义由 charge_limit.js 统一提供，见该文件头部说明。
+// 配色走 phone.css 的 .charge-limit-* 类（--limit-c* 变量随 body.light 切换）；
+// 不要把 PORT_COLORS 内联进 style——内联优先级高于样式表且不随主题变化。
+let chargeLimitRendered = false;
+
+function renderChargeLimit() {
+    const grid = document.getElementById('chargeLimitGrid');
+    if (!grid || typeof ChargeLimit === 'undefined') return;
+    const CL = ChargeLimit;
+
+    if (!chargeLimitRendered) {
+        let html = '';
+        for (const key of PORT_KEYS) {
+            html += `<div class="charge-limit-row ${key}">
+                <div class="charge-limit-head">
+                    <div class="charge-limit-title">
+                        <div class="charge-limit-dot"></div>
+                        <span class="charge-limit-name">${PORT_NAMES[key]}</span>
+                    </div>
+                    <span class="charge-limit-status" id="limitStatus_${key}">${I18N.t('chargeLimit.off')}</span>
+                </div>
+                <div class="charge-limit-track"><div class="charge-limit-fill" id="limitBar_${key}"></div></div>
+                <div class="charge-limit-progress" id="limitProgress_${key}"></div>
+                <div class="charge-limit-inputs">
+                    <input type="number" class="charge-limit-wh" id="limitWh_${key}" min="0" max="1000" step="1" placeholder="${I18N.t('chargeLimit.placeholder')}">
+                    <select class="charge-limit-mode" id="limitMode_${key}">
+                        <option value="once">${I18N.t('chargeLimit.once')}</option>
+                        <option value="always">${I18N.t('chargeLimit.always')}</option>
+                    </select>
+                </div>
+                <div class="charge-limit-quick">
+                    ${CL.QUICK_WH.map(w => `<button class="charge-limit-chip" onclick="setChargeLimitQuick('${key}', ${w})">${w}${I18N.t('chargeLimit.unit')}</button>`).join('')}
+                </div>
+                <div class="charge-limit-actions">
+                    <button class="charge-limit-action charge-limit-set" id="limitSet_${key}" onclick="applyChargeLimit('${key}')">${I18N.t('chargeLimit.set')}</button>
+                    <button class="charge-limit-action charge-limit-clear" id="limitClear_${key}" onclick="clearChargeLimit('${key}')">${I18N.t('chargeLimit.clear')}</button>
+                </div>
+            </div>`;
+        }
+        grid.innerHTML = html;
+        chargeLimitRendered = true;
+    }
+    updateChargeLimitUI();
+}
+
+function updateChargeLimitUI() {
+    if (typeof ChargeLimit === 'undefined') return;
+    const CL = ChargeLimit;
+    for (const key of PORT_KEYS) {
+        const e = CL.entryFor(key);
+        const statusEl = document.getElementById(`limitStatus_${key}`);
+        if (statusEl) {
+            statusEl.textContent = CL.statusText(key);
+            // 已设限额时用端口色（.on 由 CSS 取变量，同样跟随主题）
+            statusEl.classList.toggle('on', e.wh > 0);
+        }
+        const barEl = document.getElementById(`limitBar_${key}`);
+        if (barEl) barEl.style.width = CL.progressPct(key) + '%';
+        const progEl = document.getElementById(`limitProgress_${key}`);
+        if (progEl) progEl.textContent = CL.progressText(key);
+        // 不覆盖正在编辑的输入框
+        const inputEl = document.getElementById(`limitWh_${key}`);
+        if (inputEl && document.activeElement !== inputEl) {
+            inputEl.value = e.wh > 0 ? e.wh : '';
+        }
+        const modeEl = document.getElementById(`limitMode_${key}`);
+        if (modeEl && !modeEl.dataset.touched) modeEl.value = e.mode || 'once';
+    }
+}
+
+async function refreshChargeLimit() {
+    if (typeof ChargeLimit === 'undefined') return;
+    await ChargeLimit.fetchLimits();
+    updateChargeLimitUI();
+}
+
+function setChargeLimitQuick(key, wh) {
+    const input = document.getElementById(`limitWh_${key}`);
+    if (input) input.value = wh;
+    applyChargeLimit(key);
+}
+
+async function applyChargeLimit(key) {
+    const input = document.getElementById(`limitWh_${key}`);
+    const modeEl = document.getElementById(`limitMode_${key}`);
+    const wh = ChargeLimit.parseWhInput(input ? input.value : '');
+    if (wh === null) { toast(I18N.t('chargeLimit.saveFailed', { msg: I18N.t('chargeLimit.placeholder') })); return; }
+    if (modeEl) modeEl.dataset.touched = '1';
+    const res = await ChargeLimit.saveLimit(key, wh, modeEl ? modeEl.value : null);
+    if (modeEl) modeEl.dataset.touched = '';
+    toast(res.ok
+        ? (wh > 0 ? I18N.t('chargeLimit.saved') : I18N.t('chargeLimit.cleared'))
+        : I18N.t('chargeLimit.saveFailed', { msg: res.error }));
+    updateChargeLimitUI();
+}
+
+async function clearChargeLimit(key) {
+    const res = await ChargeLimit.saveLimit(key, 0, null);
+    toast(res.ok ? I18N.t('chargeLimit.cleared')
+                 : I18N.t('chargeLimit.saveFailed', { msg: res.error }));
+    updateChargeLimitUI();
 }
 
 // ── Delay Off ──
@@ -792,10 +897,15 @@ if (typeof startChargeHistoryAutoRefresh === 'function') {
     startChargeHistoryAutoRefresh('chargeSessionList', 'chargeStats', 'today', 2000);
 }
 
+// ── Charge Limit: 初次加载 + 进度轮询（本会话已充 Wh 不在 /api/status 里） ──
+refreshChargeLimit();
+setInterval(refreshChargeLimit, 5000);
+
 // ── Locale change: re-render all dynamic content ──
 if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
     I18N.onChange(function () {
         updateConnectionUI();
+        chargeLimitRendered = false;   // 卡片文案（含 once/always 选项）需重建
         renderAll();
     });
 }

@@ -172,6 +172,17 @@
         .countdown-toggle-btn.set:hover { background: rgba(var(--accent-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.2); }
         .countdown-toggle-btn.clear { background: rgba(var(--danger-rgb), 0.12); color: var(--danger); border: 1px solid rgba(var(--danger-rgb), 0.3); }
         .countdown-toggle-btn.clear:hover { background: rgba(var(--danger-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--danger-rgb), 0.15); }
+        /* ── Charge limit card ── */
+        .charge-limit-hint { font-size: 11px; color: var(--text-dim); margin: -8px 0 14px; }
+        .charge-limit-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; overflow: hidden; }
+        .charge-limit-item { background: rgba(255, 255, 255, 0.03); border-radius: 12px; padding: 16px; min-width: 0; overflow: hidden; }
+        .charge-limit-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .charge-limit-status { font-size: 12px; color: var(--text-dim); }
+        .charge-limit-bar { height: 4px; border-radius: 2px; background: rgba(128, 128, 128, 0.2); overflow: hidden; margin-bottom: 6px; }
+        .charge-limit-bar-fill { height: 100%; width: 0; border-radius: 2px; transition: width 0.4s ease; }
+        .charge-limit-progress { font-size: 11px; color: var(--text-dim); text-align: center; height: 14px; margin-bottom: 8px; }
+        .charge-limit-mode { padding: 8px 10px; border: 1px solid var(--card-border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 12px; }
+        .charge-limit-mode:focus { outline: none; border-color: var(--accent); }
         @media (max-width: 600px) {
             .charger-layout { grid-template-columns: 1fr; align-items: start; }
             .charger-image { justify-content: flex-start; transform: translateX(-12px); }
@@ -179,7 +190,7 @@
             .device-wrap-inner { height: auto; overflow: visible; }
             .device-charger { width: 200px; height: auto; }
             .charger-controls { grid-template-columns: 1fr; }
-            .port-grid, .settings-grid, .countdown-grid { grid-template-columns: 1fr; }
+            .port-grid, .settings-grid, .countdown-grid, .charge-limit-grid { grid-template-columns: 1fr; }
         }
 
 /* ── Charge History ── */

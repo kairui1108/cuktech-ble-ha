@@ -1,8 +1,45 @@
 """CUKTECH BLE Server - Energy accumulation with adaptive integration."""
+import math
 import statistics
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional
+
+
+# ── Charge limits (自动断电阈值) ──
+# 阈值的语义是"充电器输出能量"（PortEnergyState.session_wh，由 V×I 梯形积分得出），
+# 不是被充设备的实际充入电量——线损与设备内转换损耗使后者偏小（典型 5~15%）。
+MAX_LIMIT_WH = 1000.0
+LIMIT_MODE_ONCE = "once"      # 达到阈值即关断并消费清零（一次性）
+LIMIT_MODE_ALWAYS = "always"  # 长期有效，每次充电会话重新武装
+LIMIT_MODES = (LIMIT_MODE_ONCE, LIMIT_MODE_ALWAYS)
+DEFAULT_LIMIT_MODE = LIMIT_MODE_ONCE
+
+
+def limit_reached(session_wh: float, limit_wh: float) -> bool:
+    """本会话输出能量是否已达到阈值（limit_wh <= 0 表示禁用）。"""
+    if limit_wh <= 0:
+        return False
+    return session_wh >= limit_wh
+
+
+def normalize_charge_limit(wh, mode=None) -> tuple:
+    """把外部输入（API 请求 / DB meta）归一成 (wh, mode)，非法输入回落禁用。
+
+    返回的 wh 恒为有限非负数（0 = 禁用），mode 恒为 LIMIT_MODES 之一。
+    NaN/inf/负数/非数值一律视为 0（禁用），不抛异常——DB meta 脏数据与
+    前端输入都不该让调用方崩溃。
+    """
+    try:
+        value = float(wh)
+    except (TypeError, ValueError):
+        value = 0.0
+    if not math.isfinite(value) or value < 0:
+        value = 0.0
+    norm_mode = str(mode).strip().lower() if mode is not None else DEFAULT_LIMIT_MODE
+    if norm_mode not in LIMIT_MODES:
+        norm_mode = DEFAULT_LIMIT_MODE
+    return value, norm_mode
 
 
 @dataclass

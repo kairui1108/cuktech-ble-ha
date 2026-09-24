@@ -6,7 +6,9 @@
                 '--accent': '#03a9f4', '--accent-rgb': '3, 169, 244',
                 '--success': '#389e3d', '--success-rgb': '56, 158, 61',
                 '--warning': '#ffa42b', '--warning-rgb': '255, 164, 43',
-                '--danger': '#db4437', '--danger-rgb': '219, 68, 55'
+                '--danger': '#db4437', '--danger-rgb': '219, 68, 55',
+                '--port-c1': '#03a9f4', '--port-c2': '#7c4dff',
+                '--port-c3': '#389e3d', '--port-a': '#ffa42b'
             },
             'deep-blue': {
                 '--bg': '#0f0f1a', '--card-bg': '#1a1a2e', '--card-border': '#2a2a4a',
@@ -14,7 +16,9 @@
                 '--accent': '#00d4ff', '--accent-rgb': '0, 212, 255',
                 '--success': '#00e676', '--success-rgb': '0, 230, 118',
                 '--warning': '#ffc107', '--warning-rgb': '255, 193, 7',
-                '--danger': '#ff5252', '--danger-rgb': '255, 82, 82'
+                '--danger': '#ff5252', '--danger-rgb': '255, 82, 82',
+                '--port-c1': '#03a9f4', '--port-c2': '#7c4dff',
+                '--port-c3': '#389e3d', '--port-a': '#ffa42b'
             },
             'ocean': {
                 '--bg': '#0a1628', '--card-bg': '#0f2035', '--card-border': '#1a3a5c',
@@ -22,7 +26,9 @@
                 '--accent': '#00b4d8', '--accent-rgb': '0, 180, 216',
                 '--success': '#48bb78', '--success-rgb': '72, 187, 120',
                 '--warning': '#f6ad55', '--warning-rgb': '246, 173, 85',
-                '--danger': '#fc8181', '--danger-rgb': '252, 129, 129'
+                '--danger': '#fc8181', '--danger-rgb': '252, 129, 129',
+                '--port-c1': '#03a9f4', '--port-c2': '#7c4dff',
+                '--port-c3': '#389e3d', '--port-a': '#ffa42b'
             },
             'gray': {
                 '--bg': '#2d2d2d', '--card-bg': '#3a3a3a', '--card-border': '#4a4a4a',
@@ -30,7 +36,9 @@
                 '--accent': '#4fc3f7', '--accent-rgb': '79, 195, 247',
                 '--success': '#81c784', '--success-rgb': '129, 199, 132',
                 '--warning': '#ffb74d', '--warning-rgb': '255, 183, 77',
-                '--danger': '#e57373', '--danger-rgb': '229, 115, 115'
+                '--danger': '#e57373', '--danger-rgb': '229, 115, 115',
+                '--port-c1': '#03a9f4', '--port-c2': '#7c4dff',
+                '--port-c3': '#389e3d', '--port-a': '#ffa42b'
             },
             'light': {
                 '--bg': '#f5f5f5', '--card-bg': '#ffffff', '--card-border': '#e0e0e0',
@@ -38,7 +46,9 @@
                 '--accent': '#1976d2', '--accent-rgb': '25, 118, 210',
                 '--success': '#388e3c', '--success-rgb': '56, 142, 60',
                 '--warning': '#f57c00', '--warning-rgb': '245, 124, 0',
-                '--danger': '#d32f2f', '--danger-rgb': '211, 47, 47'
+                '--danger': '#d32f2f', '--danger-rgb': '211, 47, 47',
+                '--port-c1': '#03a9f4', '--port-c2': '#7c4dff',
+                '--port-c3': '#389e3d', '--port-a': '#ffa42b'
             }
         };
 
@@ -178,6 +188,146 @@
         function markLocal() { lastLocalChange = Date.now(); }
         function isRecent() { return Date.now() - lastLocalChange < 3000; }
         const QUICK_MINUTES = [15, 30, 60, 90, 120, 240];
+
+        // ── Charge limit card (充到指定 Wh 自动关断该端口) ──
+        let chargeLimitRendered = false;
+
+        // 轻量提示条（index.html 此前无 toast；phone.js 各自有一套，此处不共享）
+        function showToast(msg) {
+            let el = document.getElementById('toast');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'toast';
+                el.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:999;background:rgba(0,0,0,0.85);color:#fff;padding:10px 20px;border-radius:20px;font-size:14px;pointer-events:none;transition:opacity 0.3s;opacity:0;white-space:nowrap;';
+                document.body.appendChild(el);
+            }
+            clearTimeout(el._timer);
+            el.textContent = msg;
+            el.style.opacity = '1';
+            el._timer = setTimeout(() => el.style.opacity = '0', 3000);
+        }
+
+        function renderChargeLimit() {
+            const grid = document.getElementById('chargeLimitGrid');
+            if (!grid || typeof ChargeLimit === 'undefined') return;
+            const CL = ChargeLimit;
+
+            if (!chargeLimitRendered) {
+                let html = '';
+                for (const [id, name] of Object.entries(PORT_MAP)) {
+                    const key = PORT_KEY_MAP[id];
+                    html += `
+                        <div class="charge-limit-item">
+                            <div class="charge-limit-header">
+                                <span class="countdown-port ${key}">${name}</span>
+                                <span class="charge-limit-status" id="limit-status-${key}">${I18N.t('chargeLimit.off')}</span>
+                            </div>
+                            <div class="charge-limit-bar"><div class="charge-limit-bar-fill" id="limit-bar-${key}"></div></div>
+                            <div class="charge-limit-progress" id="limit-progress-${key}"></div>
+                            <div class="countdown-input-group">
+                                <input type="number" class="countdown-input" id="limit-wh-${key}" min="0" max="1000" step="1" placeholder="${I18N.t('chargeLimit.placeholder')}">
+                                <select class="charge-limit-mode" id="limit-mode-${key}">
+                                    <option value="once">${I18N.t('chargeLimit.once')}</option>
+                                    <option value="always">${I18N.t('chargeLimit.always')}</option>
+                                </select>
+                            </div>
+                            <div class="countdown-quick">
+                                ${CL.QUICK_WH.map(w => `<button class="countdown-quick-btn" onclick="setChargeLimitQuick('${key}', ${w})">${w}${I18N.t('chargeLimit.unit')}</button>`).join('')}
+                            </div>
+                            <div class="countdown-actions">
+                                <button class="countdown-toggle-btn set" id="limit-btn-${key}" onclick="applyChargeLimit('${key}')">${I18N.t('chargeLimit.set')}</button>
+                                <button class="countdown-toggle-btn clear" id="limit-clear-${key}" onclick="clearChargeLimit('${key}')">${I18N.t('chargeLimit.clear')}</button>
+                            </div>
+                        </div>`;
+                }
+                grid.innerHTML = html;
+                chargeLimitRendered = true;
+            }
+            updateChargeLimitUI();
+        }
+
+        // 只刷新状态/进度与按钮，不重建 DOM（避免打断正在输入的输入框）
+        function updateChargeLimitUI() {
+            if (typeof ChargeLimit === 'undefined') return;
+            const CL = ChargeLimit;
+            for (const [id] of Object.entries(PORT_MAP)) {
+                const key = PORT_KEY_MAP[id];
+                const e = CL.entryFor(key);
+
+                const statusEl = document.getElementById(`limit-status-${key}`);
+                if (statusEl) {
+                    statusEl.textContent = CL.statusText(key);
+                    statusEl.style.color = e.wh > 0 ? 'var(--accent)' : 'var(--text-dim)';
+                }
+
+                const progressEl = document.getElementById(`limit-progress-${key}`);
+                if (progressEl) {
+                    const p = CL.progressText(key);
+                    progressEl.textContent = p;
+                    progressEl.style.visibility = p ? 'visible' : 'hidden';
+                }
+
+                const barEl = document.getElementById(`limit-bar-${key}`);
+                if (barEl) {
+                    barEl.style.width = CL.progressPct(key) + '%';
+                    barEl.style.background = e.wh > 0 ? 'var(--port-' + key + ')' : 'transparent';
+                }
+
+                // 不覆盖用户正在编辑的输入框
+                const inputEl = document.getElementById(`limit-wh-${key}`);
+                if (inputEl && document.activeElement !== inputEl) {
+                    inputEl.value = e.wh > 0 ? e.wh : '';
+                }
+                const modeEl = document.getElementById(`limit-mode-${key}`);
+                if (modeEl && !modeEl.dataset.touched) {
+                    modeEl.value = e.mode || 'once';
+                }
+            }
+        }
+
+        async function refreshChargeLimit() {
+            if (typeof ChargeLimit === 'undefined') return;
+            await ChargeLimit.fetchLimits();
+            updateChargeLimitUI();
+        }
+
+        function setChargeLimitQuick(port, wh) {
+            const input = document.getElementById(`limit-wh-${port}`);
+            if (input) input.value = wh;
+            applyChargeLimit(port);
+        }
+
+        async function applyChargeLimit(port) {
+            const input = document.getElementById(`limit-wh-${port}`);
+            const modeEl = document.getElementById(`limit-mode-${port}`);
+            const wh = ChargeLimit.parseWhInput(input ? input.value : '');
+            if (wh === null) {
+                showToast(I18N.t('chargeLimit.saveFailed', { msg: I18N.t('chargeLimit.placeholder') }));
+                return;
+            }
+            if (modeEl) modeEl.dataset.touched = '1';
+            const res = await ChargeLimit.saveLimit(port, wh, modeEl ? modeEl.value : null);
+            if (res.ok) {
+                if (modeEl) modeEl.dataset.touched = '';
+                showToast(wh > 0 ? I18N.t('chargeLimit.saved') : I18N.t('chargeLimit.cleared'));
+            } else {
+                if (modeEl) modeEl.dataset.touched = '';
+                showToast(I18N.t('chargeLimit.saveFailed', { msg: res.error }));
+            }
+            updateChargeLimitUI();
+        }
+
+        async function clearChargeLimit(port) {
+            const res = await ChargeLimit.saveLimit(port, 0, null);
+            if (res.ok) {
+                const modeEl = document.getElementById(`limit-mode-${port}`);
+                if (modeEl) modeEl.dataset.touched = '';
+                showToast(I18N.t('chargeLimit.cleared'));
+            } else {
+                showToast(I18N.t('chargeLimit.saveFailed', { msg: res.error }));
+            }
+            updateChargeLimitUI();
+        }
 
         function initChart() {
             const cs = getComputedStyle(document.documentElement);
@@ -795,6 +945,10 @@
                 fetchChartData();
                 initSSE();
                 fetchBemfaStatus();
+                renderChargeLimit();
+                refreshChargeLimit();
+                // 限额进度（本会话已充 Wh）不在 /api/status 里，独立轮询刷新
+                setInterval(refreshChargeLimit, 5000);
                 // 安全兜底：每 30s 轮询 /api/status 校正因 SSE 队列丢事件导致的连接状态偏差
                 setInterval(async () => {
                     try {
@@ -1062,6 +1216,8 @@
             }
             countdownRendered = false;
             renderCountdown(lastSettings);
+            chargeLimitRendered = false;
+            renderChargeLimit();
             const fwEl = document.getElementById('firmwareVersion');
             if (fwEl && fwEl.dataset.firmware) fwEl.textContent = I18N.t('common.firmware', { version: fwEl.dataset.firmware });
             if (currentModalPort) {

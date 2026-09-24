@@ -139,6 +139,24 @@
             quick: '{{count}}分'
         },
 
+        // ── Charge limit (充到指定 Wh 自动关断) ──
+        chargeLimit: {
+            title: '充电量限额',
+            hint: '电量指充电器输出能量（Wh），非设备实际充入电量（有线损/转换损耗）',
+            unit: 'Wh',
+            placeholder: 'Wh',
+            off: '未启用',
+            once: '仅一次',
+            always: '长期有效',
+            fired: '已触发',
+            progress: '已充 {{used}} / {{total}} Wh',
+            set: '设置',
+            clear: '关闭',
+            saved: '限额已保存',
+            cleared: '已关闭该端口限额',
+            saveFailed: '设置失败：{{msg}}'
+        },
+
         // ── Charge history ──
         charge: {
             today: '今日',

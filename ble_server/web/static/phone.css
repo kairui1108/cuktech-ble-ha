@@ -7,6 +7,14 @@
     --text: rgba(255,255,255,0.9); --text-dim: rgba(255,255,255,0.4);
     --text-sub: rgba(255,255,255,0.6);
     --page-width: 430px;
+    /* 充电量限额卡片端口色：两套主题共用这同一批值（浅色不覆盖）。
+       这些是亮色，作白底小字只有 1.44～2.6:1，因此卡片里颜色一律作为
+       "填充"使用（实底按钮 + 深色字），文字色走 --text/--text-dim。 */
+    --limit-c1: #FF7A00; --limit-c1-rgb: 255, 122, 0;
+    --limit-c2: #46B4FF; --limit-c2-rgb: 70, 180, 255;
+    --limit-c3: #89D8F3; --limit-c3-rgb: 137, 216, 243;
+    --limit-a:  #FFD24B; --limit-a-rgb:  255, 210, 75;
+    --limit-danger: #FF6B60; --limit-danger-rgb: 255, 107, 96;
 }
 
 body {
@@ -365,3 +373,66 @@ select option {
     color: var(--text-dim);
     margin-top: 2px;
 }
+
+/* ── Charge Limit card（端口色变量见文件顶部 :root / body.light）── */
+.charge-limit-row { margin-bottom: 18px; }
+.charge-limit-row.c1 { --port-color: var(--limit-c1); --port-color-rgb: var(--limit-c1-rgb); }
+.charge-limit-row.c2 { --port-color: var(--limit-c2); --port-color-rgb: var(--limit-c2-rgb); }
+.charge-limit-row.c3 { --port-color: var(--limit-c3); --port-color-rgb: var(--limit-c3-rgb); }
+.charge-limit-row.a  { --port-color: var(--limit-a);  --port-color-rgb: var(--limit-a-rgb); }
+
+.charge-limit-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.charge-limit-title { display: flex; align-items: center; gap: 8px; }
+.charge-limit-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--port-color); }
+.charge-limit-name { font-size: 15px; color: var(--text); }
+.charge-limit-status { font-size: 13px; color: var(--text-dim); }
+.charge-limit-status.on { color: var(--text); font-weight: 600; }
+.charge-limit-track { height: 4px; border-radius: 2px; background: rgba(128,128,128,0.2); overflow: hidden; margin-bottom: 6px; }
+.charge-limit-fill { height: 100%; width: 0; border-radius: 2px; background: var(--port-color); transition: width 0.4s ease; }
+.charge-limit-progress { font-size: 11px; color: var(--text-dim); text-align: center; height: 14px; margin-bottom: 8px; }
+.charge-limit-inputs { display: flex; gap: 8px; margin-bottom: 8px; }
+.charge-limit-wh {
+    flex: 1; padding: 10px; border: 1px solid var(--card-border); border-radius: 10px;
+    background: var(--bg); color: var(--text); font-size: 14px; text-align: center; min-width: 0;
+}
+.charge-limit-mode {
+    padding: 10px; border: 1px solid var(--card-border); border-radius: 10px;
+    background: var(--bg); color: var(--text); font-size: 13px;
+}
+.charge-limit-quick { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+/* 快捷值 chip 与操作按钮都不复用 .sim-btn：那个类是为固定悬浮控件设计的，
+   底色写死 rgba(0,0,0,0.6)（在白色卡片上合成 #666）且不随主题变化；靠源码
+   顺序去覆盖它太脆弱，这里各自定义，颜色一律走主题变量。 */
+.charge-limit-chip {
+    flex: 1; padding: 6px 12px; border-radius: 8px; font-size: 12px;
+    border: 1px solid var(--card-border);
+    background: rgba(128, 128, 128, 0.12);
+    color: var(--text);
+    cursor: pointer; transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+}
+.charge-limit-chip:active { border-color: var(--port-color); background: rgba(var(--port-color-rgb), 0.25); }
+.charge-limit-actions { display: flex; gap: 8px; }
+.charge-limit-action {
+    flex: 1; padding: 8px; border-radius: 10px; font-size: 13px;
+    background: transparent; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; transition: all 0.2s;
+}
+/* 柔和淡染底 + 主题文字色（对齐 .countdown-toggle-btn 的既有淡染风格，
+   但文字用 --text 而非端口色——端口色是亮色，作白底小字仅 1.44～2.6:1 不可读；
+   作淡染底则没问题）。实底全饱和太扎眼，故用 0.15 淡染 + 同色细边框区分。
+   实测 --text 落淡染底：暗色最差 13.0:1 / 白色最差 14.97:1，远超 AA 的 4.5:1。 */
+.charge-limit-set {
+    color: var(--text);
+    background: rgba(var(--port-color-rgb), 0.15);
+    border: 1px solid rgba(var(--port-color-rgb), 0.3);
+    font-weight: 600;
+}
+.charge-limit-set:active { background: rgba(var(--port-color-rgb), 0.28); }
+.charge-limit-clear {
+    color: var(--text);
+    background: rgba(var(--limit-danger-rgb), 0.15);
+    border: 1px solid rgba(var(--limit-danger-rgb), 0.3);
+    font-weight: 600;
+}
+.charge-limit-clear:active { background: rgba(var(--limit-danger-rgb), 0.28); }
