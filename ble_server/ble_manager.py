@@ -829,6 +829,7 @@ class BLEManager:
     async def _connect_and_run(self):
         await self._connect()
         self._keepalive_fails = 0
+        self._settings_fail_streak = 0
         last_refresh = time.time()
         last_notify = time.time()
         last_keepalive = time.time()
@@ -859,6 +860,21 @@ class BLEManager:
                         now = time.time()
                         last_refresh = now
                         last_notify = now
+                        # Zombie-channel guard: _fetch_settings only logs when every
+                        # readable PIID fails, it never forces a reconnect on its own.
+                        # If that happens repeatedly in a row, the BLE transport is
+                        # alive (no disconnect callback fires) but GATT reads are
+                        # dead (observed as e.g. "Service Discovery has not been
+                        # performed yet") -- force a reconnect the same way the
+                        # keepalive-failure path already does below.
+                        if getattr(self, "_settings_fail_streak", 0) >= 2:
+                            _LOGGER.warning(
+                                "Settings refresh failed %d times in a row "
+                                "(all PIID reads failing) -- BLE channel is a "
+                                "zombie, forcing reconnect",
+                                self._settings_fail_streak)
+                            raise ConnectionError(
+                                "BLE channel stale: repeated full PIID read failure")
                     if now - last_keepalive > 10:
                         if self.ctrl and self.ctrl.client and self.ctrl.client.is_connected:
                             try:
@@ -943,51 +959,54 @@ class BLEManager:
                 continue
             loop = asyncio.get_running_loop()
             for piid in range(1, 5):
-                ps = self.state.ports.get(piid)
-                if not ps or (ps.voltage <= 0 and ps.current <= 0):
-                    continue
-                es = self._energy_states[piid]
-                # BLE handler already recorded if last_time < 2s ago
-                idle = es.last_time is None or (now - es.last_time > 2)
-                # Active verification: if the port has been idle (no BLE push)
-                # longer than IDLE_VERIFY_SEC, enqueue a GET so the main loop
-                # actively re-samples it. This catches the case where the unplug
-                # push was lost (we were busy in an active GET) and ps stays at
-                # the stale pre-unplug V/I forever.
-                if (idle and es.last_time is not None
-                        and now - es.last_time > self._IDLE_VERIFY_SEC
-                        and now - self._last_verify_time[piid] > self._IDLE_VERIFY_SEC
-                        and piid not in self._pending_verify):
-                    self._pending_verify.add(piid)
-                    try:
-                        self.cmd_queue.put_nowait(("verify_port", piid, None))
-                        self._last_verify_time[piid] = now
-                    except asyncio.QueueFull:
-                        self._pending_verify.discard(piid)
-                if idle:
-                    # Only integrate if current > 0 (no power transfer at 0A)
-                    if es.is_charging and ps.current > 0:
-                        self._energy_integrator.update(
-                            es, ps.voltage, ps.current, now)
-                        det = self._charge_detectors[piid]
-                        det.update(ps.voltage * ps.current, now)
-                        # Check if session should end (gradual power decline)
-                        if det.should_end_session(es, now):
-                            self._low_current_count[piid] = 0
-                            sid = self._close_session(piid, now, ps.voltage, ps.current)
-                            if sid and sid > 0:
-                                _LOGGER.info("Timer ended session %d (port %d, %.1fWh)",
-                                             sid, piid, es.session_wh)
-                        else:
-                            # 仅真实会话（正 sid）且记录开启时写入采样点
-                            self._record_charge_point(
-                                piid, ps.voltage, ps.current, ps.protocol or "")
-                    # port_history: always write for chart continuity
-                    task = loop.run_in_executor(
-                        None, self._history.record_port_data,
-                        piid, ps.to_dict())
-                    task.add_done_callback(
-                        lambda t: _LOGGER.error("Timer record_port_data failed: %s", t.exception()) if t.exception() else None)
+                try:
+                    ps = self.state.ports.get(piid)
+                    if not ps or (ps.voltage <= 0 and ps.current <= 0):
+                        continue
+                    es = self._energy_states[piid]
+                    # BLE handler already recorded if last_time < 2s ago
+                    idle = es.last_time is None or (now - es.last_time > 2)
+                    # Active verification: if the port has been idle (no BLE push)
+                    # longer than IDLE_VERIFY_SEC, enqueue a GET so the main loop
+                    # actively re-samples it. This catches the case where the unplug
+                    # push was lost (we were busy in an active GET) and ps stays at
+                    # the stale pre-unplug V/I forever.
+                    if (idle and es.last_time is not None
+                            and now - es.last_time > self._IDLE_VERIFY_SEC
+                            and now - self._last_verify_time[piid] > self._IDLE_VERIFY_SEC
+                            and piid not in self._pending_verify):
+                        self._pending_verify.add(piid)
+                        try:
+                            self.cmd_queue.put_nowait(("verify_port", piid, None))
+                            self._last_verify_time[piid] = now
+                        except asyncio.QueueFull:
+                            self._pending_verify.discard(piid)
+                    if idle:
+                        # Only integrate if current > 0 (no power transfer at 0A)
+                        if es.is_charging and ps.current > 0:
+                            self._energy_integrator.update(
+                                es, ps.voltage, ps.current, now)
+                            det = self._charge_detectors[piid]
+                            det.update(ps.voltage * ps.current, now)
+                            # Check if session should end (gradual power decline)
+                            if det.should_end_session(es, now):
+                                self._low_current_count[piid] = 0
+                                sid = self._close_session(piid, now, ps.voltage, ps.current)
+                                if sid and sid > 0:
+                                    _LOGGER.info("Timer ended session %d (port %d, %.1fWh)",
+                                                 sid, piid, es.session_wh)
+                            else:
+                                # 仅真实会话（正 sid）且记录开启时写入采样点
+                                self._record_charge_point(
+                                    piid, ps.voltage, ps.current, ps.protocol or "")
+                        # port_history: always write for chart continuity
+                        task = loop.run_in_executor(
+                            None, self._history.record_port_data,
+                            piid, ps.to_dict())
+                        task.add_done_callback(
+                            lambda t: _LOGGER.error("Timer record_port_data failed: %s", t.exception()) if t.exception() else None)
+                except Exception as e:
+                    _LOGGER.error("Port timer error for piid %d: %s", piid, e, exc_info=True)
 
     async def _fetch_settings(self, update_existing=False):
         settings = dict(self.state.settings) if update_existing else {}
@@ -1026,7 +1045,12 @@ class BLEManager:
                 fail_count += 1
                 _LOGGER.debug("Failed to read PIID %d: %s", piid, e)
         if fail_count >= len(READABLE_SETTINGS_PIIDS):
-            _LOGGER.warning("All %d PIID reads failed, BLE channel may be broken", fail_count)
+            self._settings_fail_streak = getattr(self, "_settings_fail_streak", 0) + 1
+            _LOGGER.warning(
+                "All %d PIID reads failed, BLE channel may be broken (streak=%d)",
+                fail_count, self._settings_fail_streak)
+        else:
+            self._settings_fail_streak = 0
         await self.state.update_settings(settings)
         await self.state.update_pdo_caps(pdo_caps)
         _invalidate()
