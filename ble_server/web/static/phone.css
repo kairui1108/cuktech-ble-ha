@@ -33,7 +33,7 @@ body.light {
        进度槽压深到近黑：亮填充对浅灰槽只有 1.3～1.6:1，等于看不出填了多少；
        压到 rgba(0,0,0,0.75) 后四种端口色对槽底都 >=3:1（最差 c1 橙 3.97:1）。
        顺带和暗色主题一致了——那边槽底 #28282a 也是深的，都是"深槽 + 亮填充"。 */
-    --limit-track: rgba(0, 0, 0, 0.75);
+    --limit-track: rgba(0, 0, 0, 0.10);
 }
 
 .phone {
@@ -309,16 +309,35 @@ body.light .port-protos { background: rgba(0,0,0,0.03); }
     .phone::-webkit-scrollbar { width: 0; }
 }
 
-/* ── Charge History ── */
+/* ── 下拉选择框：现代化外观（去原生箭头 + 自绘箭头 + hover/focus）──
+   深浅两套都由 --card-* 变量派生；config.html / phone.html 共用本文件。 */
 select, .charge-select {
-    background: var(--card-bg, transparent);
+    appearance: none;
+    -webkit-appearance: none;
+    height: 32px;
+    padding: 0 26px 0 10px;
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    background-color: var(--card-bg);
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                      linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: right 12px center, right 7px center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
     color: var(--text-dim);
-    border-color: var(--card-border, rgba(255,255,255,0.15));
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
-select option {
-    background: var(--card-bg, #252525);
-    color: var(--text-dim);
+select:hover, .charge-select:hover { color: var(--text); }
+select:focus, .charge-select:focus {
+    outline: none;
+    border-color: var(--accent, #46B4FF);
+    box-shadow: 0 0 0 3px rgba(var(--limit-c2-rgb, 70, 180, 255), 0.18);
 }
+select option, .charge-select option { background: var(--card-bg); color: var(--text); }
+body.light select, body.light .charge-select { border-color: rgba(0, 0, 0, 0.14); }
+body.light select option { background: #fff; color: #1a1a1a; }
 .mini-stat {
     text-align: center;
     padding: 8px 4px;
@@ -354,16 +373,35 @@ html[lang="en"] .config-hint {
 html[lang="en"] .navbar .nav-title { font-size: 15px; }
 html[lang="en"] .scene-btn .scene-label { font-size: 12px; }
 
-/* ── Charge History ── */
+/* ── 下拉选择框：现代化外观（去原生箭头 + 自绘箭头 + hover/focus）──
+   深浅两套都由 --card-* 变量派生；config.html / phone.html 共用本文件。 */
 select, .charge-select {
-    background: var(--card-bg, transparent);
+    appearance: none;
+    -webkit-appearance: none;
+    height: 32px;
+    padding: 0 26px 0 10px;
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    background-color: var(--card-bg);
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                      linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: right 12px center, right 7px center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
     color: var(--text-dim);
-    border-color: var(--card-border, rgba(255,255,255,0.15));
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
-select option {
-    background: var(--card-bg, #252525);
-    color: var(--text-dim);
+select:hover, .charge-select:hover { color: var(--text); }
+select:focus, .charge-select:focus {
+    outline: none;
+    border-color: var(--accent, #46B4FF);
+    box-shadow: 0 0 0 3px rgba(var(--limit-c2-rgb, 70, 180, 255), 0.18);
 }
+select option, .charge-select option { background: var(--card-bg); color: var(--text); }
+body.light select, body.light .charge-select { border-color: rgba(0, 0, 0, 0.14); }
+body.light select option { background: #fff; color: #1a1a1a; }
 .mini-stat {
     text-align: center;
     padding: 8px 4px;
@@ -466,6 +504,8 @@ body.light .charge-limit-card, body.light .charge-limit-dotnav {
 .charge-limit-track { height: 4px; border-radius: 2px; background: var(--limit-track); overflow: hidden; margin-bottom: 6px; }
 /* 进度条填充同样是两主题统一的亮色；浅色主题下槽底更深，靠对比看出进度 */
 .charge-limit-fill { height: 100%; width: 0; border-radius: 2px; background: var(--port-color); transition: width 0.4s ease; }
+/* 浅色主题：槽底已调轻，给亮色填充补一圈中性细描边，进度依然可辨 */
+body.light .charge-limit-fill { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.22); }
 .charge-limit-progress { font-size: 11px; color: var(--text-dim); text-align: center; height: 14px; margin-bottom: 6px; }
 .charge-limit-inputs { display: flex; gap: 8px; margin-bottom: 6px; }
 .charge-limit-wh {

@@ -925,14 +925,14 @@ class Server:
                     "Content-Type": "text/html",
                     "Content-Encoding": "gzip",
                     "Content-Length": str(len(body)),
-                    "Cache-Control": "public, max-age=604800, immutable",
+                    "Cache-Control": "no-cache",
                 }
             else:
                 body = entry["raw"]
                 headers = {
                     "Content-Type": "text/html",
                     "Content-Length": str(len(body)),
-                    "Cache-Control": "public, max-age=604800, immutable",
+                    "Cache-Control": "no-cache",
                 }
             return web.Response(body=body, headers=headers)
         return web.FileResponse(WEB_DIR / path.lstrip('/'))
@@ -1476,14 +1476,14 @@ async def handle_cached_static(request):
             "Content-Type": entry["content_type"],
             "Content-Encoding": "gzip",
             "Content-Length": str(len(body)),
-            "Cache-Control": "public, max-age=604800, immutable",
+            "Cache-Control": ("no-cache" if entry["content_type"] == "text/html" else "public, max-age=604800, immutable"),
         }
     else:
         body = entry["raw"]
         headers = {
             "Content-Type": entry["content_type"],
             "Content-Length": str(len(body)),
-            "Cache-Control": "public, max-age=604800, immutable",
+            "Cache-Control": ("no-cache" if entry["content_type"] == "text/html" else "public, max-age=604800, immutable"),
         }
     return web.Response(body=body, headers=headers)
 

@@ -229,7 +229,7 @@
         <div class="card" style="margin-top:12px;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <span style="font-size:17px;color:var(--text-dim);" data-i18n="phone.chargeHistory">充电记录</span>
-                <select id="chargePeriod" onchange="startChargeHistoryAutoRefresh('chargeSessionList','chargeStats',this.value,30000)" style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:8px;padding:2px 6px;font-size:12px;color:var(--text-dim);">
+                <select id="chargePeriod" onchange="startChargeHistoryAutoRefresh('chargeSessionList','chargeStats',this.value,30000)" style="font-size:12px;">
                     <option value="today" data-i18n="charge.today">今日</option>
                     <option value="yesterday" data-i18n="charge.yesterday">昨日</option>
                     <option value="week" data-i18n="charge.week">本周</option>
@@ -247,7 +247,7 @@
                 </div>
                 <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:4px;">
                     <span style="font-size:11px;color:var(--text-dim);" data-i18n="charge.accuracy">精度</span>
-                    <select onchange="setDownsample(this.value)" style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:4px;padding:2px 4px;font-size:11px;color:var(--text-dim);">
+                    <select onchange="setDownsample(this.value)" style="font-size:11px;">
                         <option value="0" data-i18n="charge.allPoints">全部</option>
                         <option value="100" data-i18n="charge.points100">100点</option>
                         <option value="200" data-i18n="charge.points200">200点</option>

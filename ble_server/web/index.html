@@ -2,240 +2,690 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#121215" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#f0f0f5" media="(prefers-color-scheme: light)">
     <title data-i18n="pageTitle.index">CUKTECH 10 GaN Charger Ultra</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="preload" href="/static/chart.umd.min.js" as="script">
     <link rel="preload" href="/static/charger.png" as="image">
-    <script src="/static/locales/zh-CN.js?v=3"></script>
-    <script src="/static/locales/en.js?v=3"></script>
-    <script src="/static/i18n.js?v=3"></script>
+
+    <!--
+      外观引导（必须在样式表之前执行）
+      深浅两套调色板都在 index.css 里，这里只负责尽早给 <html> 打上 data-appearance，
+      避免"浅色系统 + 已保存浅色主题"时首屏闪一下深色。
+      同时把历史遗留的主题名（deep-blue/ocean/gray）迁移成 system。
+    -->
+    <script>
+    (function () {
+        var saved = null;
+        try { saved = localStorage.getItem('cuktech-theme'); } catch (e) {}
+        if (saved !== 'light' && saved !== 'ha-dark' && saved !== 'system') {
+            saved = 'system';
+            try { localStorage.setItem('cuktech-theme', 'system'); } catch (e) {}
+        }
+        var prefersDark = true;
+        try {
+            prefersDark = !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches;
+        } catch (e) {}
+        document.documentElement.setAttribute(
+            'data-appearance',
+            saved === 'light' ? 'light' : (saved === 'ha-dark' ? 'dark' : (prefersDark ? 'dark' : 'light'))
+        );
+    })();
+    </script>
+
+    <script src="/static/locales/zh-CN.js?v=5"></script>
+    <script src="/static/locales/en.js?v=5"></script>
+    <script src="/static/i18n.js?v=5"></script>
     <script defer src="/static/chart.umd.min.js"></script>
-    <script defer src="/static/charge_history.js?v=3"></script>
-    <script defer src="/static/charge_limit.js?v=4"></script>
+    <script defer src="/static/charge_history.js?v=6"></script>
+    <script defer src="/static/charge_limit.js?v=6"></script>
     <script src="/static/chart-loader.js"></script>
     <script src="/static/chart-config.js"></script>
-    <link rel="stylesheet" href="static/index.css?v=3">
+    <link rel="stylesheet" href="static/index.css?v=11">
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <img src="/static/logo_footer.png" alt="CUKTECH" style="height: 40px; margin-bottom: 12px; filter: brightness(1.2);">
-        </div>
 
-        <div class="card">
-            <div class="charger-layout">
-                <div class="charger-image">
-                    <div class="device-wrap" id="deviceWrap">
-                        <!-- Unconnected -->
-                        <img class="unconnected-img" id="unconnectedImg"
-                             src="/static/plugin_imgs/main_card_ad1204u_unconnected.png" alt="CUKTECH Charger">
-                        <!-- Animated device -->
-                        <div class="device-wrap-inner">
-                            <div class="device-charger" id="deviceChargerAnim">
+<!-- ── 图标精灵：全站一套 1.7px 线性图标，粗细与端点一致 ── -->
+<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+    <symbol id="i-contrast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 0 0 16.8Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M3.8 7h16.4M3.8 12h16.4M3.8 17h10.4"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path d="M12 2.2a10 10 0 0 0-3.2 19.5c.5.1.7-.2.7-.5v-1.8c-2.8.6-3.4-1.3-3.4-1.3-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.4-1.1.7-1.3-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7 1 .7 2v2.9c0 .3.2.6.7.5A10 10 0 0 0 12 2.2Z"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M13.8 4h6.4v6.4"/><path d="M20.2 4 11.6 12.6"/><path d="M18 14.6V18a2.2 2.2 0 0 1-2.2 2.2H6a2.2 2.2 0 0 1-2.2-2.2V8.2A2.2 2.2 0 0 1 6 6h3.5"/></symbol>
+    <symbol id="i-cog" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M19.1 14.4a1.5 1.5 0 0 0 .3 1.7l.1.1a1.9 1.9 0 1 1-2.7 2.7l-.1-.1a1.5 1.5 0 0 0-2.6 1.1v.2a1.9 1.9 0 1 1-3.8 0v-.1a1.5 1.5 0 0 0-2.6-1.1l-.1.1a1.9 1.9 0 1 1-2.7-2.7l.1-.1a1.5 1.5 0 0 0-1.1-2.6h-.2a1.9 1.9 0 1 1 0-3.8h.1a1.5 1.5 0 0 0 1.1-2.6l-.1-.1a1.9 1.9 0 1 1 2.7-2.7l.1.1a1.5 1.5 0 0 0 1.7.3h.1a1.5 1.5 0 0 0 .9-1.4v-.2a1.9 1.9 0 1 1 3.8 0v.1a1.5 1.5 0 0 0 2.6 1.1l.1-.1a1.9 1.9 0 1 1 2.7 2.7l-.1.1a1.5 1.5 0 0 0 1.1 2.6h.2a1.9 1.9 0 1 1 0 3.8h-.1a1.5 1.5 0 0 0-1.4.9Z"/></symbol>
+</svg>
+
+<div class="app">
+
+    <!-- ════════════ 页头 ════════════ -->
+    <header class="topbar" id="topbar">
+        <div class="wrap topbar-inner">
+            <div class="brand">
+                <img class="brand-logo" src="/static/logo_footer.png" alt="CUKTECH">
+                <span class="brand-name">10 GaN Ultra</span>
+                <span class="tool-sep" aria-hidden="true"></span>
+                <span class="fw-chip" id="firmwareVersion" data-i18n="common.disconnected">未连接</span>
+            </div>
+            <div class="topbar-tools">
+                <a class="tool-btn" href="config.html" id="configLink" title="config.html">
+                    <svg class="ic" aria-hidden="true"><use href="#i-cog"/></svg>
+                    <span data-i18n="index.config">配置</span>
+                </a>
+                <div class="theme-switcher" id="themeSwitcher">
+                    <button class="tool-btn" onclick="toggleThemeMenu()" id="themeBtn" type="button">
+                        <svg class="ic" aria-hidden="true"><use href="#i-contrast"/></svg>
+                        <span data-i18n="common.theme">主题</span>
+                    </button>
+                    <div class="theme-menu" id="themeMenu">
+                        <div class="theme-option" onclick="setTheme('system')" data-theme="system">
+                            <span class="theme-dot" style="background: linear-gradient(135deg, #121215 50%, #f0f0f5 50%);"></span>
+                            <span data-i18n="index.themeSystem">跟随系统</span>
+                        </div>
+                        <div class="theme-option" onclick="setTheme('ha-dark')" data-theme="ha-dark">
+                            <span class="theme-dot" style="background: #000;"></span>
+                            <span data-i18n="index.themeDark">深色</span>
+                        </div>
+                        <div class="theme-option" onclick="setTheme('light')" data-theme="light">
+                            <span class="theme-dot" style="background: #fff;"></span>
+                            <span data-i18n="index.themeLight">浅色</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 连接状态 + BLE 操作：从设备卡里挪到页头。它们本来就是整机级操作，
+                 贴在吸顶栏上，滚动到任何位置都能看到状态、随手断连 -->
+            <div class="topbar-status">
+                <!-- 连接状态：米家式"彩色圆点 + 亮文字"，不做彩色胶囊底 -->
+                <div class="status-row">
+                    <div class="status-badge disconnected" id="statusBadge" tabindex="0">
+                        <span class="status-dot"></span>
+                        <span>BLE</span>
+                    </div>
+                    <div class="status-badge disconnected" id="mqttBadge" tabindex="0">
+                        <span class="status-dot"></span>
+                        <span>MQTT</span>
+                    </div>
+                    <div class="status-badge disconnected" id="bemfaBadge" tabindex="0">
+                        <span class="status-dot"></span>
+                        <span>Bemfa</span>
+                    </div>
+                </div>
+
+                <div class="btn-group">
+                    <button class="btn btn-primary" id="bleToggle" onclick="bleToggle()" data-i18n="common.connect">连接设备</button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="wrap page">
+        <div class="page-grid">
+
+            <!-- ── 主列：设备状态 → 端口控制 → 数据与记录 ── -->
+            <div class="col-main">
+
+                <!-- 设备 + 端口：合成一张卡（左＝设备面板与总览数值，右＝四个端口） -->
+                <section class="card card-top" id="cardTop">
+                    <div class="top-main">
+
+                        <div class="device-col">
+                    <!-- 设备展示区：整块从 phone.html 移植（360×481 原始尺寸舞台，整体按比例缩放）。
+                         孔位与功率光条的位置关系因此与手机端逐像素一致——这两张素材的
+                         "环" 是照着 360px 宽的设备图对位的，自己另算百分比一定对不齐。 -->
+                    <div class="device-stage">
+                        <div class="device-frame">
+                            <div class="device-box">
                                 <div class="dark-glow-ani" id="darkGlowAni"></div>
-                                <div class="scene-badge-ani" id="sceneBadgeAni">
-                                    <img id="sceneBadgeIconAni" src="" alt="">
-                                    <span id="sceneBadgeTextAni"></span>
-                                </div>
-                                <img class="device-img" id="deviceImgAni" src="/static/plugin_imgs/main_charger_dark_ad1204_all.png" alt="">
-                                <div class="usb-overlay-ani" id="usbOverlayAni">
-                                    <!-- C1 --><div class="usb-mod-ani" id="usbModC1" style="top:25%"><div class="usb-picon" style="top:1px"><img id="usbPiconC1" src="/static/plugin_imgs/main_charger_dark_power_on.png" alt=""></div><div class="usb-pbg" style="top:0;width:57%;height:24px"><img src="/static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width:100%;height:100%"></div><div class="usb-pval" id="usbPvalC1" style="top:7px">0W</div></div>
-                                    <!-- C2 --><div class="usb-mod-ani" id="usbModC2" style="top:35%"><div class="usb-picon" style="top:1px"><img id="usbPiconC2" src="/static/plugin_imgs/main_charger_dark_power_on.png" alt=""></div><div class="usb-pbg" style="top:0;width:57%;height:24px"><img src="/static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width:100%;height:100%"></div><div class="usb-pval" id="usbPvalC2" style="top:7px">0W</div></div>
-                                    <!-- C3 --><div class="usb-mod-ani" id="usbModC3" style="top:45%"><div class="usb-picon" style="top:1px"><img id="usbPiconC3" src="/static/plugin_imgs/main_charger_dark_power_on.png" alt=""></div><div class="usb-pbg" style="top:0;width:57%;height:24px"><img src="/static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width:100%;height:100%"></div><div class="usb-pval" id="usbPvalC3" style="top:7px">0W</div></div>
-                                    <!-- A --><div class="usb-mod-ani" id="usbModA" style="top:55%"><div class="usb-picon" style="top:1px"><img id="usbPiconA" src="/static/plugin_imgs/main_charger_dark_power_on.png" alt=""></div><div class="usb-pbg" style="top:0;left:42%;width:57%;height:24px"><img src="/static/plugin_imgs/main_card_usb_a_rectangle.png" alt="" style="width:100%;height:100%"></div><div class="usb-pval" id="usbPvalA" style="top:7px;">0W</div></div>
+                                <img class="unconnected-img show" id="unconnectedImg"
+                                     src="/static/plugin_imgs/main_card_ad1204u_unconnected.png" alt="CUKTECH Charger">
+                                <div class="device-wrap-inner idle" id="deviceChargerAnim">
+                                    <div class="scene-badge-ani" id="sceneBadgeAni">
+                                        <img id="sceneBadgeIconAni" src="" alt="">
+                                        <span id="sceneBadgeTextAni"></span>
+                                    </div>
+                                    <img class="device-img" id="deviceImgAni" src="/static/plugin_imgs/main_charger_dark_ad1204_all.png" alt="">
+                                    <div class="usb-overlay-ani" id="usbOverlayAni">
+                                    <div class="usb-mod-ani" id="usbModC1" style="top:36px">
+                                        <div class="usb-pbg" style="top:-2px;left:17px;width:220px;height:36px"><img src="/static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width:220px;height:36px"></div>
+                                        <div class="usb-pval" id="usbPvalC1" style="top:4px;left:140px">0W</div>
+                                    </div>
+                                    <div class="usb-mod-ani" id="usbModC2" style="top:68px">
+                                        <div class="usb-pbg" style="top:-2px;left:17px;width:220px;height:36px"><img src="/static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width:220px;height:36px"></div>
+                                        <div class="usb-pval" id="usbPvalC2" style="top:4px;left:140px">0W</div>
+                                    </div>
+                                    <div class="usb-mod-ani" id="usbModC3" style="top:100px">
+                                        <div class="usb-pbg" style="top:-2px;left:17px;width:220px;height:36px"><img src="/static/plugin_imgs/main_card_usb_c_rectangle.png" alt="" style="width:220px;height:36px"></div>
+                                        <div class="usb-pval" id="usbPvalC3" style="top:4px;left:140px">0W</div>
+                                    </div>
+                                    <div class="usb-mod-ani" id="usbModA" style="top:133px">
+                                        <div class="usb-pbg" style="top:-1.5px;left:12.5px;width:230px;height:40px"><img src="/static/plugin_imgs/main_card_usb_a_rectangle.png" alt="" style="width:230px;height:40px"></div>
+                                        <div class="usb-pval" id="usbPvalA" style="top:4px;left:140px">0W</div>
+                                    </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                </div>
-                <div class="charger-controls">
-                    <div class="control-box">
-                        <div class="control-label" style="display: flex; justify-content: space-between; align-items: baseline;">
-                            <span data-i18n="index.connectionStatus">连接状态</span>
-                            <span id="firmwareVersion" style="font-weight: 400; font-size: 10px;"></span>
+
                         </div>
-                        <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
-                            <div style="position: relative;">
-                                <div id="statusBadge" class="status-badge disconnected">
-                                    <span class="status-dot"></span>
-                                    <span>BLE</span>
-                                </div>
-                                <div id="qualityTooltip" class="quality-tooltip" style="display:none;"></div>
+
+                        <div class="ports-col">
+                            <div class="port-grid" id="portGrid">
+                                <div class="empty-state" data-i18n="common.loading">加载中...</div>
                             </div>
-                            <div style="position: relative;">
-                                <div id="mqttBadge" class="status-badge disconnected">
-                                    <span class="status-dot"></span>
-                                    <span>MQTT</span>
-                                </div>
-                                <div id="mqttTooltip" class="quality-tooltip" style="display:none;"></div>
-                            </div>
-                            <div style="position: relative;">
-                                <div id="bemfaBadge" class="status-badge disconnected">
-                                    <span class="status-dot"></span>
-                                    <span>Bemfa</span>
-                                </div>
-                                <div id="bemfaTooltip" class="quality-tooltip" style="display:none;"></div>
-                            </div>
+
+                        </div>
+
+                    </div>
+                </section>
+
+                <!-- 功率曲线 -->
+                <section class="card" id="cardChart">
+                    <div class="card-title">
+                        <span data-i18n="index.powerChart">功率曲线</span>
+                        <div class="chart-legend" id="chartLegend"></div>
+                        <div class="segmented" role="group">
+                            <button class="time-btn" data-minutes="30" onclick="setTimeRange(30)" data-i18n="index.range30">30分</button>
+                            <button class="time-btn active" data-minutes="60" onclick="setTimeRange(60)" data-i18n="index.range60">60分</button>
+                            <button class="time-btn" data-minutes="90" onclick="setTimeRange(90)" data-i18n="index.range90">90分</button>
+                            <button class="time-btn" data-minutes="120" onclick="setTimeRange(120)" data-i18n="index.range120">120分</button>
+                            <button class="time-btn" data-minutes="1440" onclick="setTimeRange(1440)" data-i18n="index.range1440">24小时</button>
                         </div>
                     </div>
-                    <div class="control-box">
-                        <div class="control-label" data-i18n="index.bleControl">BLE 控制</div>
-                        <div class="btn-group">
-                            <button class="btn btn-primary" id="bleToggle" onclick="bleToggle()" data-i18n="common.connect">连接设备</button>
-                            <button class="btn btn-secondary" onclick="bleRestart()" data-i18n="common.restart">重启</button>
+                    <div class="chart-container"><canvas id="powerChart"></canvas></div>
+                </section>
+
+                <!-- 充电记录 -->
+                <section class="card" id="cardHistory">
+                    <div class="card-title">
+                        <span data-i18n="index.chargeHistory">充电记录</span>
+                        <select class="mini-select" id="chargePeriod" onchange="startChargeHistoryAutoRefresh('chargeSessionList','chargeStats',this.value,30000,8)">
+                            <option value="today" data-i18n="charge.today">今日</option>
+                            <option value="yesterday" data-i18n="charge.yesterday">昨日</option>
+                            <option value="week" data-i18n="charge.week">本周</option>
+                            <option value="month" data-i18n="charge.month">本月</option>
+                            <option value="all" data-i18n="charge.all">全部</option>
+                        </select>
+                    </div>
+                    <div class="charge-stats" id="chargeStats"></div>
+                    <div class="session-list" id="chargeSessionList">
+                        <div class="empty-state" data-i18n="common.loading">加载中...</div>
+                    </div>
+
+                    <!-- 会话详情：以浮层展开（内联展开会把主列撑高、右栏空出一大块） -->
+                    <div class="session-detail" id="sessionDetail" style="display:none;">
+                      <div class="sd-sheet" role="dialog" aria-modal="true">
+                        <div class="sd-head">
+                            <span class="sd-title" id="sdTitle"></span>
+                            <span class="sd-duration" id="sdDuration"></span>
+                            <div class="sd-accuracy">
+                                <span data-i18n="charge.accuracy">精度</span>
+                                <select class="mini-select" onchange="setDownsample(this.value)">
+                                    <option value="0" data-i18n="charge.allPoints">全部</option>
+                                    <option value="100" data-i18n="charge.points100">100点</option>
+                                    <option value="200" data-i18n="charge.points200">200点</option>
+                                    <option value="300" selected data-i18n="charge.points300">300点</option>
+                                    <option value="600" data-i18n="charge.points600">600点</option>
+                                </select>
+                            </div>
                         </div>
+                        <div class="sd-chart"><canvas id="sessionChart"></canvas></div>
+                        <div class="sd-metrics">
+                            <div class="sd-metric"><div class="sd-value" id="sdEnergy">0</div><div class="sd-label" data-i18n="charge.energyUnit">电量 Wh</div></div>
+                            <div class="sd-metric"><div class="sd-value" id="sdAvgP">0</div><div class="sd-label" data-i18n="charge.avgPowerUnit">均功率 W</div></div>
+                            <div class="sd-metric"><div class="sd-value" id="sdPeakP">0</div><div class="sd-label" data-i18n="charge.peakPowerUnit">峰功率 W</div></div>
+                            <div class="sd-metric"><div class="sd-value" id="sdAvgV">0</div><div class="sd-label" data-i18n="charge.avgVoltageUnit">均电压 V</div></div>
+                            <div class="sd-metric"><div class="sd-value" id="sdAvgI">0</div><div class="sd-label" data-i18n="charge.avgCurrentUnit">均电流 A</div></div>
+                            <div class="sd-metric sd-action">
+                                <button class="btn btn-quiet" onclick="closeSessionDetail()" data-i18n="common.close">关闭</button>
+                            </div>
+                        </div>
+                      </div>
                     </div>
-                    <div class="stat-box">
-                        <div class="stat-value" id="totalPower">0.0</div>
-                        <div class="stat-label" data-i18n="power.total">总功率 (W)</div>
+                </section>
+
+            </div>
+
+            <!-- ── 侧列：总功率 / 场景 / 限额 / 倒计时 / 杂项设置 ── -->
+            <div class="col-side">
+
+                <!-- 当前总功率 + 功率占比条（phone.html rate-card 同款） -->
+                <section class="card card-rate" id="cardRate">
+                    <div class="rate-left">
+                        <div class="rate-title" data-i18n="phone.totalPowerTitle">当前总功率</div>
+                        <div class="rate-value-row">
+                            <span class="rate-number" id="totalPower">0.0</span>
+                            <span class="rate-unit">W</span>
+                        </div>
+                        <div class="rate-label" data-i18n="phone.currentPower">当前功率</div>
                     </div>
-                    <div class="stat-box">
-                        <div class="stat-value warning" id="maxVoltage">0.0</div>
-                        <div class="stat-label" data-i18n="power.maxVoltage">最高电压 (V)</div>
+                    <div class="mini-chart" id="miniChart" aria-hidden="true"></div>
+                </section>
+
+                <!-- 端口功率占比：phone.html 的 powerDist（一条堆叠条 + 四色标签行） -->
+                <!-- 端口功率占比：只有条 + 标签行，尽量矮 -->
+                <section class="card card-share" id="cardPortShare">
+                    <div id="powerDist" aria-hidden="true"></div>
+                    <div id="powerDistText"></div>
+                </section>
+
+                <!-- 场景模式：图标按钮那一排，切换整机的输出策略 -->
+                <section class="card" id="cardScene">
+                    <div class="card-title">
+                        <span data-i18n="settings.sceneMode">场景模式</span>
+                        <span class="scene-sep" aria-hidden="true"></span>
+                        <span class="scene-current" id="sceneCurrent"></span>
                     </div>
-                </div>
+                    <div class="scene-grid" id="sceneGrid"></div>
+                    <div class="scene-desc" id="sceneDesc"></div>
+                </section>
+
+                <!-- 充电量限额（端口卡组：一次显示一个端口） -->
+                <section class="card" id="cardLimit">
+                    <div class="card-title"><span data-i18n="chargeLimit.title">充电量限额</span></div>
+                    <div class="card-note" data-i18n="chargeLimit.hint">电量指充电器输出能量（Wh），非设备实际充入电量（有线损/转换损耗）</div>
+                    <div class="charge-limit-grid" id="chargeLimitGrid">
+                        <div class="empty-state" data-i18n="common.loading">加载中...</div>
+                    </div>
+                </section>
+
+                <!-- 倒计时设置（端口卡组） -->
+                <section class="card" id="cardCountdown">
+                    <div class="card-title"><span data-i18n="countdown.title">倒计时设置</span></div>
+                    <div class="countdown-grid" id="countdownGrid">
+                        <div class="empty-state" data-i18n="common.loading">加载中...</div>
+                    </div>
+                </section>
+
+                <!-- 设备设置 -->
+                <section class="card" id="cardSettings">
+                    <div class="card-title">
+                        <span data-i18n="index.deviceSettings">设备设置</span>
+                        <button class="tool-btn settings-open" id="settingsOpen" type="button" onclick="openSettingsModal()">
+                            <svg class="ic" aria-hidden="true"><use href="#i-cog"/></svg>
+                            <span data-i18n="index.settingsOpen">设置</span>
+                        </button>
+                    </div>
+                </section>
+
             </div>
         </div>
+    </main>
 
-        <div class="card">
-            <div class="card-title"><span data-i18n="index.powerChart">功率曲线</span>
-                <div style="margin-left: auto; display: flex; gap: 4px;">
-                    <button class="time-btn" data-minutes="30" onclick="setTimeRange(30)" data-i18n="index.range30">30分</button>
-                    <button class="time-btn active" data-minutes="60" onclick="setTimeRange(60)" data-i18n="index.range60">60分</button>
-                    <button class="time-btn" data-minutes="90" onclick="setTimeRange(90)" data-i18n="index.range90">90分</button>
-                    <button class="time-btn" data-minutes="120" onclick="setTimeRange(120)" data-i18n="index.range120">120分</button>
-                    <button class="time-btn" data-minutes="1440" onclick="setTimeRange(1440)" data-i18n="index.range1440">24小时</button>
-                </div>
-            </div>
-            <div class="chart-container"><canvas id="powerChart"></canvas></div>
+    <!-- ════════════ 页脚 ════════════ -->
+    <footer class="footer">
+        <div class="wrap footer-inner">
+            <a class="footer-link" href="https://github.com/kairui1108/cuktech-ble-server" target="_blank" rel="noopener">
+                <svg class="ic" aria-hidden="true"><use href="#i-github"/></svg>
+                <span>CUKTECH-BLE-HA Web</span>
+                <svg class="ic ic-sm" aria-hidden="true"><use href="#i-external"/></svg>
+            </a>
         </div>
+    </footer>
+</div>
 
-        <div class="card">
-            <div class="card-title"><span data-i18n="index.portMonitor">端口监控</span> <span style="font-size:10px;color:var(--text-dim);text-transform:none;letter-spacing:0" data-i18n="index.clickForDetail">(点击查看详情)</span></div>
-            <div class="port-grid" id="portGrid"></div>
+<!-- 状态徽标的悬浮详情：fixed 定位，必须留在 body 下（带 backdrop-filter 的祖先会成为固定定位的包含块） -->
+<div id="qualityTooltip" class="quality-tooltip" style="display:none;"></div>
+<div id="mqttTooltip" class="quality-tooltip" style="display:none;"></div>
+<div id="bemfaTooltip" class="quality-tooltip" style="display:none;"></div>
+
+<!-- 设备设置弹窗：配置项平时不占右栏高度，点"设置"时才弹出 -->
+<div class="settings-overlay" id="settingsModal">
+    <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-header">
+            <span class="modal-title" data-i18n="index.deviceSettings">设备设置</span>
+            <button class="modal-close" onclick="closeSettingsModal()" type="button" aria-label="close">&times;</button>
         </div>
-
-        <!-- Charge History Card -->
-        <div class="card">
-            <div class="card-title"><span data-i18n="index.chargeHistory">充电记录</span>
-                <select id="chargePeriod" onchange="startChargeHistoryAutoRefresh('chargeSessionList','chargeStats',this.value,30000)" style="margin-left:auto;background:var(--card-bg);border:1px solid var(--card-border);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--text-dim);">
-                    <option value="today" data-i18n="charge.today">今日</option>
-                    <option value="yesterday" data-i18n="charge.yesterday">昨日</option>
-                    <option value="week" data-i18n="charge.week">本周</option>
-                    <option value="month" data-i18n="charge.month">本月</option>
-                    <option value="all" data-i18n="charge.all">全部</option>
-                </select>
-            </div>
-            <div id="chargeStats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;text-align:center;justify-items:center;"></div>
-            <div id="chargeSessionList"></div>
-            <!-- Session Detail -->
-            <div id="sessionDetail" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--card-border);">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                    <span id="sdTitle" style="font-size:15px;font-weight:600;color:var(--text);"></span>
-                    <span id="sdDuration" style="font-size:13px;color:var(--text-dim);"></span>
-                </div>
-                <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:8px;">
-                    <span style="font-size:11px;color:var(--text-dim);" data-i18n="charge.accuracy">精度</span>
-                    <select onchange="setDownsample(this.value)" style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:6px;padding:2px 8px;font-size:11px;color:var(--text-dim);">
-                        <option value="0" data-i18n="charge.allPoints">全部</option>
-                        <option value="100" data-i18n="charge.points100">100点</option>
-                        <option value="200" data-i18n="charge.points200">200点</option>
-                        <option value="300" selected data-i18n="charge.points300">300点</option>
-                        <option value="600" data-i18n="charge.points600">600点</option>
-                    </select>
-                </div>
-                <div style="height:160px;"><canvas id="sessionChart"></canvas></div>
-                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;">
-                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdEnergy">0</div><div style="font-size:11px;color:var(--text-dim);" data-i18n="charge.energyUnit">电量 Wh</div></div>
-                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgP">0</div><div style="font-size:11px;color:var(--text-dim);" data-i18n="charge.avgPowerUnit">均功率 W</div></div>
-                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdPeakP">0</div><div style="font-size:11px;color:var(--text-dim);" data-i18n="charge.peakPowerUnit">峰功率 W</div></div>
-                </div>
-                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;">
-                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgV">0</div><div style="font-size:11px;color:var(--text-dim);" data-i18n="charge.avgVoltageUnit">均电压 V</div></div>
-                    <div style="text-align:center;"><div style="font-size:18px;font-weight:700;color:var(--text);" id="sdAvgI">0</div><div style="font-size:11px;color:var(--text-dim);" data-i18n="charge.avgCurrentUnit">均电流 A</div></div>
-                    <div style="text-align:center;padding-top:6px;"><button onclick="closeSessionDetail()" data-i18n="common.close" style="background:rgba(255,59,48,0.1);border:1px solid rgba(255,59,48,0.3);color:#FF3B30;border-radius:8px;padding:8px 20px;font-size:12px;cursor:pointer;">关闭</button></div>
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-title"><span data-i18n="chargeLimit.title">充电量限额</span></div>
-            <div class="charge-limit-hint" data-i18n="chargeLimit.hint">电量指充电器输出能量（Wh），非设备实际充入电量（有线损/转换损耗）</div>
-            <div class="charge-limit-grid" id="chargeLimitGrid"></div>
-        </div>
-
-        <div class="card">
-            <div class="card-title" data-i18n="countdown.title">倒计时设置</div>
-            <div class="countdown-grid" id="countdownGrid"></div>
-        </div>
-
-        <div class="card">
-            <div class="card-title" data-i18n="index.deviceSettings">设备设置</div>
-            <div class="settings-grid" id="settingsGrid"></div>
-        </div>
-
-        <div class="footer">
-            <a href="https://github.com/kairui1108/cuktech-ble-server" target="_blank" style="color: var(--accent); text-decoration: none;">CUKTECH-BLE-HA Web</a>
-            <span style="margin: 0 12px; color: var(--text-dim);">|</span>
-            <a href="config.html" style="color: var(--text-dim); text-decoration: none; font-size: 13px;"><span aria-hidden="true">&#9881;</span> <span data-i18n="index.config">配置</span></a>
-            <span style="margin: 0 12px; color: var(--text-dim);">|</span>
-            <div class="theme-switcher" id="themeSwitcher">
-                <button class="theme-btn" onclick="toggleThemeMenu()" id="themeBtn">🎨 <span data-i18n="common.theme">主题</span></button>
-                <div class="theme-menu" id="themeMenu">
-                    <div class="theme-option" onclick="setTheme('ha-dark')" data-theme="ha-dark">
-                        <span class="theme-dot" style="background: #1c1c1c;"></span> <span data-i18n="index.themeDark">暗色</span>
-                    </div>
-                    <div class="theme-option" onclick="setTheme('deep-blue')" data-theme="deep-blue">
-                        <span class="theme-dot" style="background: #0f0f1a;"></span> <span data-i18n="index.themeDeepBlue">深蓝</span>
-                    </div>
-                    <div class="theme-option" onclick="setTheme('ocean')" data-theme="ocean">
-                        <span class="theme-dot" style="background: #0a1628;"></span> <span data-i18n="index.themeOcean">海洋</span>
-                    </div>
-                    <div class="theme-option" onclick="setTheme('gray')" data-theme="gray">
-                        <span class="theme-dot" style="background: #2d2d2d;"></span> <span data-i18n="index.themeGray">灰色</span>
-                    </div>
-                    <div class="theme-option" onclick="setTheme('light')" data-theme="light">
-                        <span class="theme-dot" style="background: #f5f5f5;"></span> <span data-i18n="index.themeLight">浅色</span>
-                    </div>
-                    <div class="theme-option" onclick="setTheme('system')" data-theme="system">
-                        <span class="theme-dot" style="background: linear-gradient(135deg, #1c1c1c 50%, #f5f5f5 50%);"></span> <span data-i18n="index.themeSystem">跟随系统</span>
-                    </div>
-                </div>
-            </div>
-            <span style="margin: 0 12px; color: var(--text-dim);">|</span>
-            <div class="theme-switcher" id="logLevelSwitcher">
-                <button class="theme-btn" onclick="toggleLogLevelMenu()" id="logLevelBtn">📋 <span data-i18n="common.logs">日志</span></button>
-                <div class="theme-menu" id="logLevelMenu">
-                    <div class="theme-option" onclick="setLogLevel('debug')" data-level="debug">Debug</div>
-                    <div class="theme-option" onclick="setLogLevel('info')" data-level="info">Info</div>
-                    <div class="theme-option" onclick="setLogLevel('warning')" data-level="warning">Warning</div>
-                    <div class="theme-option" onclick="setLogLevel('error')" data-level="error">Error</div>
-                </div>
-            </div>
+        <div class="settings-grid" id="settingsGrid">
+            <div class="empty-state" data-i18n="common.loading">加载中...</div>
         </div>
     </div>
+</div>
 
-    <div class="modal-overlay" id="portModal">
-        <div class="modal">
-            <div class="modal-header">
-                <span class="modal-title" id="modalTitle" data-i18n="modal.portDetail" data-i18n-params='{"port":"C1"}'>C1 端口详情</span>
-                <button class="modal-close" onclick="closeModal()">&times;</button>
-            </div>
-            <div class="modal-stats">
-                <div class="power-item"><div class="power-value" id="modalVoltage">0.0</div><div class="power-label" data-i18n="modal.voltage">电压 (V)</div></div>
-                <div class="power-item"><div class="power-value success" id="modalCurrent">0.0</div><div class="power-label" data-i18n="modal.current">电流 (A)</div></div>
-                <div class="power-item"><div class="power-value warning" id="modalPower">0.0</div><div class="power-label" data-i18n="modal.power">功率 (W)</div></div>
-                <div class="power-item"><div class="power-value" id="modalProtocol">idle</div><div class="power-label" data-i18n="modal.protocol">实时充电协议</div></div>
-            </div>
-            <div style="display:flex;justify-content:flex-end;gap:4px;margin:4px 0;">
-                <button class="time-btn" id="modalRealTimeBtn" onclick="toggleModalRealTime()" data-i18n="modal.realtime" style="font-size:10px;padding:2px 8px;">⚡ 实时</button>
-            </div>
-            <div class="modal-chart-container"><canvas id="modalChart"></canvas></div>
-            <div class="modal-protocols" id="modalProtocols"></div>
+<!-- 端口详情弹窗 -->
+<div class="modal-overlay" id="portModal">
+    <div class="modal">
+        <div class="modal-header">
+            <span class="modal-title" id="modalTitle" data-i18n="modal.portDetail" data-i18n-params='{"port":"C1"}'>C1 端口详情</span>
+            <button class="modal-close" onclick="closeModal()" type="button" aria-label="close">&times;</button>
         </div>
+        <div class="modal-stats">
+            <div class="power-item"><div class="power-value" id="modalVoltage">0.0</div><div class="power-label" data-i18n="modal.voltage">电压 (V)</div></div>
+            <div class="power-item"><div class="power-value success" id="modalCurrent">0.0</div><div class="power-label" data-i18n="modal.current">电流 (A)</div></div>
+            <div class="power-item"><div class="power-value warning" id="modalPower">0.0</div><div class="power-label" data-i18n="modal.power">功率 (W)</div></div>
+            <div class="power-item"><div class="power-value" id="modalProtocol">idle</div><div class="power-label" data-i18n="modal.protocol">实时充电协议</div></div>
+        </div>
+        <div class="modal-toolbar">
+            <button class="time-btn" id="modalRealTimeBtn" onclick="toggleModalRealTime()" data-i18n="modal.realtime">⚡ 实时</button>
+        </div>
+        <div class="modal-chart-container"><canvas id="modalChart"></canvas></div>
+        <div class="modal-protocols" id="modalProtocols"></div>
     </div>
+</div>
 
-    <script defer src="/static/app.js?v=3"></script>
+<script>
+// 设备设置浮层：配置行平时不占右栏高度，点"设置"弹出
+(function () {
+    var modal = document.getElementById('settingsModal');
+    if (!modal) return;
+    function open() { modal.classList.add('is-open'); }
+    function close() { modal.classList.remove('is-open'); }
+    window.openSettingsModal = open;
+    window.closeSettingsModal = close;
+    modal.addEventListener('click', function (e) { if (e.target === modal) close(); });
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && modal.classList.contains('is-open')) close();
+    });
+})();
+</script>
+
+<script>
+// 页头滚动后加深底色并补一条发丝线（米家导航栏本身不动，这里只是多一层黏顶过渡）
+(function () {
+    var bar = document.getElementById('topbar');
+    if (!bar) return;
+    var ticking = false;
+    function sync() {
+        bar.classList.toggle('is-scrolled', window.scrollY > 6);
+        ticking = false;
+    }
+    window.addEventListener('scroll', function () {
+        if (!ticking) { ticking = true; window.requestAnimationFrame(sync); }
+    }, { passive: true });
+    sync();
+})();
+</script>
+
+<script>
+/*
+ * 端口卡组（堆叠卡）：限额与倒计时各自一沓。
+ *
+ * 为什么桌面端也要堆叠：四个端口的限额/倒计时是同构表单，平铺会把侧栏拉得极长，
+ * 而"一次只调一个口"才是真实用法。这里沿用 phone.html 的限额卡组交互
+ * （--depth 逐层下移 + 收窄、翻页/指示点），只是把渲染留给了 app.js /
+ * charge_limit.js——所以用 MutationObserver 在它们重建 DOM 后重新铺一次。
+ *
+ * 指示点同时兼作状态灯（米家的编码方式，不靠颜色也能分辨）：
+ *   空心 = 该口未设置；实心（端口色）= 已设置；实心警示色 = 限额已触发关断；
+ *   当前项拉长成胶囊 = 现在看的是这个口。
+ *
+ * 手势阈值直接复用 charge_limit.js 的 swipeDecision（手机端同一套判定）。
+ */
+(function () {
+    var PEEK = 11;          // 每层露出的底边高度（px）：太小就看不出一沓卡的感觉
+    var NARROW = 9;         // 每层收窄（px）
+    var FLY_MS = 300;       // 翻出去的时长，要和 CSS 的 --dur-slow 对齐
+    var DOT_POLL_MS = 2000; // 状态灯轮询：限额每 5s 刷新、倒计时随 SSE 变，都不改子节点
+
+    function portKeyOf(el) {
+        var p = el.querySelector('.countdown-port');
+        if (!p) return '';
+        var keys = ['c1', 'c2', 'c3', 'a'];
+        for (var i = 0; i < keys.length; i++) {
+            if (p.classList.contains(keys[i])) return keys[i];
+        }
+        return '';
+    }
+
+    // 0 = 未设置 / 1 = 已设置 / 2 = 已触发关断
+    function dotState(el, kind) {
+        var key = portKeyOf(el);
+        if (!key) return 0;
+        if (kind === 'limit') {
+            if (typeof ChargeLimit === 'undefined' || !ChargeLimit.entryFor) return 0;
+            var e = ChargeLimit.entryFor(key);
+            if (e && e.fired) return 2;
+            return (e && e.wh > 0) ? 1 : 0;
+        }
+        // 倒计时没有独立的全局状态，卡片右上角那行状态文字就是当前值（未设置时是
+        // i18n 的 notSet 文案）。用同一个 i18n 运行时取文案来比对，切语言不会误判。
+        var st = el.querySelector('.countdown-current');
+        if (!st) return 0;
+        var notSet = (typeof I18N !== 'undefined' && I18N.t) ? I18N.t('common.notSet') : '未设置';
+        return String(st.textContent).trim() === String(notSet).trim() ? 0 : 1;
+    }
+
+    function initDeck(gridId, kind) {
+        var grid = document.getElementById(gridId);
+        if (!grid) return;
+        var host = grid.closest('.card') || grid.parentNode;
+        var dots = host.querySelector('.deck-dots[data-deck="' + gridId + '"]');
+        if (!dots) {
+            dots = document.createElement('div');
+            dots.className = 'deck-dots';
+            dots.setAttribute('data-deck', gridId);
+            host.appendChild(dots);
+        }
+
+        var index = 0;
+        var drag = null;
+        var suppressClick = false;
+
+        function cards() {
+            var out = [];
+            for (var i = 0; i < grid.children.length; i++) {
+                var el = grid.children[i];
+                if (el.nodeType === 1 && !el.classList.contains('empty-state')) out.push(el);
+            }
+            return out;
+        }
+
+        // 指示点：只在数量或 class 变化时写 DOM（否则每 2s 重建会打断 hover/点击）
+        function syncDots(list) {
+            var n = list.length;
+            if (dots.children.length !== n) {
+                var html = '';
+                for (var k = 0; k < n; k++) {
+                    html += '<button type="button" class="deck-dot" data-i="' + k + '"></button>';
+                }
+                dots.innerHTML = html;
+            }
+            for (var k = 0; k < n; k++) {
+                var b = dots.children[k];
+                var key = portKeyOf(list[k]);
+                var st = dotState(list[k], kind);
+                var cls = 'deck-dot' + (key ? ' ' + key : '') + (k === index ? ' is-current' : '');
+                if (st === 1) cls += ' is-set';
+                if (st === 2) cls += ' is-fired';
+                if (b.className !== cls) b.className = cls;
+                b.setAttribute('aria-label', (key ? key.toUpperCase() + ' · ' : '') + (k + 1) + '/' + n);
+                b.setAttribute('aria-current', k === index ? 'true' : 'false');
+            }
+        }
+
+        function paint() {
+            var list = cards();
+            var n = list.length;
+            if (!n) {
+                grid.classList.remove('deck');
+                grid.style.paddingBottom = '';
+                dots.innerHTML = '';
+                return;
+            }
+            if (index >= n) index = index % n;
+            if (index < 0) index = n - 1;
+
+            grid.classList.add('deck');
+            grid.style.setProperty('--deck-peek', PEEK + 'px');
+            grid.style.setProperty('--deck-narrow', NARROW + 'px');
+            // 给下层露出的边缘留出空间，+6 是余量（不然最深那张的底边会被裁掉）
+            grid.style.paddingBottom = ((n - 1) * PEEK + 6) + 'px';
+
+            for (var i = 0; i < n; i++) {
+                var el = list[i];
+                var depth = (i - index + n) % n;
+                el.style.setProperty('--depth', String(depth));
+                el.style.zIndex = String(20 - depth);
+                el.classList.toggle('is-top', depth === 0);
+                // 静止的卡一律只由 CSS（--depth）定位：清掉跟手/飞出时留下的内联值，
+                // 否则被打断的那张会停在容器外被裁掉，看起来就是"牌堆塌了"
+                if (!(drag && drag.el === el)) {
+                    el.style.transform = '';
+                    el.style.opacity = '';
+                }
+                // 下层卡只露一条边，键盘/读屏不该停在看不见的控件上
+                if ('inert' in el) el.inert = depth !== 0;
+            }
+            syncDots(list);
+        }
+
+        // 把栈顶那张朝 dir 方向推出去，动画结束后再无声地归位到栈底。
+        // 归位必须关掉过渡：不然它会"从屏幕外滑回牌堆"，比不做动画更费解。
+        function flyOut(el, dir) {
+            var w = el.offsetWidth || 320;
+            el.style.transition = 'transform ' + FLY_MS + 'ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity ' + FLY_MS + 'ms';
+            el.style.transform = 'translate(' + (dir * (w + 48)) + 'px, 0)';
+            el.style.opacity = '0';
+            setTimeout(function () {
+                // 归位永远要执行；万一用户此刻正拖着这张，就按当前拖拽量还原，
+                // 而不是跳过（跳过会让它带着飞出位移留在容器外，等于凭空少一张卡）
+                var dragging = drag && drag.el === el && drag.moved;
+                el.style.transition = 'none';
+                el.style.transform = dragging ? 'translate(' + drag.dx + 'px, 0)' : '';
+                el.style.opacity = dragging ? String(Math.max(0.35, 1 - Math.abs(drag.dx) / 420)) : '';
+                void el.offsetWidth;                  // 强制回流，让归位不进过渡
+                el.style.transition = '';
+            }, FLY_MS + 20);
+        }
+
+        // 唯一的翻页入口：指示点、点击露出的边、手势都走这里，保证栈序与动画一致
+        function goTo(next, flyDir) {
+            var list = cards();
+            var n = list.length;
+            if (!n) return;
+            next = ((next % n) + n) % n;
+            if (next === index) return;
+            var old = list[index];
+            var outX = (flyDir === 1 || flyDir === -1) ? flyDir : (next > index ? -1 : 1);
+            index = next;
+            paint();
+            if (old && old !== list[index]) flyOut(old, outX);
+        }
+
+        dots.addEventListener('click', function (e) {
+            var b = e.target && e.target.closest ? e.target.closest('.deck-dot') : null;
+            if (!b) return;
+            var i = parseInt(b.getAttribute('data-i'), 10);
+            if (isNaN(i)) return;
+            goTo(i);
+        });
+
+        // 点露出的那条边 = 把它翻上来（支持 inert 的浏览器里下层收不到指针事件，
+        // 那里就靠拖拽和指示点，与 phone.html 一致）
+        grid.addEventListener('click', function (e) {
+            if (suppressClick) {
+                suppressClick = false;
+                e.stopPropagation();
+                if (e.preventDefault) e.preventDefault();
+                return;
+            }
+            var el = e.target && e.target.closest
+                ? e.target.closest('.charge-limit-item, .countdown-item') : null;
+            if (!el || el.classList.contains('is-top')) return;
+            var i = cards().indexOf(el);
+            if (i < 0) return;
+            e.stopPropagation();
+            goTo(i);
+        }, true);
+
+        grid.addEventListener('pointerdown', function (e) {
+            if (!grid.classList.contains('deck')) return;
+            var tag = e.target && e.target.tagName ? String(e.target.tagName).toUpperCase() : '';
+            if (tag === 'INPUT' || tag === 'SELECT' || tag === 'OPTION') return;
+            drag = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, moved: false, el: cards()[index] || null };
+        });
+
+        grid.addEventListener('pointermove', function (e) {
+            if (!drag || e.pointerId !== drag.id || !drag.el) return;
+            var dx = e.clientX - drag.x;
+            var dy = e.clientY - drag.y;
+            if (!drag.moved) {
+                if (Math.abs(dx) < 8) return;
+                // 纵向为主的手势交还页面滚动
+                if (Math.abs(dx) <= Math.abs(dy)) { drag = null; return; }
+                drag.moved = true;
+                drag.el.style.transition = 'none';
+                try { grid.setPointerCapture(e.pointerId); } catch (err) { /* 指针已失效，忽略 */ }
+            }
+            drag.dx = dx;
+            drag.el.style.transform =
+                'translate(' + dx + 'px, calc(var(--depth, 0) * var(--deck-peek, 11px)))';
+            drag.el.style.opacity = String(Math.max(0.35, 1 - Math.abs(dx) / 420));
+        });
+
+        function endDrag(e) {
+            var d = drag;
+            if (!d || e.pointerId !== d.id) return;
+            drag = null;
+            if (!d.moved || !d.el) return;   // 只是点了下按钮，交给原生 click
+            suppressClick = true;
+            setTimeout(function () { suppressClick = false; }, 400);
+            var el = d.el;
+            // 跟手期间写的是内联 transform，必须交还给 CSS（位置由 --depth 决定）：
+            // 否则这张卡会带着横移量留在原地，看起来就是"歪在半路 + 内容被裁"
+            el.style.transition = '';
+            el.style.opacity = '';
+            el.style.transform = '';
+            var dir = (e.type === 'pointercancel' || typeof ChargeLimit === 'undefined')
+                ? 0
+                : ChargeLimit.swipeDecision(d.dx, el.offsetWidth || 320);
+            if (dir) goTo(index + dir, -dir);   // 往划走的方向飞出去
+            else paint();                       // 没过阈值：由 CSS 过渡带回栈顶
+        }
+        grid.addEventListener('pointerup', endDrag);
+        grid.addEventListener('pointercancel', endDrag);
+
+        // app.js / charge_limit.js 会整段重建 innerHTML（首次渲染、切语言、轮询），
+        // 重建后必须重新铺栈序
+        var mo = new MutationObserver(function () { setTimeout(paint, 0); });
+        mo.observe(grid, { childList: true });
+
+        setInterval(function () { syncDots(cards()); }, DOT_POLL_MS);
+        paint();
+    }
+
+    initDeck('chargeLimitGrid', 'limit');
+    initDeck('countdownGrid', 'countdown');
+})();
+
+/*
+ * 会话详情浮层。
+ * charge_history.js 只切 #sessionDetail 的 style.display，样式由 CSS 决定；
+ * 这里把 display 的变化同步成一个类。为什么不做内联展开：会话详情比其余卡片高
+ * 300px 以上，展开会把主列顶长、右栏底下空出一大块，整页就不齐了。
+ */
+(function () {
+    var detail = document.getElementById('sessionDetail');
+    if (!detail) return;
+
+    function sync() {
+        var open = detail.style.display !== 'none';
+        if (open === detail.classList.contains('is-open')) return;
+        detail.classList.toggle('is-open', open);
+        if (open) {
+            // 图表是在浮层可见之前创建的，可能按 0 尺寸量过一遍：下一帧请它重新量
+            window.requestAnimationFrame(function () {
+                window.dispatchEvent(new Event('resize'));
+            });
+        }
+    }
+    new MutationObserver(sync).observe(detail, { attributes: true, attributeFilter: ['style'] });
+    sync();
+
+    var close = function () {
+        if (typeof closeSessionDetail === 'function') closeSessionDetail();
+    };
+    detail.addEventListener('click', function (e) { if (e.target === detail) close(); });
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && detail.classList.contains('is-open')) close();
+    });
+})();
+
+</script>
+
+<script defer src="/static/app.js?v=9"></script>
 </body>
 </html>

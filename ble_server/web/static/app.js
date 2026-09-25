@@ -1,56 +1,10 @@
-        // Theme definitions
-        const THEMES = {
-            'ha-dark': {
-                '--bg': '#1c1c1c', '--card-bg': '#252525', '--card-border': '#3b3b3b',
-                '--text': '#e1e1e1', '--text-dim': '#959595',
-                '--accent': '#03a9f4', '--accent-rgb': '3, 169, 244',
-                '--success': '#389e3d', '--success-rgb': '56, 158, 61',
-                '--warning': '#ffa42b', '--warning-rgb': '255, 164, 43',
-                '--danger': '#db4437', '--danger-rgb': '219, 68, 55',
-                '--port-c1': '#03a9f4', '--port-c2': '#7c4dff',
-                '--port-c3': '#389e3d', '--port-a': '#ffa42b'
-            },
-            'deep-blue': {
-                '--bg': '#0f0f1a', '--card-bg': '#1a1a2e', '--card-border': '#2a2a4a',
-                '--text': '#e8e8f0', '--text-dim': '#8888aa',
-                '--accent': '#00d4ff', '--accent-rgb': '0, 212, 255',
-                '--success': '#00e676', '--success-rgb': '0, 230, 118',
-                '--warning': '#ffc107', '--warning-rgb': '255, 193, 7',
-                '--danger': '#ff5252', '--danger-rgb': '255, 82, 82',
-                '--port-c1': '#03a9f4', '--port-c2': '#7c4dff',
-                '--port-c3': '#389e3d', '--port-a': '#ffa42b'
-            },
-            'ocean': {
-                '--bg': '#0a1628', '--card-bg': '#0f2035', '--card-border': '#1a3a5c',
-                '--text': '#e0f0ff', '--text-dim': '#7aa3cc',
-                '--accent': '#00b4d8', '--accent-rgb': '0, 180, 216',
-                '--success': '#48bb78', '--success-rgb': '72, 187, 120',
-                '--warning': '#f6ad55', '--warning-rgb': '246, 173, 85',
-                '--danger': '#fc8181', '--danger-rgb': '252, 129, 129',
-                '--port-c1': '#03a9f4', '--port-c2': '#7c4dff',
-                '--port-c3': '#389e3d', '--port-a': '#ffa42b'
-            },
-            'gray': {
-                '--bg': '#2d2d2d', '--card-bg': '#3a3a3a', '--card-border': '#4a4a4a',
-                '--text': '#f0f0f0', '--text-dim': '#aaaaaa',
-                '--accent': '#4fc3f7', '--accent-rgb': '79, 195, 247',
-                '--success': '#81c784', '--success-rgb': '129, 199, 132',
-                '--warning': '#ffb74d', '--warning-rgb': '255, 183, 77',
-                '--danger': '#e57373', '--danger-rgb': '229, 115, 115',
-                '--port-c1': '#03a9f4', '--port-c2': '#7c4dff',
-                '--port-c3': '#389e3d', '--port-a': '#ffa42b'
-            },
-            'light': {
-                '--bg': '#f5f5f5', '--card-bg': '#ffffff', '--card-border': '#e0e0e0',
-                '--text': '#212121', '--text-dim': '#757575',
-                '--accent': '#1976d2', '--accent-rgb': '25, 118, 210',
-                '--success': '#388e3c', '--success-rgb': '56, 142, 60',
-                '--warning': '#f57c00', '--warning-rgb': '245, 124, 0',
-                '--danger': '#d32f2f', '--danger-rgb': '211, 47, 47',
-                '--port-c1': '#03a9f4', '--port-c2': '#7c4dff',
-                '--port-c3': '#389e3d', '--port-a': '#ffa42b'
-            }
-        };
+        // 主题名 → 外观。调色板本体在 index.css 的 :root（米家暗色）
+        // 与 html[data-appearance="light"]（米家浅色）里，与 phone.css 同源。
+        // 为什么不再由 JS 写内联颜色变量：
+        //   1. 两处调色板容易漂移，改一处忘一处；
+        //   2. 内联变量要等脚本执行才注入，浅色主题会先闪一下深色。
+        // 现在 JS 只负责把 <html data-appearance> 切成 dark/light。
+        const THEME_APPEARANCE = { 'ha-dark': 'dark', 'light': 'light' };
 
         function setTheme(themeName) {
             if (themeName === 'system') {
@@ -69,12 +23,12 @@
         }
 
         function applyTheme(themeName) {
-            const theme = THEMES[themeName];
-            if (!theme) return;
-            const root = document.documentElement;
-            Object.entries(theme).forEach(([key, value]) => {
-                root.style.setProperty(key, value);
-            });
+            const appearance = THEME_APPEARANCE[themeName] || 'dark';
+            document.documentElement.setAttribute('data-appearance', appearance);
+            // canvas 图表吃不到 CSS 变量，换肤后需要按新令牌重刷一次
+            if (typeof refreshChartTheme === 'function') refreshChartTheme();
+            // 场景图标是成对的位图（dark/light 各一套），也要跟着换
+            if (typeof refreshSceneIcons === 'function') refreshSceneIcons();
         }
 
         function toggleThemeMenu() {
@@ -87,66 +41,28 @@
             }
         });
 
-        // Load saved theme
-        const savedTheme = localStorage.getItem('cuktech-theme') || 'ha-dark';
+        // Load saved theme —— 未设置过时跟随系统 prefers-color-scheme
+        const savedTheme = localStorage.getItem('cuktech-theme') || 'system';
         setTimeout(() => setTheme(savedTheme), 0);
-
-        // Log level management
-        async function setLogLevel(level) {
-            try {
-                await fetch(`${API_BASE}/api/log-level`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ level })
-                });
-                localStorage.setItem('cuktech-log-level', level);
-                document.querySelectorAll('#logLevelMenu .theme-option').forEach(opt => {
-                    opt.classList.toggle('active', opt.dataset.level === level);
-                });
-                document.getElementById('logLevelMenu').classList.remove('show');
-            } catch (e) {
-                console.error('Failed to set log level:', e);
-            }
+        // 系统外观变化时，若当前是「跟随系统」则实时切换
+        try {
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+                if (localStorage.getItem('cuktech-theme') === 'system') setTheme('system');
+            });
+        } catch (e) {
+            // 旧浏览器只有 addListener，忽略即可：刷新后仍会解析到正确外观
         }
 
-        async function initLogLevel() {
-            try {
-                const res = await fetch(`${API_BASE}/api/log-level`);
-                const data = await res.json();
-                if (data.level) {
-                    localStorage.setItem('cuktech-log-level', data.level);
-                    document.querySelectorAll('#logLevelMenu .theme-option').forEach(opt => {
-                        opt.classList.toggle('active', opt.dataset.level === data.level);
-                    });
-                }
-            } catch (e) {
-                // Fallback to localStorage
-                const saved = localStorage.getItem('cuktech-log-level') || 'info';
-                document.querySelectorAll('#logLevelMenu .theme-option').forEach(opt => {
-                    opt.classList.toggle('active', opt.dataset.level === saved);
-                });
-            }
-        }
-
-        function toggleLogLevelMenu() {
-            document.getElementById('logLevelMenu').classList.toggle('show');
-        }
-
-        document.addEventListener('click', (e) => {
-            if (!e.target.closest('#logLevelSwitcher')) {
-                document.getElementById('logLevelMenu').classList.remove('show');
-            }
-        });
-
-        // Initialize log level from server
-        setTimeout(() => initLogLevel(), 0);
+        // 日志等级的查看与修改已迁移到 config.html 的"服务器"卡片
+        // （/api/log-level 是即时生效的运行时配置，不属于本页）。
 
         const API_BASE = window.location.origin;
         const PORT_MAP = { 1: 'C1', 2: 'C2', 3: 'C3', 4: 'A' };
         const PORT_KEY_MAP = { 1: 'c1', 2: 'c2', 3: 'c3', 4: 'a' };
 
+        // 场景模式（piid 5）不在这个列表里：它有自己的卡片（图标按钮那一排），
+        // 见 renderScene()。放两处会出现两个能改同一个值的入口。
         const SETTINGS_CONFIG = [
-            { piid: 5, nameKey: 'settings.sceneMode', options: [{ value: 1, labelKey: 'scene.ai' }, { value: 2, labelKey: 'scene.eco' }, { value: 3, labelKey: 'scene.single' }, { value: 4, labelKey: 'scene.balanced' }] },
             { piid: 6, nameKey: 'settings.screenTimeout', options: [{ value: 1, labelKey: 'settings.min5' }, { value: 2, labelKey: 'settings.min10' }, { value: 3, labelKey: 'settings.min30' }, { value: 4, labelKey: 'settings.alwaysOn' }, { value: 5, labelKey: 'settings.min1' }] },
             { piid: 13, nameKey: 'settings.deviceLanguage', options: [{ value: 0, label: 'English' }, { value: 1, label: '中文' }] },
             { piid: 15, nameKey: 'settings.usbATrickle', options: [{ value: 0, labelKey: 'settings.off' }, { value: 1, labelKey: 'settings.on' }] },
@@ -154,7 +70,96 @@
             { piid: 20, nameKey: 'settings.screenLock', options: [{ value: 0, labelKey: 'settings.off' }, { value: 1, labelKey: 'settings.on' }] }
         ];
 
+        // ── 场景模式卡（phone.html 的同款交互：一排圆形图标按钮 + 当前模式说明） ──
+        // 图标是成对的：{dark|light} × {on|off}，跟随主题与选中态切换；
+        // 图片名沿用 phone.js 的映射（2 号模式的图叫 mac，不是 eco）。
+        const SCENE_OPTIONS = [
+            { value: 1, img: 'ai',      labelKey: 'scene.ai',       descKey: 'scene.descAi' },
+            { value: 2, img: 'mac',     labelKey: 'scene.eco',      descKey: 'scene.descEco' },
+            { value: 3, img: 'single',  labelKey: 'scene.single',   descKey: 'scene.descSingle' },
+            { value: 4, img: 'balance', labelKey: 'scene.balanced', descKey: 'scene.descBalanced' }
+        ];
+        const SCENE_BADGE_IMG = { 1: 'ai', 2: 'apple', 3: 'single', 4: 'balance' };
+        const SCENE_PIID = 5;
+
+        function sceneIconSrc(opt, active) {
+            const theme = document.documentElement.getAttribute('data-appearance') === 'light' ? 'light' : 'dark';
+            return `/static/plugin_imgs/main_charger_${theme}_${opt.img}_${active ? 'on' : 'off'}.png`;
+        }
+
+        let lastScene = 1;
+        let sceneRendered = false;
+
+        // 设备图上方的场景徽标（图标 + 场景名）。phone.html 是在"任一口有输出"时显示，
+        // index.html 沿用同一个条件，由 updateDeviceContainer 调用。
+        function updateSceneBadge(show) {
+            const badge = document.getElementById('sceneBadgeAni');
+            if (!badge) return;
+            const opt = SCENE_OPTIONS.find(o => o.value === lastScene) || SCENE_OPTIONS[0];
+            const icon = document.getElementById('sceneBadgeIconAni');
+            const text = document.getElementById('sceneBadgeTextAni');
+            if (icon) icon.src = `/static/plugin_imgs/main_card_scene_icon_${SCENE_BADGE_IMG[opt.value]}.png`;
+            if (text) text.textContent = I18N.t(opt.labelKey);
+            badge.classList.toggle('show', !!show);
+        }
+
+        function renderScene(settings) {
+            const grid = document.getElementById('sceneGrid');
+            if (!grid) return;
+            const raw = parseInt((settings || {})['5'], 10);
+            const current = SCENE_OPTIONS.some(o => o.value === raw) ? raw : 1;
+            if (!isRecent()) lastScene = current;
+
+            if (!sceneRendered) {
+                grid.innerHTML = SCENE_OPTIONS.map(o => `
+                    <button type="button" class="scene-btn" data-mode="${o.value}" onclick="setScene(${o.value})">
+                        <img id="sceneImg${o.value}" src="${sceneIconSrc(o, false)}" alt="">
+                        <span class="scene-label">${I18N.t(o.labelKey)}</span>
+                    </button>`).join('');
+                sceneRendered = true;
+            }
+
+            const active = SCENE_OPTIONS.find(o => o.value === lastScene) || SCENE_OPTIONS[0];
+            SCENE_OPTIONS.forEach(o => {
+                const btn = grid.querySelector(`.scene-btn[data-mode="${o.value}"]`);
+                if (!btn) return;
+                btn.classList.toggle('active', o.value === lastScene);
+                const img = document.getElementById('sceneImg' + o.value);
+                if (img) img.src = sceneIconSrc(o, o.value === lastScene);
+                const label = btn.querySelector('.scene-label');
+                if (label) label.textContent = I18N.t(o.labelKey);
+            });
+            const cur = document.getElementById('sceneCurrent');
+            if (cur) cur.textContent = I18N.t(active.labelKey);
+            const desc = document.getElementById('sceneDesc');
+            if (desc) desc.textContent = I18N.t(active.descKey);
+            // 场景名同时出现在设备图上方那枚徽标里，跟着一起换
+            updateSceneBadge(document.getElementById('sceneBadgeAni').classList.contains('show'));
+        }
+
+        // 换肤要让图标在 {dark|light} 两套里切换
+        function refreshSceneIcons() { renderScene(lastSettings); }
+
+        async function setScene(mode) {
+            markLocal();
+            lastScene = mode;
+            renderScene(lastSettings);
+            try {
+                await fetch(`${API_BASE}/api/set`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ piid: SCENE_PIID, value: mode })
+                });
+            } catch (e) {
+                console.error('Set scene error:', e);
+            }
+        }
+
         let lastSettings = {};
+        // 是否已经渲染过设置行。不能用 lastSettings 是否为空来判断：
+        // 设备未连接时 settings 就是 {}，那样会漏掉一次重渲染，切到中文后
+        // 页面上会残留英文标签（Scene Mode / Screen-Off Time …）。
+        let settingsRendered = false;
         let powerChart = null, modalChart = null, currentModalPort = null, latestPorts = {};
         let protocolSwitches = {}, protocolExtend = 0;
         let bleConnected = false;
@@ -192,19 +197,19 @@
         // ── Charge limit card (充到指定 Wh 自动关断该端口) ──
         let chargeLimitRendered = false;
 
-        // 轻量提示条（index.html 此前无 toast；phone.js 各自有一套，此处不共享）
+        // 轻量提示条；外观由 index.css 的 .toast 决定（与 phone.js 的 toast 同规格）
         function showToast(msg) {
             let el = document.getElementById('toast');
             if (!el) {
                 el = document.createElement('div');
                 el.id = 'toast';
-                el.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:999;background:rgba(0,0,0,0.85);color:#fff;padding:10px 20px;border-radius:20px;font-size:14px;pointer-events:none;transition:opacity 0.3s;opacity:0;white-space:nowrap;';
+                el.className = 'toast';
                 document.body.appendChild(el);
             }
             clearTimeout(el._timer);
             el.textContent = msg;
-            el.style.opacity = '1';
-            el._timer = setTimeout(() => el.style.opacity = '0', 3000);
+            el.classList.add('show');
+            el._timer = setTimeout(() => el.classList.remove('show'), 3000);
         }
 
         function renderChargeLimit() {
@@ -329,32 +334,122 @@
             updateChargeLimitUI();
         }
 
+        // canvas 上的图表无法直接消费 CSS 变量，这里把当前外观的令牌读成具体色值
+        // （米家暗色是黑底、浅色是白底，网格线/刻度的墨色必须跟着换）。
+        function chartTheme() {
+            const cs = getComputedStyle(document.documentElement);
+            return {
+                text: cs.getPropertyValue('--text').trim() || 'rgba(255,255,255,0.9)',
+                dim: cs.getPropertyValue('--text-dim').trim() || 'rgba(255,255,255,0.4)',
+                // 网格线单独一支令牌：浅色主题下 text-dim 是 #888，直接拿来画网格太重
+                grid: cs.getPropertyValue('--chart-grid').trim() || 'rgba(255,255,255,0.14)',
+            };
+        }
+
+        // 换肤后重刷已存在的图表（颜色写死在 options 里，不会跟着 CSS 变）
+        function refreshChartTheme() {
+            const th = chartTheme();
+            [powerChart, modalChart].forEach(ch => {
+                if (!ch || !ch.options) return;
+                const legend = ch.options.plugins && ch.options.plugins.legend;
+                if (legend && legend.display !== false && legend.labels) legend.labels.color = th.text;
+                // 总功率曲线的颜色跟主题走
+                const ds = ch.data && ch.data.datasets;
+                if (ds && ds[4] && ds[4].label === 'Total') {
+                    const cs2 = getComputedStyle(document.documentElement);
+                    ds[4].borderColor = cs2.getPropertyValue('--total-line').trim() || '#FFFFFF';
+                }
+                const scales = ch.options.scales || {};
+                Object.keys(scales).forEach(k => {
+                    const sc = scales[k];
+                    if (!sc.display) return;                      // 隐藏的轴不用刷
+                    if (sc.grid && sc.grid.drawOnChartArea !== false) sc.grid.color = th.grid;
+                    // 只有标记过 __themed 的刻度跟随主题；弹窗里按端口着色的刻度必须保留
+                    if (sc.ticks && sc.ticks.__themed) sc.ticks.color = th.dim;
+                    if (sc.title && sc.title.display) sc.title.color = th.dim;
+                });
+                ch.update('none');
+            });
+        }
+
         function initChart() {
             const cs = getComputedStyle(document.documentElement);
-            const c1 = cs.getPropertyValue('--port-c1').trim() || '#03a9f4';
-            const c2 = cs.getPropertyValue('--port-c2').trim() || '#7c4dff';
-            const c3 = cs.getPropertyValue('--port-c3').trim() || '#389e3d';
-            const ca = cs.getPropertyValue('--port-a').trim() || '#ffa42b';
-            const textColor = cs.getPropertyValue('--text').trim() || '#e1e1e1';
-            const accentColor = cs.getPropertyValue('--accent').trim() || '#03a9f4';
+            const c1 = cs.getPropertyValue('--port-c1').trim() || '#FF7A00';
+            const c2 = cs.getPropertyValue('--port-c2').trim() || '#46B4FF';
+            const c3 = cs.getPropertyValue('--port-c3').trim() || '#89D8F3';
+            const ca = cs.getPropertyValue('--port-a').trim() || '#FFD24B';
+            const textColor = cs.getPropertyValue('--text').trim() || 'rgba(255,255,255,0.9)';
+            // 总功率曲线：白色主题下用深灰实线（黑虚线太扎眼），深色主题用纯白
+            const totalLine = cs.getPropertyValue('--total-line').trim() || '#FFFFFF';
+            const th = chartTheme();
             const ctx = document.getElementById('powerChart').getContext('2d');
             powerChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: [],
                     datasets: [
-                        { label: 'C1', data: [], borderColor: c1, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false },
-                        { label: 'C2', data: [], borderColor: c2, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false },
-                        { label: 'C3', data: [], borderColor: c3, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false },
-                        { label: 'A', data: [], borderColor: ca, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false },
-                        { label: 'Total', data: [], borderColor: textColor, borderWidth: 2.5, tension: 0.4, pointRadius: 0, fill: false, borderDash: [5, 3] },
+                        { label: 'C1', data: [], borderColor: c1, borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: false },
+                        { label: 'C2', data: [], borderColor: c2, borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: false },
+                        { label: 'C3', data: [], borderColor: c3, borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: false },
+                        { label: 'A', data: [], borderColor: ca, borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: false },
+                        { label: 'Total', data: [], borderColor: totalLine, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, borderDash: [6, 4] },
                     ]
                 },
                 options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, interaction: { intersect: false, mode: 'index' },
-                    plugins: { legend: { display: true, position: 'top', labels: { color: textColor, font: { size: 11 }, boxWidth: 12, padding: 12 } } },
-                    scales: { x: { display: true, grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#666', maxTicksLimit: 8, font: { size: 10 } } }, y: { display: true, grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#666', font: { size: 10 } }, beginAtZero: true } }
+                    // 图例用卡片标题行里的自定义圆点（.chart-legend），Y 轴整个隐藏——与 phone.html 一致
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        // 横竖网格线都不画（phone.html 同款），Y 轴显示，只留功率刻度文字
+                        x: { display: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, maxTicksLimit: 8, font: { size: 9 }, maxRotation: 0, __themed: true } },
+                        y: { display: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, font: { size: 9 }, __themed: true }, beginAtZero: true, grace: '8%' }
+                    }
                 }
             });
+            renderChartLegend();
+        }
+
+        // 端口功率占比：phone.js 的 renderPowerDist 同款逻辑
+        // 一条堆叠条（每段宽度 = 该口功率/总功率，端口色）+ 底下一行四色百分比标签；
+        // 无输出的端口段宽 0、标签变暗（opacity 0.3）。
+        const PORT_DIST_META = [
+            { key: 'c1', label: 'C1', piid: 1 },
+            { key: 'c2', label: 'C2', piid: 2 },
+            { key: 'c3', label: 'C3', piid: 3 },
+            { key: 'a',  label: 'USB-A', piid: 4 }
+        ];
+
+        function renderPortShare(ports, totalPower) {
+            const bar = document.getElementById('powerDist');
+            const text = document.getElementById('powerDistText');
+            if (!bar || !text) return;
+            const segs = PORT_DIST_META.map(o => {
+                const p = (ports || {})[String(o.piid)] || {};
+                const w = (p.enabled !== false && p.power > 0) ? p.power : 0;
+                const color = getComputedStyle(document.documentElement).getPropertyValue('--port-' + o.key).trim() || '#888';
+                return { label: o.label, w, color };
+            });
+            const total = segs.reduce((a, x) => a + x.w, 0) || 1;
+            bar.innerHTML = segs.map(x =>
+                `<div style="width:${(x.w / total * 100).toFixed(1)}%;height:100%;background:${x.color};transition:width 0.5s;"></div>`
+            ).join('');
+            text.innerHTML = segs.map(x => {
+                const pct = (x.w / total * 100).toFixed(0);
+                return `<span style="color:${x.color};${x.w > 0 ? '' : 'opacity:0.3;'}">${x.label} ${pct}%</span>`;
+            }).join('');
+        }
+
+        // 自定义图例（圆点 + 端口名）：与 phone.html 的 .chart-legend 同款
+        function renderChartLegend() {
+            const box = document.getElementById('chartLegend');
+            if (!box) return;
+            const items = [
+                ['C1', 'var(--port-c1)'], ['C2', 'var(--port-c2)'],
+                ['C3', 'var(--port-c3)'], ['A', 'var(--port-a)'],
+                [I18N.t('power.total'), 'var(--text-dim)']
+            ];
+            box.innerHTML = items.map(([name, color]) =>
+                `<span class="chart-legend-item"><span class="chart-legend-dot" style="background:${color}"></span>${name}</span>`
+            ).join('');
         }
         let _chartDataLoaded = false;
         async function fetchChartData() {
@@ -484,6 +579,7 @@
         function initModalChart() {
             if (modalChart) modalChart.destroy();
             const colors = getChartColors();
+            const th = chartTheme();
             const ctx = document.getElementById('modalChart').getContext('2d');
             modalChart = new Chart(ctx, {
                 type: 'line',
@@ -493,9 +589,9 @@
                     { label: I18N.t('modal.power'), data: [], borderColor: colors.a, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y1' },
                 ]},
                 options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, interaction: { intersect: false, mode: 'index' },
-                    plugins: { legend: { display: true, position: 'top', labels: { color: colors.textDim, font: { size: 11 }, boxWidth: 12, padding: 12 } } },
-                    scales: { x: { display: true, grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#666', maxTicksLimit: 8, font: { size: 10 } } },
-                        y: { type: 'linear', display: true, position: 'left', grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: colors.c1, font: { size: 10 } }, beginAtZero: true, title: { display: true, text: 'V / A', color: colors.textDim } },
+                    plugins: { legend: { display: true, position: 'top', labels: { color: colors.textDim, usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, font: { size: 11 }, padding: 12 } } },
+                    scales: { x: { display: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, maxTicksLimit: 8, font: { size: 9 }, maxRotation: 0, __themed: true } },
+                        y: { type: 'linear', display: true, position: 'left', grid: { drawOnChartArea: false }, ticks: { color: colors.c1, font: { size: 10 } }, beginAtZero: true, title: { display: true, text: 'V / A', color: colors.textDim } },
                         y1: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false }, ticks: { color: colors.a, font: { size: 10 } }, beginAtZero: true, title: { display: true, text: 'W', color: colors.textDim } }
                     }
                 }
@@ -629,6 +725,7 @@
             updateDeviceContainer(data.ports);
             updateSettingsUI(data.settings || {});
             renderCountdown(data.settings || {});
+            renderScene(data.settings || {});
             updateSummary(data.ports);
             if (data.firmware_version) {
                 const fwEl = document.getElementById('firmwareVersion');
@@ -650,9 +747,21 @@
                 }
             }
             document.getElementById('totalPower').textContent = totalPower.toFixed(1);
-            const apEl = document.getElementById('activePorts');
-            if (apEl) apEl.textContent = activeCount;
-            document.getElementById('maxVoltage').textContent = maxV.toFixed(1);
+            // 功率占比条：与 phone.html 的 mini-chart 同款——近 30 次采样的总功率，
+            // 每根柱的高度是该次功率占这段时间峰值的比例
+            if (!updateSummary._hist) updateSummary._hist = [];
+            if (totalPower > 0 || updateSummary._hist.length > 0) {
+                updateSummary._hist.push(totalPower);
+                if (updateSummary._hist.length > 30) updateSummary._hist.shift();
+            }
+            renderPortShare(ports, totalPower);
+            const chart = document.getElementById('miniChart');
+            if (chart) {
+                const maxVal = Math.max(1, ...updateSummary._hist);
+                chart.innerHTML = updateSummary._hist.map(v =>
+                    `<div class="mini-bar" style="height:${Math.max(2, (v / maxVal) * 100)}%;opacity:${v > 0 ? 1 : 0.3}"></div>`
+                ).join('');
+            }
         }
 
         // ── Incremental port DOM update (no innerHTML rebuild) ──
@@ -679,6 +788,9 @@
             // Update toggle checkbox
             const toggle = document.getElementById(`toggle-${PORT_KEY_MAP[portId]}`);
             if (toggle) toggle.checked = merged.enabled !== false;
+            // 端口图标也有 on/off 两版，跟着开关一起换
+            const icon = document.getElementById(`portIcon${PORT_KEY_MAP[portId].toUpperCase()}`);
+            if (icon) icon.src = `/static/plugin_imgs/main_card_port_${PORT_KEY_MAP[portId]}_${merged.enabled !== false ? 'on' : 'off'}.png`;
             // Update summary totals
             updateSummary(latestPorts);
             // Update modal if open for this port
@@ -729,7 +841,10 @@
                 html += `
                     <div class="port-card ${checked ? 'active' : ''}" id="port-${id}" onclick="handlePortClick(event, ${id})">
                         <div class="port-header">
-                            <span class="port-name ${key}">${name}</span>
+                            <span class="port-name ${key}">
+                                <span class="port-icon"><img id="portIcon${key.toUpperCase()}" src="/static/plugin_imgs/main_card_port_${key}_${checked ? 'on' : 'off'}.png" alt=""></span>
+                                ${name}
+                            </span>
                             <label class="port-toggle" onclick="event.stopPropagation()">
                                 <input type="checkbox" id="toggle-${key}" ${checked ? 'checked' : ''} onchange="togglePort('${key}', this.checked)">
                                 <span class="toggle-slider"></span>
@@ -740,7 +855,7 @@
                             <div class="port-stat"><div class="port-stat-value">${port.current.toFixed(1)}</div><div class="port-stat-label">${I18N.t('power.current')}</div></div>
                             <div class="port-stat"><div class="port-stat-value">${port.power.toFixed(1)}</div><div class="port-stat-label">${I18N.t('power.power')}</div></div>
                         </div>
-                        <div class="port-protocol" style="text-align:center;margin-top:8px;font-size:11px;color:${protocolColor}">${port.protocol}</div>
+                        <div class="port-protocol" style="color:${protocolColor}">${port.protocol}</div>
                     </div>`;
             }
             grid.innerHTML = html;
@@ -756,7 +871,7 @@
             SETTINGS_CONFIG.forEach(s => {
                 const val = settings[String(s.piid)] ?? s.options[0].value;
                 const name = I18N.t(s.nameKey);
-                const opts = s.options.map(o => `<option value="${o.value}" ${o.value === val ? 'selected' : ''}>${I18N.t(o.labelKey || o.label)}</option>`).join('');
+                const opts = s.options.map(o => `<option value="${o.value}" ${o.value === val ? 'selected' : ''}>${o.labelKey ? I18N.t(o.labelKey) : o.label}</option>`).join('');
                 html += `<div class="setting-item"><span class="setting-label">${name}</span><select class="setting-select" onchange="setSetting(${s.piid}, parseInt(this.value))">${opts}</select></div>`;
             });
             return html;
@@ -764,8 +879,9 @@
 
         function updateSettingsUI(settings) {
             const grid = document.getElementById('settingsGrid');
-            if (Object.keys(lastSettings).length === 0) {
+            if (!settingsRendered) {
                 grid.innerHTML = buildSettingsHtml(settings);
+                settingsRendered = true;
             } else {
                 SETTINGS_CONFIG.forEach(s => {
                     const select = grid.querySelector(`select[onchange*="${s.piid}"]`);
@@ -1169,7 +1285,7 @@
                 if (wrapInner) wrapInner.classList.remove('idle');
                 charger.classList.add('charging');
                 glow.classList.add('active');
-                if (badge) badge.classList.remove('show');
+                updateSceneBadge(true);
 
                 const portKeys = ['c1','c2','c3','a'];
                 for (const key of portKeys) {
@@ -1189,7 +1305,7 @@
                     const m = document.getElementById('usbMod' + k.toUpperCase());
                     if (m) m.classList.remove('active');
                 });
-                if (badge) badge.classList.remove('show');
+                updateSceneBadge(false);
             }
         }
 
@@ -1202,7 +1318,7 @@
 
         // Charge History auto-refresh
         if (typeof startChargeHistoryAutoRefresh === 'function') {
-            startChargeHistoryAutoRefresh('chargeSessionList', 'chargeStats', 'today', 2000);
+            startChargeHistoryAutoRefresh('chargeSessionList', 'chargeStats', 'today', 2000, 8);
         }
 
         // ── Locale change: re-render JS-built (dynamic) content ──
@@ -1210,12 +1326,14 @@
         function rerenderDynamic() {
             updateBleButton();
             renderPorts(latestPorts);
-            if (Object.keys(lastSettings).length > 0) {
+            if (settingsRendered) {
                 const sg = document.getElementById('settingsGrid');
                 if (sg) sg.innerHTML = buildSettingsHtml(lastSettings);
             }
             countdownRendered = false;
             renderCountdown(lastSettings);
+            sceneRendered = false;
+            renderScene(lastSettings);
             chargeLimitRendered = false;
             renderChargeLimit();
             const fwEl = document.getElementById('firmwareVersion');

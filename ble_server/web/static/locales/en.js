@@ -46,8 +46,16 @@
 
         // ── Index page ──
         index: {
+            powerShare: 'Port Power Share',
+            shareTotal: 'Total',
+            settingsOpen: 'Options',
+            settingsHint: 'Tap Options to change screen timeout, port protocol and more',
+            firmware: 'FW',
             connectionStatus: 'Connection Status',
             bleControl: 'BLE Control',
+            zoneControl: 'Controls',
+            zoneData: 'Data & Records',
+            activePorts: 'Active Ports',
             powerChart: 'Power Chart',
             portMonitor: 'Port Monitor',
             clickForDetail: '(click for details)',
@@ -243,6 +251,9 @@
             langAutoApplied: 'Now following the system language',
             sessionRecording: 'Charge Session Recording',
             sessionRecordingHint: 'Takes effect immediately, no restart needed; history stops being recorded when off',
+            logLevel: 'Log Level',
+            logLevelHint: 'Takes effect immediately, no restart needed; error is quietest, debug most verbose',
+            logLevelSet: 'Log level set to {{level}}',
             currentStatus: 'Status',
             loaded: 'Config loaded',
             loadFailed: 'Failed to load: {{msg}}',

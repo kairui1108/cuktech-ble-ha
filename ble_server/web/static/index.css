@@ -1,240 +1,1365 @@
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        :root {
-            --bg: #1c1c1c; --card-bg: #252525; --card-border: #3b3b3b;
-            --text: #e1e1e1; --text-dim: #959595;
-            --accent: #03a9f4; --accent-rgb: 3, 169, 244;
-            --success: #389e3d; --success-rgb: 56, 158, 61;
-            --warning: #ffa42b; --warning-rgb: 255, 164, 43;
-            --danger: #db4437; --danger-rgb: 219, 68, 55;
-            --port-c1: #03a9f4; --port-c2: #7c4dff; --port-c3: #389e3d; --port-a: #ffa42b;
-            --border-radius: 8px;
-        }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 16px; }
-        .container { max-width: 900px; margin: 0 auto; }
-        .header { text-align: center; margin-bottom: 20px; padding: 24px 0 16px; }
-        .header h1 { font-size: 22px; font-weight: 600; margin-bottom: 10px; background: linear-gradient(135deg, var(--accent), #7c4dff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .status-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 500; }
-        .status-badge.connected { background: rgba(var(--success-rgb), 0.12); color: var(--success); box-shadow: 0 0 20px rgba(var(--success-rgb), 0.1); }
-        .status-badge.disconnected { background: rgba(var(--danger-rgb), 0.12); color: var(--danger); }
-        .status-badge.connecting { background: rgba(var(--warning-rgb), 0.12); color: var(--warning); }
-        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: pulse 2s infinite; }
-        .status-badge.disconnected .status-dot { animation: none; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-        .quality-tooltip { position: fixed; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 14px; font-size: 11px; color: var(--text); white-space: nowrap; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.3); pointer-events: none; }
-        .quality-bar { height: 4px; border-radius: 2px; background: rgba(255,255,255,0.1); margin-top: 4px; }
-        .quality-bar-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
-        .quality-row { display: flex; justify-content: space-between; align-items: center; margin-top: 3px; }
-        .quality-label { color: var(--text-dim); }
-        .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--border-radius); padding: 20px; margin-bottom: 14px; }
-        .card:hover { border-color: var(--accent); }
-        .card-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-        .card-title::before { content: ''; width: 3px; height: 14px; background: var(--accent); border-radius: 2px; }
-        .time-btn { padding: 4px 8px; border: 1px solid var(--card-border); border-radius: 4px; background: transparent; color: var(--text-dim); font-size: 10px; cursor: pointer; transition: all 0.2s; }
-        .time-btn:hover { border-color: var(--accent); color: var(--accent); }
-        .time-btn.active { background: rgba(var(--accent-rgb), 0.15); border-color: var(--accent); color: var(--accent); }
-        .btn-group { display: flex; gap: 10px; }
-        .btn { flex: 1; padding: 12px 16px; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
-        .btn:active { transform: scale(0.96); }
-        .btn-primary { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); border: 1px solid rgba(var(--accent-rgb), 0.3); }
-        .btn-primary:hover { background: rgba(var(--accent-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.2); }
-        .btn-danger { background: rgba(var(--danger-rgb), 0.15); color: var(--danger); border: 1px solid rgba(var(--danger-rgb), 0.3); }
-        .btn-danger:hover { background: rgba(var(--danger-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--danger-rgb), 0.2); }
-        .btn-secondary { background: rgba(255, 255, 255, 0.06); color: var(--text); border: 1px solid var(--card-border); }
-        .btn-secondary:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--accent); }
-        .btn-toggle { position: relative; overflow: hidden; }
-        .btn-toggle .btn-on, .btn-toggle .btn-off { transition: opacity 0.2s; }
-        .btn-toggle.is-on .btn-on { display: inline; }
-        .btn-toggle.is-on .btn-off { display: none; }
-        .btn-toggle:not(.is-on) .btn-on { display: none; }
-        .btn-toggle:not(.is-on) .btn-off { display: inline; }
-        .power-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-        .power-item { text-align: center; padding: 16px 8px; background: rgba(255, 255, 255, 0.03); border-radius: 12px; }
-        .power-value { font-size: 28px; font-weight: 700; color: var(--accent); line-height: 1; }
-        .power-value.success { color: var(--success); }
-        .power-value.warning { color: var(--warning); }
-        .power-label { font-size: 11px; color: var(--text-dim); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
-        .charger-layout { display: grid; grid-template-columns: 180px 1fr; gap: 20px; align-items: end; }
-        .charger-image { display: flex; align-items: center; justify-content: center; min-width: 0; position: relative; }
-        /* ── Device Container (animated charger image) ── */
-        .device-wrap { width: 160px; max-width: 100%; margin: 0 auto; position: relative; }
-        .device-wrap-inner { position: relative; width: 100%; overflow: hidden; }
-.device-wrap-inner.idle { display: none; }
-        .unconnected-img { width: 100%; display: none; margin: 0 auto; object-fit: contain; }
-        .unconnected-img.show { display: block; }
-        .device-charger { position: relative; width: 160px; margin: 0 auto; display: block; }
-        .device-charger.charging { animation: deviceFloat 3s ease-in-out infinite; }
-        @keyframes deviceFloat {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-2px); }
-        }
-        .device-img { width: 100%; display: block; }
-        .dark-glow-ani {
-            position: absolute; width: 80%; height: 60%; left: 10%; top: 5%;
-            border-radius: 50%; opacity: 0; transition: opacity 0.8s ease;
-            pointer-events: none; z-index: 0;
-            background: radial-gradient(ellipse, rgba(70,180,255,0.18) 0%, rgba(70,180,255,0.04) 50%, transparent 70%);
-        }
-        .dark-glow-ani.active { opacity: 1; }
-        .scene-badge-ani { display: none; }
-        .scene-badge-ani.show { display: flex; position: absolute; top: -5px; left: 50%; transform: translateX(-50%); z-index: 5; align-items: center; gap: 3px; white-space: nowrap; }
-        .scene-badge-ani img { width: 14px; height: 14px; }
-        .scene-badge-ani span { font-size: 10px; color: #FFF; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
-        /* USB Overlay */
-        .usb-overlay-ani { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; }
-        .usb-mod-ani { position: absolute; left: 0; right: 0; height: 14%; display: none; }
-		.usb-mod-ani.active { display: block; }
-        .usb-picon { position: absolute; width: 10%; height: 12px; left: 73%; z-index: 4; }
-        .usb-picon img { width: 100%; height: 100%; object-fit: contain; }
-        .usb-pbg { position: absolute; left: 43%; z-index: 3; }
-        .usb-pbg img { height: 100%; object-fit: contain; }
-        .usb-pval { position: absolute; z-index: 4; color: #64B5F6; font-size: 8px; font-weight: bold; text-align: center; left: 80%; width: 20%; }
-        .charger-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-width: 0; overflow: hidden; }
-        .control-box { background: rgba(255, 255, 255, 0.03); border-radius: 10px; padding: 12px; min-width: 0; overflow: hidden; }
-        .control-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-        .port-count { font-size: 14px; font-weight: 600; color: var(--success); }
-        .port-count-label { font-size: 11px; color: var(--text-dim); }
-        .stat-box { text-align: center; padding: 12px 8px; background: rgba(255, 255, 255, 0.03); border-radius: 10px; min-width: 0; }
-        .stat-value { font-size: 22px; font-weight: 700; color: var(--accent); line-height: 1; }
-        .stat-value.success { color: var(--success); }
-        .stat-value.warning { color: var(--warning); }
-        .stat-label { font-size: 10px; color: var(--text-dim); margin-top: 4px; text-transform: uppercase; }
-        .chart-container { position: relative; height: 200px; margin-top: 8px; }
-        .port-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; overflow: hidden; }
-        .port-card { background: rgba(255, 255, 255, 0.03); border-radius: 12px; padding: 16px; border: 1px solid transparent; transition: all 0.3s; cursor: pointer; min-width: 0; overflow: hidden; }
-        .port-card:hover { border-color: rgba(var(--accent-rgb), 0.3); }
-        .port-card.active { border-color: rgba(var(--accent-rgb), 0.3); background: rgba(var(--accent-rgb), 0.05); }
-        .port-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-        .port-name { font-size: 15px; font-weight: 700; }
-        .port-name.c1 { color: var(--port-c1); }
-        .port-name.c2 { color: var(--port-c2); }
-        .port-name.c3 { color: var(--port-c3); }
-        .port-name.a { color: var(--port-a); }
-        .port-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-        .port-stat { text-align: center; }
-        .port-stat-value { font-size: 16px; font-weight: 600; }
-        .port-stat-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
-        .port-toggle { position: relative; width: 44px; height: 24px; }
-        .port-toggle input { opacity: 0; width: 0; height: 0; }
-        .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255, 255, 255, 0.1); border-radius: 24px; transition: 0.3s; }
-        .toggle-slider:before { content: ""; position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.3s; }
-        .port-toggle input:checked + .toggle-slider { background: var(--accent); box-shadow: 0 0 12px rgba(var(--accent-rgb), 0.4); }
-        .port-toggle input:checked + .toggle-slider:before { transform: translateX(20px); }
-        .settings-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; overflow: hidden; }
-        .setting-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: rgba(255, 255, 255, 0.03); border-radius: 10px; min-width: 0; overflow: hidden; }
-        .setting-label { font-size: 13px; color: var(--text-dim); }
-        .setting-select { padding: 6px 10px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 12px; min-width: 100px; max-width: 120px; cursor: pointer; }
-        .setting-select:focus { outline: none; border-color: var(--accent); }
-        .footer { text-align: center; padding: 20px 0; font-size: 11px; color: var(--text-dim); display: flex; align-items: center; justify-content: center; }
-        .theme-switcher { position: relative; display: inline-block; }
-        .theme-btn { background: rgba(255, 255, 255, 0.06); border: 1px solid var(--card-border); border-radius: 6px; padding: 4px 10px; color: var(--text-dim); font-size: 11px; cursor: pointer; transition: all 0.2s; }
-        .theme-btn:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--accent); }
-        .theme-menu { display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 8px; margin-bottom: 8px; min-width: 140px; z-index: 10; }
-        .theme-menu.show { display: block; }
-        .theme-option { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); transition: background 0.2s; }
-        .theme-option:hover { background: rgba(255, 255, 255, 0.08); }
-        .theme-option.active { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); }
-        .theme-dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.2); }
-        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.7); z-index: 100; justify-content: center; align-items: center; padding: 20px; }
-        .modal-overlay.show { display: flex; }
-        .modal { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--border-radius); padding: 24px; width: 100%; max-width: 700px; max-height: 90vh; overflow-y: auto; }
-        .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
-        .modal-title { font-size: 18px; font-weight: 600; }
-        .modal-close { width: 32px; height: 32px; border: none; border-radius: 50%; background: rgba(255, 255, 255, 0.1); color: var(--text); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-        .modal-close:hover { background: rgba(255, 255, 255, 0.2); }
-        .modal-chart-container { position: relative; height: 250px; margin-bottom: 20px; }
-        .modal-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-        .modal-protocols { margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.06); }
-        .proto-title { font-size: 13px; color: var(--text-dim); margin-bottom: 10px; }
-        .proto-btns { display: flex; gap: 6px; flex-wrap: wrap; }
-        .proto-btn { padding: 5px 12px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.08); background: none; color: var(--text-dim); font-size: 11px; cursor: pointer; transition: all 0.2s; }
-        .proto-btn.on { background: rgba(70,180,255,0.15); border-color: rgba(70,180,255,0.4); color: #64B5F6; }
-        .proto-btn:active { transform: scale(0.96); }
-        .proto-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-        .countdown-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; overflow: hidden; }
-        .countdown-item { background: rgba(255, 255, 255, 0.03); border-radius: 12px; padding: 16px; min-width: 0; overflow: hidden; }
-        .countdown-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-        .countdown-port { font-size: 14px; font-weight: 600; }
-        .countdown-port.c1 { color: var(--port-c1); }
-        .countdown-port.c2 { color: var(--port-c2); }
-        .countdown-port.c3 { color: var(--port-c3); }
-        .countdown-port.a { color: var(--port-a); }
-        .countdown-current { font-size: 12px; color: var(--text-dim); }
-        .countdown-input-group { display: flex; gap: 8px; margin-bottom: 10px; justify-content: center; }
-        .countdown-input { padding: 8px 12px; border: 1px solid var(--card-border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 14px; text-align: center; width: 100px; }
-        .countdown-input:focus { outline: none; border-color: var(--accent); }
-        .countdown-unit { padding: 8px 12px; border: 1px solid var(--card-border); border-radius: 8px; background: rgba(255, 255, 255, 0.03); color: var(--text-dim); font-size: 12px; display: flex; align-items: center; }
-        .countdown-quick { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
-        .countdown-quick-btn { padding: 6px 10px; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; background: rgba(255, 255, 255, 0.08); color: var(--text); font-size: 11px; cursor: pointer; transition: all 0.2s; }
-        .countdown-quick-btn:hover { background: rgba(var(--accent-rgb), 0.2); border-color: var(--accent); color: var(--accent); }
-        .countdown-actions { display: flex; gap: 8px; margin-top: 10px; }
-        .countdown-toggle-btn { flex: 1; padding: 8px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
-        .countdown-toggle-btn.set { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); border: 1px solid rgba(var(--accent-rgb), 0.2); }
-        .countdown-toggle-btn.set:hover { background: rgba(var(--accent-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--accent-rgb), 0.2); }
-        .countdown-toggle-btn.clear { background: rgba(var(--danger-rgb), 0.12); color: var(--danger); border: 1px solid rgba(var(--danger-rgb), 0.3); }
-        .countdown-toggle-btn.clear:hover { background: rgba(var(--danger-rgb), 0.25); box-shadow: 0 2px 12px rgba(var(--danger-rgb), 0.15); }
-        /* ── Charge limit card ── */
-        .charge-limit-hint { font-size: 11px; color: var(--text-dim); margin: -8px 0 14px; }
-        .charge-limit-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; overflow: hidden; }
-        .charge-limit-item { background: rgba(255, 255, 255, 0.03); border-radius: 12px; padding: 16px; min-width: 0; overflow: hidden; }
-        .charge-limit-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-        .charge-limit-status { font-size: 12px; color: var(--text-dim); }
-        .charge-limit-bar { height: 4px; border-radius: 2px; background: rgba(128, 128, 128, 0.2); overflow: hidden; margin-bottom: 6px; }
-        .charge-limit-bar-fill { height: 100%; width: 0; border-radius: 2px; transition: width 0.4s ease; }
-        .charge-limit-progress { font-size: 11px; color: var(--text-dim); text-align: center; height: 14px; margin-bottom: 8px; }
-        .charge-limit-mode { padding: 8px 10px; border: 1px solid var(--card-border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 12px; }
-        .charge-limit-mode:focus { outline: none; border-color: var(--accent); }
-        @media (max-width: 600px) {
-            .charger-layout { grid-template-columns: 1fr; align-items: start; }
-            .charger-image { justify-content: flex-start; transform: translateX(-12px); }
-            .device-wrap { max-width: 200px; }
-            .device-wrap-inner { height: auto; overflow: visible; }
-            .device-charger { width: 200px; height: auto; }
-            .charger-controls { grid-template-columns: 1fr; }
-            .port-grid, .settings-grid, .countdown-grid, .charge-limit-grid { grid-template-columns: 1fr; }
-        }
+/*!
+ * index.css — CUKTECH BLE 控制台（桌面仪表盘 / 移动端单列）视觉系统
+ *
+ * 质感取自 phone.html（米家官方配色与材质），逐条对齐：
+ *   · 卡面 = 纯黑 #000，页面底 = #121215，卡片靠 1px 薄荷描边 rgba(137,246,243,.5) 界定；
+ *     暗色主题**不加投影**——层次全部由 #000 / #121215 的色差 + 描边建立（加投影反而糊）。
+ *   · 内层控件卡 = 与卡面反相一档（暗色用 --bg #121215），描边减半柔化，圆角 14px。
+ *   · 文字层级 = "数据亮、标签暗"：数值走 --text(90% 白)，标题/单位走 --text-sub/--text-dim。
+ *   · 端口身份只靠 10px 彩色圆点承载，文字一律白/灰；亮端口色只作填充与进度，不作小字。
+ *   · 交互件：开关 #34C759（iOS 绿）；主/危险按钮 = 淡染底 + 同色描边 + 白字（米家"断开设备"）；
+ *     快捷值 chip = flex:1 等宽、单行不换行（换行会把卡片撑高，phone 那边已踩过）。
+ *   · 浅色主题：白卡 + rgba(0,0,0,.1) 描边 + 两层轻投影（白叠白只能靠描边和投影立层级）；
+ *     亮端口色不换，进度槽压深到 rgba(0,0,0,.75)，图形靠中性深描边撑轮廓。
+ *
+ * 版式（桌面 ≠ 放大的手机）：≥1024px 起用「主列 + 控制侧列」两栏。
+ *   主列：设备状态 → 端口监控（2×2）→ 功率曲线 → 充电量限额（2×2）
+ *   侧列：倒计时（4 项纵排）→ 充电记录 → 设备设置
+ * 每张卡的内容宽度都按自身内容的自然宽度分配，避免出现大片空白。
+ *
+ * 少量 Apple HIG 的补充（brief 要求）：毛玻璃只用在"内容会从下面滚过去"的地方
+ * （吸顶栏 / 下拉菜单 / 弹窗 / 提示条），静态卡片保持米家的实底；动效统一 150–300ms。
+ *
+ * !!! JS 依赖的变量名不可重命名：--text --text-dim --accent --success --warning
+ *     --danger --card-bg --card-border --port-c1/c2/c3/a（app.js / charge_history.js /
+ *     chart-config.js 都用 getComputedStyle 读它们给 canvas 上色）。
+ */
 
-/* ── Charge History ── */
-.mini-stat {
-    text-align: center;
-    padding: 12px 8px;
-    background: var(--card-bg, rgba(255,255,255,0.03));
-    border-radius: 10px;
+/* ══════════════════════════════════════════════════════════════
+   1. 令牌 —— 取值与 phone.css 的 :root / body.light 同源
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+    /* 米家端口色（与 phone.js PORT_COLORS / phone.css --limit-* 同一批值） */
+    --port-c1: #FF7A00;
+    --port-c2: #46B4FF;
+    --port-c3: #89D8F3;
+    --port-a: #FFD24B;
+
+    --bg: #121215;
+    --card-bg: #000;
+    --card-border: rgba(137, 246, 243, 0.5);
+
+    --text: rgba(255, 255, 255, 0.9);
+    --text-sub: rgba(255, 255, 255, 0.6);
+    --text-dim: rgba(255, 255, 255, 0.4);
+
+    /* 薄荷是米家的"品牌墨色"（卡面描边就是它的 50% 透明版），
+       此处取实色，供小字/图标/聚焦环使用：黑底上 12:1 以上。 */
+    --accent: #89F6F3;
+    --accent-rgb: 137, 246, 243;
+    --success: #34C759;
+    --success-rgb: 52, 199, 89;
+    --warning: #FFD24B;
+    --warning-rgb: 255, 210, 75;
+    --danger: #FF6B60;
+    --danger-rgb: 255, 107, 96;
+
+    /* 派生材质 */
+    --card-inset-bg: var(--bg);
+    --card-inset-border: rgba(137, 246, 243, 0.22);
+    --card-inset-shadow: none;
+    --chip-bg: rgba(128, 128, 128, 0.12);
+    --hover-bg: rgba(255, 255, 255, 0.06);
+    --divider: rgba(255, 255, 255, 0.08);
+    --track: rgba(128, 128, 128, 0.2);
+    --chart-grid: rgba(255, 255, 255, 0.05);
+    --dot-off: #666;
+    --pval-color: #FFF;
+    --total-line: rgba(255, 255, 255, 0.55);
+    /* 淡染底上的文字：暗色主题用白；浅色主题的淡染底几乎是白，必须换深墨 */
+    --on-accent: #fff;
+    --on-danger: #fff;
+    --deck-dot-edge: rgba(137, 246, 243, 0.5);
+    --deck-dot-fill: rgba(137, 246, 243, 0.45);
+    --shadow-card: none;
+    --shadow-pop: 0 12px 40px rgba(0, 0, 0, 0.6);
+
+    --r-card: 14px;
+    --r-hero: 20px;
+    --r-inset: 14px;
+    --r-ctl: 10px;
+    --r-chip: 8px;
+    --r-pill: 999px;
+
+    --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+    --dur-fast: 150ms;
+    --dur: 220ms;
+    --dur-slow: 300ms;
+
+    --font: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'MiSans', 'Noto Sans SC',
+            'HarmonyOS Sans SC', 'Microsoft YaHei', 'Droid Sans Fallback', Roboto,
+            'Helvetica Neue', Arial, sans-serif;
+
+    color-scheme: dark;
 }
-.mini-stat-value {
-    font-size: 20px;
-    font-weight: 700;
+
+/* 浅色：与 phone.css body.light 同源 */
+html[data-appearance="light"] {
+    --bg: #f0f0f5;
+    --card-bg: #fff;
+    --card-border: rgba(0, 0, 0, 0.1);
+
+    --text: #1a1a1a;
+    --text-sub: #666;
+    --text-dim: #888;
+
+    --accent: #0d7c8a;
+    --accent-rgb: 13, 124, 138;
+    --success: #12883c;
+    --success-rgb: 18, 136, 60;
+    --warning: #b26a00;
+    --warning-rgb: 178, 106, 0;
+    --danger: #d02b1e;
+    --danger-rgb: 208, 43, 30;
+
+    --card-inset-bg: #fff;
+    --card-inset-border: rgba(0, 0, 0, 0.12);
+    --card-inset-shadow: 0 1px 2px rgba(16, 24, 40, 0.08), 0 2px 8px rgba(16, 24, 40, 0.1);
+    --hover-bg: rgba(0, 0, 0, 0.04);
+    --divider: rgba(0, 0, 0, 0.07);
+    --track: rgba(0, 0, 0, 0.10);
+    --chart-grid: rgba(0, 0, 0, 0.06);
+    --dot-off: #b0b0b6;
+    --pval-color: #000;
+    --total-line: #6b7280;
+    --on-accent: var(--accent);
+    --on-danger: var(--danger);
+    --deck-dot-edge: #7A7A7A;
+    --deck-dot-fill: rgba(0, 0, 0, 0.32);
+    --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 16px rgba(16, 24, 40, 0.05);
+    --shadow-pop: 0 12px 40px rgba(16, 24, 40, 0.18);
+
+    color-scheme: light;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   2. 基础层
+   ══════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+    font-family: var(--font);
+    font-size: 15px;
+    line-height: 1.5;
+    background: var(--bg);
     color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
-.mini-stat-label {
+
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: inherit; text-decoration: none; }
+.sprite { display: none; }
+
+.ic {
+    width: 16px; height: 16px; flex: none; display: block;
+    fill: none; stroke: currentColor; stroke-width: 1.7;
+    stroke-linecap: round; stroke-linejoin: round;
+}
+.ic-sm { width: 12px; height: 12px; stroke-width: 2; opacity: 0.7; }
+#i-github { stroke: none; }
+
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--r-chip);
+}
+
+/* 实时数值用等宽数位，刷新时不左右跳 */
+.metric-value, .port-stat-value, .power-value, .mini-stat-value, .sd-value,
+.usb-pval, .charge-limit-progress, .countdown-current, .charge-limit-status {
+    font-variant-numeric: tabular-nums;
+}
+
+* { scrollbar-width: thin; scrollbar-color: rgba(128, 128, 128, 0.35) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.35); border-radius: var(--r-pill); }
+
+/* ══════════════════════════════════════════════════════════════
+   3. 页头 / 页脚 / 页面版式
+   ══════════════════════════════════════════════════════════════ */
+
+.wrap { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+
+.topbar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--bg);
+    border-bottom: 1px solid transparent;
+    transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+/* 滚动后补一条发丝线，并让底下的内容透出一点（毛玻璃只在"内容从下面过"时才有意义） */
+.topbar.is-scrolled {
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(20px) saturate(180%);
+    border-bottom-color: var(--divider);
+}
+.topbar-inner {
+    min-height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding-top: 6px;
+    padding-bottom: 6px;
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand-logo { height: 18px; width: auto; display: block; }
+html[data-appearance="light"] .brand-logo { filter: invert(1); }
+.brand-name { font-size: 13px; color: var(--text-dim); white-space: nowrap; }
+.topbar-tools { display: flex; align-items: center; gap: 8px; order: 2; margin-left: 0; }
+
+/* 连接状态 + BLE 操作（原来在设备卡里）：整机级操作，挪到吸顶栏，滚动时也一直可见 */
+.topbar-status { display: flex; align-items: center; gap: 16px; order: 1; margin-left: auto; min-width: 0; }
+.topbar-status .btn-group { gap: 10px; }
+.topbar-status .status-badge { height: 28px; padding: 0 8px; font-size: 13px; }
+.topbar-status .btn-group { gap: 8px; }
+.topbar-status .btn {
+    height: 29px;
+    padding: 0 14px;
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    border-radius: var(--r-pill);          /* 胶囊：与状态圆点视觉成组 */
+}
+/* 两种状态共用同一描边强度：切换时只有底色在变，位置和大小完全稳定 */
+.topbar-status .btn-primary { background: rgba(var(--accent-rgb), 0.10); border-color: rgba(var(--accent-rgb), 0.45); color: var(--accent); }
+.topbar-status .btn-primary:hover { background: rgba(var(--accent-rgb), 0.20); }
+.topbar-status .btn-danger { background: rgba(var(--danger-rgb), 0.10); border-color: rgba(var(--danger-rgb), 0.45); color: var(--danger); }
+.topbar-status .btn-danger:hover { background: rgba(var(--danger-rgb), 0.20); }
+
+/* 固件：米家导航栏是"裸文字"，不做胶囊底 */
+.fw-chip {
     font-size: 12px;
     color: var(--text-dim);
-    margin-top: 4px;
+    white-space: nowrap;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-select {
-    background: var(--card-bg, transparent);
+
+.tool-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 10px;
+    border: none;
+    border-radius: var(--r-chip);
+    background: var(--hover-bg);
+    color: var(--text-sub);
+    font-size: 12.5px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+a.tool-btn { text-decoration: none; }
+a.tool-btn:visited { color: var(--text-sub); }
+a.tool-btn:hover { color: var(--text); }
+.tool-sep { width: 1px; height: 16px; background: var(--divider); flex: none; }
+.tool-btn:hover { background: rgba(128, 128, 128, 0.2); color: var(--text); }
+.tool-btn:active { transform: scale(0.97); }
+
+/* 下拉菜单：这一层确实浮在内容上，用毛玻璃 */
+.theme-switcher { position: relative; display: inline-block; }
+.theme-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 60;
+    min-width: 164px;
+    padding: 6px;
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--card-border);
+    border-radius: var(--r-inset);
+    box-shadow: var(--shadow-pop);
+}
+.theme-menu.show { display: block; animation: menuIn var(--dur) var(--ease) both; }
+@keyframes menuIn {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: none; }
+}
+.theme-option {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 10px;
+    border-radius: var(--r-chip);
+    font-size: 13px;
+    color: var(--text-sub);
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.theme-option:hover { background: var(--hover-bg); color: var(--text); }
+.theme-option.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.theme-dot { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 1px solid var(--divider); }
+
+.page { padding-top: 16px; padding-bottom: 8px; }
+
+/* 顶部一行：设备面板 + 端口监控。窄屏纵向堆叠（沿用原来的两栏 hero），
+   宽屏并排成"左边一台机器、右边四个口"，首屏一眼看全。 */
+/* ── 顶部主卡：左＝设备面板 + 总览数值，右＝四个端口 ──
+   两块内容合成一张卡，读起来是"一台机器 + 它的四个口"一个整体。 */
+.card-top { border-radius: var(--r-hero); padding: 20px 22px; }
+.top-main {
+    display: grid;
+    grid-template-columns: 320px minmax(0, 1fr);
+    gap: 22px;
+    align-items: stretch;
+}
+.device-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.ports-col { display: flex; flex-direction: column; min-width: 0; }
+
+/* 版式：手机 = 单列；桌面 = 主列 + 控制侧列 */
+.page-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+.col-main,
+.col-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+/* 两列都被栅格拉伸到等高。多出来的高度给主列的历史记录卡：
+   图表卡拉高会显得空洞（已试过，弃用），而记录卡里多出来的空间正好让
+   记录列表多显示几条（本页每页 6 条），是有用的内容。 */
+/* 主列不再被拉伸：图表卡保持固定高度，历史卡按内容自然收尾。
+   （试过的两种拉伸——图表卡拉高 / 最后一张卡拉高——都会在卡片内部
+     留下一大片空白，观感很差。） */
+
+.footer { margin-top: 4px; }
+.footer-inner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 16px 20px 24px;
+}
+.footer-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 32px;
+    padding: 0 12px;
+    border-radius: var(--r-chip);
+    font-size: 12.5px;
     color: var(--text-dim);
-    border-color: var(--card-border, rgba(255,255,255,0.15));
+    transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
-select option {
-    background: var(--card-bg, #252525);
+.footer-link:hover { color: var(--text); background: var(--hover-bg); }
+
+/* ══════════════════════════════════════════════════════════════
+   4. 卡片（米家卡面：纯黑 + 薄荷发丝描边，暗色无投影）
+   ══════════════════════════════════════════════════════════════ */
+
+.card {
+    position: relative;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--r-card);
+    padding: 18px 20px 20px;
+    box-shadow: var(--shadow-card);
+}
+
+.card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+    font-size: 16px;
+    font-weight: 400;
+    color: var(--text-sub);
+}
+.card-hint { font-size: 12px; color: var(--text-dim); }
+.card-note { margin: -8px 0 16px; font-size: 12px; line-height: 1.55; color: var(--text-dim); }
+.card-title .segmented,
+.card-title .mini-select { margin-left: auto; }
+
+/* ── 按钮：淡染底 + 同色描边 + 白字（米家 .charge-limit-set / 断开设备 的做法） ── */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 42px;
+    padding: 0 20px;
+    border-radius: var(--r-ctl);
+    border: 1px solid transparent;
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                transform var(--dur-fast) var(--ease);
+}
+.btn:active { transform: scale(0.98); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+/* 按钮按内容取宽，不做满槽拉伸（满宽按钮在桌面上会显得笨重） */
+.btn-group { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn-group .btn { flex: 0 1 auto; }
+
+.btn-primary {
+    color: var(--on-accent);
+    background: rgba(var(--accent-rgb), 0.16);
+    border-color: rgba(var(--accent-rgb), 0.36);
+}
+.btn-primary:hover { background: rgba(var(--accent-rgb), 0.26); }
+
+.btn-danger {
+    color: var(--on-danger);
+    background: rgba(var(--danger-rgb), 0.16);
+    border-color: rgba(var(--danger-rgb), 0.36);
+}
+.btn-danger:hover { background: rgba(var(--danger-rgb), 0.26); }
+
+.btn-secondary {
+    color: var(--text);
+    background: var(--chip-bg);
+    border-color: var(--card-border);
+}
+.btn-secondary:hover { background: rgba(128, 128, 128, 0.2); }
+
+.btn-quiet {
+    height: 38px;
+    padding: 0 20px;
+    color: var(--text-sub);
+    background: var(--chip-bg);
+    border-color: var(--card-border);
+    font-size: 13px;
+}
+.btn-quiet:hover { color: var(--text); }
+
+/* ── 分段控件 ── */
+.segmented {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px;
+    border-radius: var(--r-ctl);
+    background: var(--chip-bg);
+    border: 1px solid var(--card-border);
+}
+.time-btn {
+    height: 26px;
+    padding: 0 10px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.time-btn:hover { color: var(--text); }
+.time-btn.active { background: rgba(128, 128, 128, 0.3); color: var(--text); }
+.modal-toolbar { display: flex; justify-content: flex-end; margin: 12px 0; }
+.modal-toolbar .time-btn {
+    height: 30px;
+    padding: 0 12px;
+    border-radius: var(--r-chip);
+    background: var(--chip-bg);
+    border: 1px solid var(--card-border);
+}
+.modal-toolbar .time-btn.active {
+    background: rgba(var(--accent-rgb), 0.18);
+    border-color: rgba(var(--accent-rgb), 0.4);
+    color: var(--text);
+}
+
+/* ── 下拉 ── */
+select, .mini-select {
+    height: 32px;
+    padding: 0 26px 0 10px;
+    border-radius: var(--r-chip);
+    border: 1px solid var(--card-border);
+    background-color: var(--card-bg);
+    color: var(--text-dim);
+    font-size: 12.5px;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                      linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: right 12px center, right 7px center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+select:hover { color: var(--text); }
+select:focus { outline: none; border-color: var(--accent); }
+select option { background: var(--bg); color: var(--text); }
+
+/* ── 连接状态：米家式"彩色圆点 + 亮文字"，不做彩色胶囊底 ── */
+.status-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 30px;
+    padding: 0 10px;
+    border-radius: var(--r-chip);
+    font-size: 14px;
+    color: var(--text);
+    cursor: default;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.status-badge:hover { background: var(--hover-bg); }
+.status-dot {
+    width: 9px; height: 9px; flex: none;
+    border-radius: 50%;
+    background: var(--dot-off);
+    transition: background var(--dur) var(--ease);
+}
+.status-badge.disconnected { color: var(--text-sub); }
+.status-badge.connected .status-dot { background: var(--success); animation: dotPulse 2.4s ease-in-out infinite; }
+.status-badge.connecting .status-dot { background: var(--warning); animation: dotPulse 1.2s ease-in-out infinite; }
+@keyframes dotPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* 悬浮质量详情（JS 用 fixed + left/top 定位，样式必须保持 fixed） */
+.quality-tooltip {
+    position: fixed;
+    z-index: 1000;
+    min-width: 188px;
+    padding: 11px 13px;
+    border-radius: var(--r-inset);
+    background: color-mix(in srgb, var(--bg) 94%, transparent);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--shadow-pop);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: nowrap;
+    pointer-events: none;
+    animation: menuIn var(--dur-fast) var(--ease) both;
+}
+.quality-bar { height: 4px; margin-top: 5px; border-radius: 2px; background: var(--track); overflow: hidden; }
+.quality-bar-fill { height: 100%; border-radius: 2px; transition: width var(--dur-slow) var(--ease); }
+.quality-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 4px; }
+.quality-label { color: var(--text-dim); }
+
+/* ══════════════════════════════════════════════════════════════
+   5. 设备状态（hero）
+   ══════════════════════════════════════════════════════════════ */
+
+
+
+/* ── 设备展示区：整块从 phone.html 移植 ──
+   舞台保持手机端的原始尺寸 360×481，整块用 transform 缩放，所以
+   "设备图 / 场景徽标 / 功率光条" 之间的相对位置与手机端逐像素一致——
+   这两张素材是照着 360px 宽的设备图对位的，自己另算百分比一定对不齐。
+   --device-scale 只负责把整块缩到桌面栏宽。 */
+.device-stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1 1 auto;              /* 与右侧端口卡整体等高 */
+    padding: 24px 12px 12px;
+    border: 1px solid var(--card-inset-border);
+    border-radius: var(--r-inset);
+    background: var(--device-stage-bg, var(--card-inset-bg));
+    overflow: hidden;
+    --device-scale: 0.75;
+}
+/* 外框只按"有内容的那一段"折算：图片在容器内 -51.5px 处、高 328px */
+.device-frame {
+    position: relative;
+    width: calc(360px * var(--device-scale));
+    height: calc(328px * var(--device-scale));
+}
+.device-box {
+    position: absolute;
+    left: 0;
+    top: calc(51.5px * var(--device-scale));
+    width: 360px;
+    height: 481px;
+    transform: scale(var(--device-scale));
+    transform-origin: top left;
+}
+
+/* 以下数值与 phone.css 一一对应，未作改动 */
+.dark-glow-ani {
+    position: absolute;
+    width: 260px;
+    height: 260px;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    opacity: 0;
+    transition: opacity 0.6s ease;
+    z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(circle,
+        rgba(70, 180, 255, 0.15) 0%,
+        rgba(70, 180, 255, 0.05) 40%,
+        transparent 70%);
+}
+.dark-glow-ani.active { opacity: 1; }
+.unconnected-img {
+    width: 360px;
+    height: 307px;
+    object-fit: contain;
+    margin: 0 auto;
+    display: none;
+    z-index: 2;
+    position: relative;
+}
+.unconnected-img.show { display: block; }
+.device-wrap-inner {
+    position: relative;
+    width: 360px;
+    height: 481px;
+    margin: 0 auto;
+    display: none;
+    z-index: 1;
+    overflow: visible;
+}
+.device-wrap-inner:not(.idle) { display: block; }
+.device-wrap-inner.charging { animation: deviceFloat 3s ease-in-out infinite; }
+.device-img {
+    width: 360px;
+    height: 481px;
+    object-fit: contain;
+    position: absolute;
+    top: -128px;
+    left: 0;
+    z-index: 0;
+}
+@keyframes deviceFloat {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+}
+
+.scene-badge-ani {
+    position: absolute;
+    top: -40px;
+    left: 50%;
+    transform: translateX(-50%);
+    height: 30px;
+    z-index: 5;
+    display: none;
+    align-items: center;
+    justify-content: center;
+}
+.scene-badge-ani.show { display: flex; }
+.scene-badge-ani img { width: 20px; height: 20px; margin-right: 4px; }
+.scene-badge-ani span { font-size: 12px; color: var(--pval-color); }
+
+/* 端口功率浮层：容器从设备图左侧 134.5px 处起算，模块按 px 定位 */
+.usb-overlay-ani { position: relative; width: 360px; margin-left: 134.5px; z-index: 3; pointer-events: none; }
+.usb-mod-ani { position: absolute; left: 0; width: 360px; display: none; }
+.usb-mod-ani.active { display: block; }
+.usb-pbg { position: absolute; z-index: 3; }
+.usb-pbg img { width: 100%; height: 100%; object-fit: fill; }
+.usb-pval {
+    position: absolute;
+    z-index: 4;
+    color: var(--pval-color);
+    font-size: 17px;
+    font-weight: bold;
+    text-align: center;
+    width: 70px;
+}
+
+/* ── 当前总功率 + 功率占比条（phone.html rate-card 的桌面移植）──
+   右栏顶部的小卡：左边数字、右边一排细柱（近 30 次采样的总功率，
+   柱高占这段时间峰值的比例），整体压得很矮。 */
+.card-rate {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 16px;
+}
+.rate-left { min-width: 0; }
+.rate-title { font-size: 13px; color: var(--text-dim); }
+.rate-value-row { display: flex; align-items: baseline; gap: 3px; margin-top: 2px; }
+.rate-number {
+    font-size: 30px;
+    font-weight: 500;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+.rate-unit { font-size: 11px; color: var(--text-sub); }
+.rate-label { font-size: 11px; color: var(--text-dim); }
+/* 占比条：phone.css .mini-chart / .mini-bar 同款 */
+.mini-chart {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 46px;
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+}
+.mini-bar {
+    flex: 1 1 auto;
+    min-width: 3px;
+    border-radius: 2px 2px 0 0;
+    background: var(--port-c2);
+    transition: height 0.5s ease, opacity 0.3s ease;
+}
+
+/* ── 端口功率占比：一条堆叠条 + 四色标签行（phone.html 同款）── */
+#powerDist {
+    display: flex;
+    height: 8px;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 2px;
+    background: var(--track);
+}
+html[data-appearance="light"] #powerDist { background: rgba(0, 0, 0, 0.06); }
+/* 占比卡：标题与数值都省掉，卡片只包住条 + 标签行，高度压到最小 */
+.card-share { padding: 12px 14px 10px; }
+#powerDist div { height: 100%; transition: width 0.5s; }
+#powerDistText {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+#powerDistText span { transition: opacity 0.3s ease; }
+
+.chart-legend { display: flex; align-items: center; gap: 14px; margin-left: auto; }
+.chart-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-dim); }
+.chart-legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+.port-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.port-card {
+    padding: 14px 16px;
+    border-radius: var(--r-inset);
+    background: var(--card-inset-bg);
+    border: 1px solid var(--card-inset-border);
+    box-shadow: var(--card-inset-shadow);
+    min-width: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.port-card:hover { border-color: var(--card-border); }
+.port-card:active { background: rgba(128, 128, 128, 0.14); }
+/* 端口开启 = 描边提到卡面级薄荷亮线；关断 = 保持柔描边 + 文字压暗 */
+.port-card.active { border-color: var(--card-border); }
+
+.port-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+/* 端口身份 = 接口图标 + 白字，图标用的是 phone.html 同一批文件
+   （main_card_port_{c1,c2,c3,a}_{on,off}.png；白色线稿，浅色主题反相） */
+.port-name { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; color: var(--text); }
+.port-icon { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 21px; flex: none; }
+.port-icon img { width: 100%; height: 100%; object-fit: contain; display: block; }
+html[data-appearance="light"] .port-icon img { filter: invert(1); }
+.port-card:not(.active) .port-name { color: var(--text-sub); }
+
+.port-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.port-stat { text-align: center; min-width: 0; }
+.port-stat-value { font-size: 18px; font-weight: 500; color: var(--text); line-height: 1.25; }
+.port-stat-label { font-size: 11px; color: var(--text-dim); }
+.port-card:not(.active) .port-stat-value { color: var(--text-sub); }
+
+/* 由 app.js 渲染，内联样式只剩 color，排版交给这里 */
+.port-protocol { margin-top: 12px; font-size: 12px; text-align: center; }
+
+/* ── 开关：与 phone.css .toggle 同规格（51×31 / 绿 #34C759） ── */
+.port-toggle { position: relative; display: inline-block; width: 51px; height: 31px; flex: none; }
+.port-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+    position: absolute;
+    inset: 0;
+    border-radius: 31px;
+    background: rgba(120, 120, 128, 0.32);
+    cursor: pointer;
+    transition: background var(--dur-slow) var(--ease);
+}
+.toggle-slider::before {
+    content: "";
+    position: absolute;
+    width: 27px; height: 27px;
+    top: 2px; left: 2px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: transform var(--dur-slow) var(--ease);
+}
+.port-toggle input:checked + .toggle-slider { background: #34C759; }
+.port-toggle input:checked + .toggle-slider::before { transform: translateX(20px); }
+.port-toggle input:disabled + .toggle-slider { opacity: 0.5; cursor: wait; }
+.port-toggle input:focus-visible + .toggle-slider { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ══════════════════════════════════════════════════════════════
+   7. 充电量限额 / 倒计时 / 设备设置
+   ══════════════════════════════════════════════════════════════ */
+
+/* 限额 / 倒计时：一沓堆叠卡。.deck 由 index.html 的脚本在拿到端口数据后加上；
+   脚本没跑起来时退化成纵向列表，功能不受影响。 */
+.charge-limit-grid,
+.countdown-grid { display: flex; flex-direction: column; gap: 12px; }
+
+/* ── 堆叠卡组（与 phone.html 的限额卡组同一套机制）──
+   --depth 由脚本写入：0 = 栈顶完整可见，越大越靠下、越窄，只露出底边一条。 */
+.deck {
+    display: grid;
+    grid-template-columns: 100%;   /* 显式定宽：卡片 width: calc(100% - …) 要有确定基准 */
+    gap: 0;
+    overflow: hidden;              /* 被翻下去的卡滑出即裁掉，别去掉 */
+    touch-action: pan-y;           /* 纵向留给页面滚动，横向手势自己接管 */
+}
+.deck > * {
+    grid-area: 1 / 1;
+    justify-self: center;
+    width: calc(100% - var(--depth, 0) * var(--deck-narrow, 9px));
+    transform: translateY(calc(var(--depth, 0) * var(--deck-peek, 10px)));
+    transition: transform var(--dur-slow) var(--ease), width var(--dur-slow) var(--ease);
+}
+.deck > .empty-state { grid-area: auto; width: auto; transform: none; }
+.deck > *:not(.is-top) { cursor: pointer; }
+
+/* 翻页指示点，同时兼作状态灯（与 phone.html 的限额点阵同一套编码）：
+   空心 = 该口未设置；实心（端口色）= 已设置；实心警示色 = 限额已触发关断；
+   当前项拉长成胶囊 —— 形状差异不依赖颜色，色盲用户同样能分辨。 */
+.deck-dots { display: flex; justify-content: center; align-items: center; gap: 6px; margin-top: 12px; }
+.deck-dot {
+    width: 24px; height: 24px; padding: 0; border: 0; background: none;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.deck-dot::before {
+    content: "";
+    box-sizing: border-box;
+    width: 10px; height: 10px;
+    border-radius: 5px;
+    border: 2px solid var(--deck-dot-edge);
+    background: transparent;
+    transition: width var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+.deck-dot.c1 { --port-color: var(--port-c1); }
+.deck-dot.c2 { --port-color: var(--port-c2); }
+.deck-dot.c3 { --port-color: var(--port-c3); }
+.deck-dot.a  { --port-color: var(--port-a); }
+.deck-dot:hover::before { background: var(--deck-dot-fill); }
+.deck-dot.is-set::before { background: var(--port-color, var(--accent)); }
+/* 已触发关断要压过"已设置"，所以写在后面（同权重靠源码顺序） */
+.deck-dot.is-fired::before { background: var(--danger); border-color: var(--danger); }
+.deck-dot.is-current::before { width: 22px; }
+
+/* 内层卡：与卡面反相一档 + 柔化描边（米家 .charge-limit-card 的做法）。
+   端口色通过 :has() 落到每个 item 上，chip 的按压反馈才有正确色相；
+   不支持 :has() 的浏览器退化为强调色，功能不受影响。 */
+.charge-limit-item,
+.countdown-item {
+    background: var(--card-inset-bg);
+    border: 1px solid var(--card-inset-border);
+    border-radius: var(--r-inset);
+    padding: 14px 16px;
+    min-width: 0;
+    box-shadow: var(--card-inset-shadow);
+    --port-color: var(--accent);
+    --port-color-rgb: var(--accent-rgb);
+}
+.charge-limit-item:has(.c1), .countdown-item:has(.c1) { --port-color: var(--port-c1); --port-color-rgb: 255, 122, 0; }
+.charge-limit-item:has(.c2), .countdown-item:has(.c2) { --port-color: var(--port-c2); --port-color-rgb: 70, 180, 255; }
+.charge-limit-item:has(.c3), .countdown-item:has(.c3) { --port-color: var(--port-c3); --port-color-rgb: 137, 216, 243; }
+.charge-limit-item:has(.a),  .countdown-item:has(.a)  { --port-color: var(--port-a);  --port-color-rgb: 255, 210, 75; }
+
+.charge-limit-header,
+.countdown-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.charge-limit-header { margin-bottom: 10px; }
+.countdown-header { margin-bottom: 12px; }
+
+.countdown-port { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; color: var(--text); }
+.countdown-port::before {
+    content: "";
+    width: 10px; height: 10px; flex: none;
+    border-radius: 50%;
+    background: var(--port-color);
+    /* 浅色主题靠一圈中性深描边把亮色点的轮廓撑出来（黄/浅蓝在白底只有 1.3～1.6:1） */
+    border: 1px solid var(--port-color);
+}
+html[data-appearance="light"] .countdown-port::before { border-color: #7A7A7A; }
+.charge-limit-status,
+.countdown-current { font-size: 13px; color: var(--text-dim); }
+
+.charge-limit-bar {
+    height: 4px;
+    margin-bottom: 8px;
+    border-radius: 2px;
+    background: var(--track);
+    overflow: hidden;
+}
+.charge-limit-bar-fill { height: 100%; width: 0; border-radius: 2px; transition: width 0.4s ease; }
+html[data-appearance="light"] .charge-limit-bar-fill { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.22); }
+.charge-limit-progress { height: 14px; margin-bottom: 8px; font-size: 11px; color: var(--text-dim); text-align: center; }
+
+.countdown-input-group { display: flex; gap: 8px; justify-content: center; margin-bottom: 8px; }
+.countdown-input,
+.charge-limit-mode {
+    height: 40px;
+    padding: 0 10px;
+    border-radius: var(--r-ctl);
+    border: 1px solid var(--card-border);
+    background: var(--card-bg);
+    color: var(--text);
+    font-size: 14px;
+    text-align: center;
+    min-width: 0;
+    transition: border-color var(--dur-fast) var(--ease);
+}
+.countdown-input { flex: 0 1 auto; width: 150px; max-width: 100%; }
+.countdown-input::placeholder { color: var(--text-dim); }
+.countdown-input:focus,
+.charge-limit-mode:focus { outline: none; border-color: var(--accent); }
+.countdown-input::-webkit-outer-spin-button,
+.countdown-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.countdown-input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+.countdown-unit {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 12px;
+    border-radius: var(--r-ctl);
+    background: var(--chip-bg);
+    border: 1px solid var(--card-border);
+    color: var(--text-dim);
+    font-size: 12px;
+    white-space: nowrap;
+}
+.charge-limit-mode { text-align: left; padding-right: 26px; }
+
+/* 快捷值：等宽 flex:1 + 单行不换行（换行会把卡片撑高，phone 那边已踩过） */
+.countdown-quick { display: flex; gap: 6px; flex-wrap: nowrap; margin-bottom: 10px; }
+.countdown-quick-btn {
+    flex: 1;
+    min-width: 0;
+    /* 不换行、不带左右内边距：一排 6 个（15/30/60/90/120/240 分）在 348px 的
+       侧栏里只剩 ~41px，留了内边距 "120分" 就会被折成两行 */
+    padding: 7px 0;
+    white-space: nowrap;
+    border-radius: var(--r-chip);
+    border: 1px solid var(--card-border);
+    background: var(--chip-bg);
+    color: var(--text);
+    font-size: 11.5px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.countdown-quick-btn:hover { background: rgba(128, 128, 128, 0.22); }
+.countdown-quick-btn:active {
+    border-color: var(--port-color);
+    background: rgba(var(--port-color-rgb), 0.25);
+}
+
+.countdown-actions { display: flex; gap: 8px; }
+.countdown-toggle-btn {
+    flex: 1;
+    padding: 9px;
+    border-radius: var(--r-ctl);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                transform var(--dur-fast) var(--ease);
+}
+.countdown-toggle-btn:active { transform: scale(0.98); }
+.countdown-toggle-btn:disabled { opacity: 0.45; cursor: wait; }
+/* 「设置」走品牌墨色而非端口色：4 张内层卡同屏时，4 种低透明端口色叠在近黑底上
+   会变成棕/橄榄这类脏色（phone 端一次只显示一张卡，所以那边没有这个问题）。 */
+.countdown-toggle-btn.set {
+    color: var(--on-accent);
+    background: rgba(var(--accent-rgb), 0.16);
+    border: 1px solid rgba(var(--accent-rgb), 0.36);
+}
+.countdown-toggle-btn.set:hover { background: rgba(var(--accent-rgb), 0.26); }
+.countdown-toggle-btn.clear {
+    color: var(--on-danger);
+    background: rgba(var(--danger-rgb), 0.16);
+    border: 1px solid rgba(var(--danger-rgb), 0.36);
+}
+.countdown-toggle-btn.clear:hover { background: rgba(var(--danger-rgb), 0.26); }
+
+/* ── 场景模式卡（phone.html 的 .scene-card 同款：一排圆形图标按钮 + 模式说明） ── */
+.scene-sep { width: 1px; height: 14px; background: var(--divider); align-self: center; }
+.scene-current { font-size: 16px; color: var(--text); }
+.scene-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.scene-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+/* 图标占满整格：四格排满后每格约 70px，图标从 56px 提到 ~68px */
+.scene-btn img {
+    width: 100%;
+    max-width: 70px;
+    aspect-ratio: 1;
+    display: block;
+    transition: transform var(--dur) var(--ease);
+}
+.scene-btn:active img { transform: scale(0.94); }
+.scene-label { font-size: 12px; line-height: 1.3; color: var(--text-dim); text-align: center; }
+.scene-btn.active .scene-label { color: var(--text); font-weight: 500; }
+.scene-desc { margin-top: 8px; min-height: 17px; font-size: 12px; line-height: 1.4; color: var(--text-dim); text-align: center; }
+
+/* 设备设置：整列列表 + 发丝分隔线（米家"息屏时间 / USB-A小电流"单行卡的做法） */
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; }
+.setting-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 13px 0;
+    border-bottom: 1px solid var(--divider);
+}
+.setting-item:last-child { border-bottom: none; padding-bottom: 2px; }
+.setting-label { font-size: 14.5px; color: var(--text-sub); }
+.setting-select { min-width: 110px; max-width: 150px; }
+
+/* ══════════════════════════════════════════════════════════════
+   8. 图表 / 充电记录 / 会话详情
+   ══════════════════════════════════════════════════════════════ */
+
+.chart-container { position: relative; height: 300px; }
+.modal-chart-container { position: relative; height: 240px; }
+
+/* 充电记录卡改为纵向 flex：统计条与分页条固定，
+   记录列表吃满剩余高度（超出部分列表内滚动）——
+   卡片高度因此只由右栏决定，不再随活跃会话数量增减 */
+#cardHistory { display: flex; flex-direction: column; }
+
+/* 迷你统计：直接排在卡面上（黑底黑盒＝看不见，等于没有盒子；浅色同理） */
+.charge-stats {
+    flex: none;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px 8px;
+    margin-bottom: 14px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--divider);
+}
+.mini-stat { text-align: center; min-width: 0; }
+.mini-stat-value { font-size: 19px; font-weight: 700; color: var(--text); line-height: 1.3; }
+.mini-stat-label { margin-top: 2px; font-size: 11px; color: var(--text-dim); }
+
+.session-list {
+    display: flex;
+    flex-direction: column;
+    max-height: 460px;             /* 安全上限：记录特别多时列表内滚动 */
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+/* 分页条与记录之间留一条发丝线 */
+.session-list > div:last-child:not(.session-item) {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--hairline);
+}
+/* 会话行由 charge_history.js 内联排版（padding 10px 0 + 一条 rgba 分隔线），
+   观感已与米家一致，这里只补 hover 反馈和圆角。 */
+.session-item {
+    border-radius: var(--r-chip);
+    transition: background var(--dur-fast) var(--ease);
+    -webkit-tap-highlight-color: transparent;
+}
+.session-item:hover { background: var(--hover-bg); }
+
+/* 空状态：一行暗字，不做转圈骨架（米家的空态也只有文字） */
+.empty-state {
+    grid-column: 1 / -1;
+    padding: 26px 16px;
+    text-align: center;
+    font-size: 13px;
     color: var(--text-dim);
 }
 
-/* ── English layout guards ── */
-.footer { flex-wrap: wrap; row-gap: 6px; }
-.time-btn, .theme-btn, .btn { white-space: nowrap; }
-.setting-item { flex-wrap: wrap; row-gap: 6px; }
-html[lang="en"] .control-label,
+/* ── 会话详情：以浮层展开 ──
+   charge_history.js 只切 #sessionDetail 的 style.display，.is-open 由 index.html
+   的脚本同步（浮层的显隐因此完全由 CSS 决定）。
+   为什么不做内联展开：详情比其余卡片高 300px 以上，一展开就把主列顶长、右栏
+   底下空出一大块，整页的底边就不齐了。 */
+.session-detail { display: none !important; }
+.session-detail.is-open {
+    display: flex !important;
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.68);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    animation: fadeIn var(--dur) var(--ease) both;
+}
+html[data-appearance="light"] .session-detail.is-open { background: rgba(28, 36, 52, 0.34); }
+.sd-sheet {
+    width: min(680px, 100%);
+    max-height: 86vh;
+    overflow-y: auto;
+    padding: 22px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--r-hero);
+    box-shadow: var(--shadow-pop);
+    animation: modalIn var(--dur-slow) var(--ease) both;
+}
+.sd-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.sd-title { font-size: 14.5px; color: var(--text); }
+.sd-duration { font-size: 13px; color: var(--text-dim); }
+.sd-accuracy { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12px; color: var(--text-dim); }
+.sd-chart { position: relative; height: 150px; margin-bottom: 16px; }
+.sd-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.sd-metric { text-align: center; min-width: 0; }
+.sd-value { font-size: 17px; font-weight: 700; color: var(--text); }
+.sd-label { margin-top: 2px; font-size: 11px; color: var(--text-dim); }
+.sd-action { display: flex; align-items: center; justify-content: center; }
+
+/* ── 设备设置：入口按钮 + 弹窗 ── */
+.settings-open { margin-left: auto; }
+.settings-open .ic { width: 14px; height: 14px; }
+/* 配置行平时不占右栏高度，点"设置"时才弹出 */
+.settings-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(0, 0, 0, 0.68);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+}
+html[data-appearance="light"] .settings-overlay { background: rgba(28, 36, 52, 0.34); }
+.settings-overlay.is-open { display: flex; animation: fadeIn var(--dur) var(--ease) both; }
+.settings-overlay .modal { max-width: 640px; }
+
+/* ══════════════════════════════════════════════════════════════
+   9. 端口详情弹窗 / 提示条
+   ══════════════════════════════════════════════════════════════ */
+
+.modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(0, 0, 0, 0.68);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+}
+html[data-appearance="light"] .modal-overlay { background: rgba(28, 36, 52, 0.34); }
+.modal-overlay.show { display: flex; animation: fadeIn var(--dur) var(--ease) both; }
+.modal {
+    width: 100%;
+    max-width: 720px;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 22px 22px 24px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--r-hero);
+    box-shadow: var(--shadow-pop);
+    animation: modalIn var(--dur-slow) var(--ease) both;
+}
+@keyframes modalIn {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: none; }
+}
+.modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.modal-title { font-size: 19px; font-weight: 500; color: var(--text); }
+.modal-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px; height: 32px;
+    flex: none;
+    border: none;
+    border-radius: 50%;
+    background: var(--chip-bg);
+    color: var(--text-sub);
+    font-size: 19px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.modal-close:hover { background: rgba(128, 128, 128, 0.22); color: var(--text); }
+
+/* 弹窗里的四个读数：米家式"数字 + 暗标签"，不套盒子 */
+.modal-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.power-item { min-width: 0; text-align: center; }
+.power-value { font-size: 24px; font-weight: 500; line-height: 1.2; color: var(--text); }
+.power-value.success { color: var(--success); }
+.power-value.warning { color: var(--warning); }
+.power-label { margin-top: 2px; font-size: 11px; color: var(--text-dim); }
+
+.modal-protocols { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--divider); }
+.proto-title { margin-bottom: 10px; font-size: 12px; color: var(--text-dim); }
+.proto-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.proto-btn {
+    padding: 4px 12px;
+    border-radius: var(--r-chip);
+    border: 1px solid var(--card-border);
+    background: var(--chip-bg);
+    color: var(--text-dim);
+    font-size: 11.5px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+                border-color var(--dur-fast) var(--ease);
+}
+.proto-btn:hover { color: var(--text); }
+.proto-btn.on {
+    background: rgba(var(--accent-rgb), 0.18);
+    border-color: rgba(var(--accent-rgb), 0.42);
+    color: var(--text);
+    font-weight: 600;
+}
+.proto-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* 提示条：沿用 phone.js 的 toast 规格（深底 + 白字 + 20px 圆角） */
+.toast {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    z-index: 999;
+    transform: translate(-50%, 10px);
+    max-width: min(460px, calc(100vw - 32px));
+    padding: 10px 20px;
+    border-radius: 20px;
+    background: rgba(0, 0, 0, 0.85);
+    color: #fff;
+    font-size: 14px;
+    text-align: center;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ══════════════════════════════════════════════════════════════
+   10. 响应式 / 无障碍
+   ══════════════════════════════════════════════════════════════ */
+
+/* 桌面：主列（2fr）+ 控制侧列（1fr） */
+@media (min-width: 1024px) {
+    .page-grid { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+    .col-main, .col-side { gap: 16px; }
+}
+
+/* 中屏及以下：左栏撑不到 300px 时并排会把端口卡挤扁，改为上下排。
+   关键点：**设备那一列不要跟着拉成一整条**——拉宽后机身还是 264px，
+   功率光条/读数就散在一大片空白里，看着像错位。这里把设备列按宽屏时的
+   宽度居中收住，各处比例和并排时完全一致。 */
+@media (max-width: 1199px) {
+    .top-main { grid-template-columns: 1fr; gap: 16px; }
+    .device-col { width: 100%; max-width: 340px; margin: 0 auto; }
+    .device-stage { min-height: 208px; }
+}
+
+/* 中屏：单列，但格子仍可多列 */
+@media (max-width: 1023px) {
+    .sd-action { grid-column: auto; }
+}
+
+/* 窄屏：连接状态 + 操作整行落到页头第二排（品牌与主题/日志仍在第一排） */
+@media (max-width: 900px) {
+    .topbar-tools { order: 1; margin-left: auto; }
+    .topbar-status { order: 2; flex: 1 1 100%; margin-left: 0; justify-content: space-between; }
+}
+
+@media (max-width: 760px) {
+    .device-stage { min-height: 200px; }
+    .device-col { max-width: 300px; }
+    .device-stage { --device-scale: 0.68; }
+}
+
+@media (max-width: 640px) {
+    body { font-size: 14px; }
+    .wrap { padding: 0 14px; }
+    .brand-name { display: none; }
+    .brand-logo { height: 16px; }
+    /* 小屏页头只留"品牌 + 主题/日志"一行：固件版本是元信息，挪走才不会挤成两行 */
+    .fw-chip { display: none; }
+    .tool-btn { width: 32px; padding: 0; justify-content: center; }
+    .tool-btn span { display: none; }
+
+    .card { padding: 16px 16px 18px; }
+    .card-top { padding: 16px 16px 18px; border-radius: 18px; }
+    .topbar-status { gap: 8px; }
+    .topbar-status .status-badge { padding: 0 6px; font-size: 12.5px; }
+    .topbar-status .btn { padding: 0 10px; font-size: 12.5px; }
+    .topbar-status .status-row { gap: 2px; }
+    .card-title { font-size: 15.5px; margin-bottom: 14px; }
+
+    .port-grid { gap: 10px; }
+    .port-card { padding: 12px 10px; }
+    .port-stat-value { font-size: 16px; }
+
+
+    .card-title .segmented { margin-left: 0; width: 100%; justify-content: space-between; }
+    .time-btn { flex: 1; padding: 0 4px; }
+
+    .charge-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .chart-container { height: 220px; }
+    .sd-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .sd-action { grid-column: 1 / -1; }
+
+    .session-detail.is-open { align-items: flex-end; padding: 12px; }
+    .sd-sheet { padding: 18px 16px; border-radius: 18px; max-height: 92vh; }
+
+    .modal-overlay { padding: 12px; align-items: flex-end; }
+    .modal { padding: 18px 16px 20px; border-radius: 18px; max-height: 92vh; }
+    .modal-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .power-value { font-size: 20px; }
+
+    .setting-item { padding: 12px 0; }
+}
+
+@media (hover: none) {
+    .port-card:hover { border-color: var(--card-inset-border); }
+}
+
+/* 无障碍：尊重系统"减弱动态效果" */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+    }
+}
+
+/* 英文排版守卫：拉丁字母不需要 CJK 的断行策略 */
+html[lang="en"] .card-title,
+html[lang="en"] .metric-label,
 html[lang="en"] .port-stat-label,
-html[lang="en"] .stat-label,
-html[lang="en"] .power-label,
 html[lang="en"] .mini-stat-label,
+html[lang="en"] .sd-label,
+html[lang="en"] .power-label,
 html[lang="en"] .setting-label,
-html[lang="en"] .countdown-current,
 html[lang="en"] .quality-label,
-html[lang="en"] .card-title {
-    letter-spacing: 0;
+html[lang="en"] .port-protocol {
     word-break: break-word;
     line-height: 1.35;
 }

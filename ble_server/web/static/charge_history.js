@@ -251,7 +251,19 @@ function renderSessionChart(points) {
 
 // Pagination state
 let _chPage = 1;
-const _chPageSize = 2;
+// 每页条数：默认 2（手机端）。桌面端历史卡更高，可以在 startChargeHistoryAutoRefresh
+// 的第 5 个参数里传入更大的值（本页传 6）。
+//
+// 注意这个数字是"列表里总共显示多少行"：正在充电的会话会插队排在最前面
+// （is_active=true），行数不固定——活跃会话一多仍按固定条数取数，卡片就会变高。
+// 所以实际请求条数 = _chPageSize - 活跃会话数，由 refreshChargeHistory() 每轮计算。
+let _chPageSize = 2;
+let _chActiveCount = 0;   // 上一次响应里的活跃会话数（0 = 还没拉过数据）
+
+function _chFetchLimit() {
+    // 至少取 1 条：活跃会话为 0 时就是完整的 _chPageSize
+    return Math.max(1, _chPageSize - _chActiveCount);
+}
 
 function closeSessionDetail() {
     const detail = document.getElementById('sessionDetail');
@@ -264,9 +276,10 @@ function chGoPage(page) {
 }
 
 // Auto-refresh sessions
-function startChargeHistoryAutoRefresh(containerId, statsId, period, interval) {
+function startChargeHistoryAutoRefresh(containerId, statsId, period, interval, pageSize) {
     window._chContainerId = containerId;
     window._chStatsId = statsId;
+    if (pageSize > 0) _chPageSize = pageSize;
     window._chPeriod = period;
     refreshChargeHistory();
     setInterval(refreshChargeHistory, interval || 30000);
@@ -282,12 +295,22 @@ function refreshChargeHistory() {
     const containerId = window._chContainerId;
     const statsId = window._chStatsId;
     const period = window._chPeriod;
+    // 实际请求条数 = 目标总行数 - 活跃会话数（活跃会话会插队排在最前面）
+    const limit = _chFetchLimit();
     fetchEnergyStats(period).then(stats => renderStats(statsId, stats));
-    fetchSessions(null, period, _chPageSize, _chPage).then(data => {
+    fetchSessions(null, period, limit, _chPage).then(data => {
+        // 活跃会话数与上一轮不同（开始充电/充满/换口）：用修正后的条数再取一次，
+        // 保证"列表总行数 = _chPageSize"恒成立，卡片高度因此不会跳
+        const activeCount = (data.sessions || []).filter(x => x.is_active).length;
+        if (activeCount !== _chActiveCount) {
+            _chActiveCount = activeCount;
+            refreshChargeHistory();
+            return;
+        }
         // 最后一页无数据时自动回退上一页
         if (data.sessions && data.sessions.length === 0 && data.page > 1) {
             _chPage = data.page - 1;
-            fetchSessions(null, period, _chPageSize, _chPage).then(data2 => {
+            fetchSessions(null, period, _chFetchLimit(), _chPage).then(data2 => {
                 renderSessionList(containerId, data2.sessions);
                 renderPagination(containerId, data2);
             });
