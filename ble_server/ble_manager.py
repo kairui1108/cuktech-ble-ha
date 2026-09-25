@@ -10,11 +10,11 @@ from datetime import datetime, timezone
 
 try:
     from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION, AuthConnectionError
-    from cuktech_ble.protocol import READABLE_SETTINGS_PIIDS
+    from cuktech_ble.protocol import READABLE_SETTINGS_PIIDS, UUID_FE95, mac_str_to_bytes
 except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
     from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION, AuthConnectionError
-    from cuktech_ble.protocol import READABLE_SETTINGS_PIIDS
+    from cuktech_ble.protocol import READABLE_SETTINGS_PIIDS, UUID_FE95, mac_str_to_bytes
 
 from state import ChargerState, PORT_NAMES, PORT_BITS, PORT_DEFAULT, decode_port, decode_pdo_caps
 
@@ -95,6 +95,18 @@ class BLEManager:
         self._IDLE_VERIFY_SEC = 15          # idle > 15s → trigger one active GET
         self._last_verify_time = {i: 0.0 for i in range(1, 5)}
         self._pending_verify = set()        # ports queued for verify (avoids duplicate enqueue)
+        # C3/USB-A share a merged sense channel (status_raw 0x11) and the firmware
+        # only ever pushes live notifications for C1/C2 — C3/A never arrive via
+        # push, so without an active poll they stay stuck at the idle default
+        # even while charging. Poll them directly on a fixed cadence instead.
+        self._C3A_POLL_INTERVAL_SEC = 3
+        # verify_port commands can fail silently (no exception, just "no
+        # response") when the link has gone unresponsive at the protocol
+        # level while BLE itself still reports connected -- observed
+        # hanging indefinitely with zero reconnect attempts, since nothing
+        # here ever raised. Force a reconnect once failures stack up.
+        self._verify_fail_streak = 0
+        self._VERIFY_FAIL_STREAK_LIMIT = 5
 
     def set_mqtt_publisher(self, publisher):
         self._mqtt_publish = publisher
@@ -595,11 +607,40 @@ class BLEManager:
             if 'InProgress' in err_str:
                 await self._force_disconnect_bluetooth()
             raise ConnectionError(f"BLE scan failed: {e}")
+
+        # macOS/CoreBluetooth never exposes a peripheral's real BLE MAC --
+        # it substitutes a randomized per-host UUID instead (privacy), so
+        # find_device_by_address against the configured real MAC can never
+        # match there, even when the charger is advertising normally. The
+        # charger doesn't advertise the MiOT service UUID in its top-level
+        # service list either (only in a MiBeacon service-data payload), so
+        # match on that payload instead -- it carries the real MAC in
+        # little-endian form (bytes[-6:]), which lets us confirm we've
+        # found *this* charger and not some other Xiaomi device.
+        if not found and sys.platform == "darwin":
+            try:
+                devices = await BleakScanner.discover(
+                    timeout=self.config.ble.scan_timeout, return_adv=True)
+            except Exception as e:
+                _LOGGER.error("BLE scan failed: %s", e)
+                raise ConnectionError(f"BLE scan failed: {e}")
+            target_mac_bytes = mac_str_to_bytes(self.mac)  # already reversed (little-endian)
+            for _addr, (dev, adv) in devices.items():
+                payload = (adv.service_data or {}).get(UUID_FE95)
+                if payload and payload[-6:] == target_mac_bytes:
+                    found = dev
+                    break
+
         if not found:
             _LOGGER.warning("Charger not found with MAC: %s (will retry)", self.mac)
             raise ConnectionError("Charger not found")
 
         self.ctrl = CuktechBLEController(self.mac, self.token)
+        if sys.platform == "darwin":
+            # mac_bytes (derived from the real MAC above) still feeds the
+            # MiOT auth handshake -- only the connection-time identifier
+            # needs to be the CoreBluetooth address bleak actually resolved.
+            self.ctrl.mac = found.address
         await self.ctrl.connect()
 
         _LOGGER.info("Connected, waiting for device to settle...")
@@ -623,6 +664,7 @@ class BLEManager:
             raise AuthConnectionError("Auth failed")
 
         self._auth_fail_count = 0  # reset on successful auth
+        self._verify_fail_streak = 0
         self._ble_connect_time = time.time()
         self._last_notify_time = 0.0  # reset so quality shows "无" until first push
         await self.state.set_connection(True, True)
@@ -884,9 +926,21 @@ class BLEManager:
             if quality_tick % 5 == 0:
                 q = self._quality_provider() if self._quality_provider else {"ble": self.connection_quality()}
                 self._sse_emit("quality", q)
+            now = time.time()
+            # C3/USB-A never receive a live push from the firmware (only C1/C2 do) —
+            # poll their status directly on a fixed cadence so a plugged-in device is
+            # ever discovered, instead of sitting at the idle default forever.
+            for piid in (3, 4):
+                if (now - self._last_verify_time[piid] > self._C3A_POLL_INTERVAL_SEC
+                        and piid not in self._pending_verify):
+                    self._pending_verify.add(piid)
+                    try:
+                        self.cmd_queue.put_nowait(("verify_port", piid, None))
+                        self._last_verify_time[piid] = now
+                    except asyncio.QueueFull:
+                        self._pending_verify.discard(piid)
             if not self._history or self._stop_event.is_set():
                 continue
-            now = time.time()
             loop = asyncio.get_running_loop()
             for piid in range(1, 5):
                 ps = self.state.ports.get(piid)
@@ -1047,6 +1101,12 @@ class BLEManager:
                 elif cmd_type == "verify_port":
                     await self._handle_verify_port(cmd_data, cmd_future)
 
+            except ConnectionError:
+                # A command handler deliberately forced this to signal the
+                # link is dead -- propagate to _connect_and_run's caller so
+                # the normal reconnect path actually runs, instead of the
+                # queue silently absorbing it forever.
+                raise
             except Exception as e:
                 _LOGGER.error("Command error: %s", e)
                 if cmd_future and not cmd_future.done():
@@ -1113,9 +1173,14 @@ class BLEManager:
                 cmd_future.set_result({"ok": False, "error": str(e)})
 
     async def _handle_verify_port(self, cmd_data, cmd_future):
-        """Actively GET a port that has been idle too long, to detect a missed
-        unplug (push frame lost while we were busy). Updates ps from the live
-        reading so a stale V/I doesn't persist indefinitely."""
+        """Actively GET a port's status rather than waiting for a BLE push.
+
+        Used for two cases:
+          - C1/C2 idle too long (push frame for an unplug may have been lost,
+            leaving a stale V/I forever).
+          - C3/A, which the firmware never pushes live notifications for at
+            all — they only get discovered/refreshed via this active GET.
+        """
         piid = cmd_data if isinstance(cmd_data, int) else (cmd_data[0] if isinstance(cmd_data, (list, tuple)) else None)
         self._pending_verify.discard(piid)
         if not piid or piid not in range(1, 5) or not self.ctrl:
@@ -1125,51 +1190,51 @@ class BLEManager:
         try:
             result = await self.ctrl.send_miot_command(2, piid)
             self._last_verify_time[piid] = time.time()
-            if not result:
-                # No response — connection may be stale; leave as-is.
-                _LOGGER.debug("verify_port piid=%d: no response", piid)
+            if not result or not result.get("raw"):
+                # No response — connection may be stale.
+                self._verify_fail_streak += 1
+                _LOGGER.debug("verify_port piid=%d: no response (streak=%d)",
+                               piid, self._verify_fail_streak)
                 if cmd_future and not cmd_future.done():
                     cmd_future.set_result({"ok": False, "error": "no response"})
+                if self._verify_fail_streak >= self._VERIFY_FAIL_STREAK_LIMIT:
+                    raise ConnectionError(
+                        f"verify_port failed {self._verify_fail_streak}x in a row, forcing reconnect")
                 return
-            raw = result.get("raw")
-            value = result.get("value")
-            # Diagnostic: log raw GET value so we can verify the byte-layout
-            # assumption below against actual device frames.
-            _LOGGER.info("verify_port piid=%d raw_value=0x%08X raw_len=%d",
-                         piid, value if isinstance(value, int) else -1,
-                         len(raw) if raw else 0)
-            # GET result value carries the port raw status bytes
-            # [status, code, current_raw, voltage_raw] in low 4 bytes.
-            if isinstance(value, int) and value >= 0:
-                raw_bytes = value.to_bytes(4, 'little')
-                cur_raw = raw_bytes[2]
-                vol_raw = raw_bytes[3]
-                voltage = vol_raw / 10.0
-                current = cur_raw / 10.0
-                old = self.state.ports.get(piid)
-                # Only correct if the live reading differs meaningfully from
-                # what we hold — prevents feedback loops on noise.
-                if old is None or (voltage, current) != (old.voltage, old.current):
-                    if voltage <= 0 and current <= 0:
-                        # Device unplugged (V=0, I=0): clear the stale port state.
-                        if piid in self._active_sessions:
-                            self._close_session(piid, time.time())
-                        port_info = dict(PORT_DEFAULT)
-                        await self.state.update_port(piid, PORT_DEFAULT)
-                        _LOGGER.info("verify_port: piid=%d unplugged (V=0,I=0), cleared stale state", piid)
-                    else:
-                        port_info = {
-                            "voltage": round(voltage, 1),
-                            "current": round(current, 1),
-                            "power": round(voltage * current, 1),
-                            "active": True,
-                            "protocol": old.protocol if old else "idle",
-                        }
-                        await self.state.update_port(piid, port_info)
-                    _invalidate()
-                    self._emit_port_state(piid, port_info)
+            self._verify_fail_streak = 0
+            raw = result["raw"]
+            hw_protocol = await self.state.get_hw_protocol(piid)
+            pdo_data = None
+            if piid in (1, 2):
+                pdo_data = self.state.pdo_caps.get("c1c2", {}).get(PORT_NAMES[piid])
+            elif piid in (3, 4):
+                pdo_data = self.state.pdo_caps.get("c3a", {}).get(PORT_NAMES[piid])
+            port_info = decode_port(piid, raw, pdo_data,
+                                    protocol_switches=self.state.protocol_switches,
+                                    hw_protocol=hw_protocol)
+            if not port_info:
+                _LOGGER.debug("verify_port piid=%d: decode_port returned None (raw=%s)",
+                              piid, raw.hex())
+                if cmd_future and not cmd_future.done():
+                    cmd_future.set_result({"ok": False, "error": "decode failed"})
+                return
+            old = self.state.ports.get(piid)
+            # Only update if the live reading differs meaningfully from what we
+            # hold — prevents redundant MQTT/SSE emits on unchanged polls.
+            if old is None or (port_info["voltage"], port_info["current"]) != (old.voltage, old.current):
+                if not port_info["active"] and piid in self._active_sessions:
+                    self._close_session(piid, time.time())
+                _LOGGER.info("verify_port: Port %s update: %s", PORT_NAMES[piid], port_info)
+                await self.state.update_port(piid, port_info)
+                _invalidate()
+                self._emit_port_state(piid, port_info)
             if cmd_future and not cmd_future.done():
-                cmd_future.set_result({"ok": True, "value": value})
+                cmd_future.set_result({"ok": True, "value": result.get("value")})
+        except ConnectionError:
+            # Deliberately forced above once verify_port has failed
+            # repeatedly -- let it propagate to trigger a real reconnect
+            # instead of being swallowed like an ordinary command error.
+            raise
         except Exception as e:
             _LOGGER.warning("verify_port piid=%d error: %s", piid, e)
             if cmd_future and not cmd_future.done():

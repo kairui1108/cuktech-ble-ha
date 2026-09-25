@@ -272,8 +272,12 @@ class CuktechBLEController:
         """读取设备信息 (无需认证)，存储到 self.device_model / self.firmware_version。"""
         _LOGGER.info("Reading device info...")
 
-        # 订阅设备信息通知
-        await self.client.start_notify(CHAR_DEVICE_INFO, self._make_notify_handler("dev_info"))
+        # 订阅设备信息通知 (connect() 已经订阅过一次 -- BlueZ 允许重复订阅，
+        # 但 macOS/CoreBluetooth 会抛出 "already started"，因此这里容错处理)
+        try:
+            await self.client.start_notify(CHAR_DEVICE_INFO, self._make_notify_handler("dev_info"))
+        except Exception as e:
+            _LOGGER.debug("dev_info notify already subscribed: %s", e)
 
         # 查询协议版本
         await self.client.write_gatt_char(CHAR_DEVICE_INFO, bytes([0x00]), response=False)
