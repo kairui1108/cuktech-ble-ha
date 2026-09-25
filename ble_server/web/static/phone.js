@@ -1,6 +1,11 @@
 // ── API & Config ──
 const API_BASE = window.location.origin;
 
+// SSE 连接句柄：必须声明在文件顶部——initPhoneSSE() 在末尾的 Init 段就会被调用，
+// 声明写在函数旁边会落进 TDZ（Cannot access before initialization）。
+// 放全局还有一个原因：页面的 bfcache 处理器要能关掉它并置空（见 initPhoneSSE）。
+let phoneEvtSource = null;
+
 // Localized scene names/descriptions (keys into the i18n resource packs)
 function sceneName(mode) { return I18N.t('scene.' + ({ 1: 'ai', 2: 'eco', 3: 'single', 4: 'balanced' }[mode] || 'ai')); }
 function sceneDesc(mode) { return I18N.t('scene.desc' + ({ 1: 'Ai', 2: 'Eco', 3: 'Single', 4: 'Balanced' }[mode] || 'Ai')); }
@@ -868,19 +873,58 @@ const phone = document.querySelector('.phone');
 if (phone) phone.addEventListener('scroll', () => handleFade(phone.scrollTop));
 window.addEventListener('scroll', () => handleFade(window.scrollY));
 
-// ── Theme Toggle ──
-let isDark = true;
-function toggleTheme() {
-    isDark = !isDark;
-    document.body.classList.toggle('light', !isDark);
+// ── Theme ──
+// 主题必须持久化：原来只有一个内存变量 isDark = true，刷新页面必然回到深色。
+// 存储键与桌面页共用（cuktech-theme：system / ha-dark / light），
+// 所以手机与桌面看到的是同一个选择；system 表示跟随系统。
+const PHONE_THEME_KEY = 'cuktech-theme';
+
+function storedThemeDark() {
+    let pref = 'system';
+    try { pref = localStorage.getItem(PHONE_THEME_KEY) || 'system'; } catch (e) { /* 隐私模式 */ }
+    if (pref === 'light') return false;
+    if (pref === 'ha-dark') return true;
+    try { return !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) { return true; }
+}
+
+// phone.html 顶部那段内联脚本会先把 class 打上（避免闪一下深色），
+// 这里沿用它的结论；脚本没跑到就按存储值自己再算一遍。
+let isDark = (typeof window.__phoneThemeResolved === 'boolean')
+    ? window.__phoneThemeResolved
+    : storedThemeDark();
+
+function applyPhoneTheme(dark, rerender) {
+    isDark = dark;
+    document.body.classList.toggle('light', !dark);
+    // 顺带给 <html> 打标记：charge_history.js 的图表标注线按这个属性判主题
+    document.documentElement.setAttribute('data-appearance', dark ? 'dark' : 'light');
     const deviceImg = document.getElementById('deviceImg');
     if (deviceImg) {
-        deviceImg.src = isDark ? 'static/plugin_imgs/main_charger_dark_ad1204_all.png' : 'static/plugin_imgs/main_charger_light_ad1204_all.png';
+        deviceImg.src = dark
+            ? 'static/plugin_imgs/main_charger_dark_ad1204_all.png'
+            : 'static/plugin_imgs/main_charger_light_ad1204_all.png';
     }
-    document.getElementById('themeBtn').textContent = isDark ? '☀️' : '🌙';
+    const btn = document.getElementById('themeBtn');
+    if (btn) btn.textContent = dark ? '☀️' : '🌙';
     renderSceneCard();
-    renderCharts();
+    // 初始化时图表还没建（紧随其后的 renderAll() 会画），只在手动切换时重绘
+    if (rerender) renderCharts();
 }
+
+function toggleTheme() {
+    const dark = !isDark;
+    try { localStorage.setItem(PHONE_THEME_KEY, dark ? 'ha-dark' : 'light'); } catch (e) { /* 隐私模式 */ }
+    applyPhoneTheme(dark, true);
+}
+
+// 存的是"跟随系统"时，系统外观变了要实时跟（与桌面页同一行为）
+try {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+        let pref = 'system';
+        try { pref = localStorage.getItem(PHONE_THEME_KEY) || 'system'; } catch (e) { /* 忽略 */ }
+        if (pref !== 'light' && pref !== 'ha-dark') applyPhoneTheme(storedThemeDark(), true);
+    });
+} catch (e) { /* 老浏览器只有 addListener，刷新后仍会解析到正确外观 */ }
 
 // ── 数据推送（仅定时器调用，避免去抖与定时器重复写入） ──
 function phonePushData() {
@@ -904,6 +948,8 @@ function phonePushData() {
 }
 
 // ── Init ──
+// 先把持久化的主题落到设备图 / 场景图标 / 主题按钮上，再走常规渲染
+applyPhoneTheme(isDark, false);
 renderAll();
 initPhoneSSE();
 // 定时器：先 push 数据再渲染（去抖只渲染不 push，杜绝重复点）
@@ -935,8 +981,12 @@ setInterval(async () => {
 }, 30000);
 
 // ── SSE (Server-Sent Events) ──
+// 句柄 phoneEvtSource 声明在文件顶部。原来它是本函数的 const，而 pagehide 处理器里写
+// `evtSource = null`：每次进 bfcache 都抛 TypeError（Assignment to constant variable），
+// 并且因为没能置空，pageshow 又新建一条连接 —— 来回切换会累积 SSE 连接与监听器。
 function initPhoneSSE() {
-    const evtSource = new EventSource(`${API_BASE}/api/events`);
+    if (phoneEvtSource) { phoneEvtSource.close(); phoneEvtSource = null; }
+    const evtSource = phoneEvtSource = new EventSource(`${API_BASE}/api/events`);
     evtSource.onopen = () => {
         document.getElementById('connectDot').style.background = '#34C759';
         // SSE init event handles state sync; no fetchStatus needed
@@ -1003,10 +1053,15 @@ function initPhoneSSE() {
     evtSource.onerror = () => {
         document.getElementById('connectDot').style.background = '#666';
     };
-    // bfcache: close on leave, reopen on return
-    window.addEventListener('pagehide', () => { if (evtSource) { evtSource.close(); evtSource = null; } });
-    window.addEventListener('pageshow', () => { if (typeof initPhoneSSE === 'function') initPhoneSSE(); });
 }
+
+// bfcache: close on leave, reopen on return（只注册一次，见文件末尾的 Init 段）
+window.addEventListener('pagehide', () => {
+    if (phoneEvtSource) { phoneEvtSource.close(); phoneEvtSource = null; }
+});
+window.addEventListener('pageshow', () => {
+    if (!phoneEvtSource && typeof initPhoneSSE === 'function') initPhoneSSE();
+});
 
 function applyFullStatus(data) {
     state.bleConnected = data.connected && data.authenticated;

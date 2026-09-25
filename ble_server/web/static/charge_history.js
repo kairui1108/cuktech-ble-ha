@@ -85,7 +85,7 @@ function renderSessionList(containerId, sessions, onClick) {
         return true;
     });
     if (filtered.length === 0) {
-        el.innerHTML = `<div style="text-align:center;color:var(--text-dim);padding:16px;font-size:13px;">${I18N.t('charge.noRecords')}</div>`;
+        el.innerHTML = `<div class="session-empty" style="text-align:center;color:var(--text-dim);padding:16px;font-size:13px;">${I18N.t('charge.noRecords')}</div>`;
         return;
     }
     const portNames = {1:'C1', 2:'C2', 3:'C3', 4:'A'};
@@ -104,12 +104,17 @@ function renderSessionList(containerId, sessions, onClick) {
     }
     el.innerHTML = filtered.map(s => {
         const proto = s.protocol || '';
-        const protoHtml = proto ? `<span style="font-size:11px;color:var(--accent);margin-left:6px;">${proto}</span>` : '';
+        const protoHtml = proto ? `<span style="font-size:11px;color:var(--accent-ink);margin-left:6px;">${proto}</span>` : '';
         const isActive = s.is_active;
         const wh = (s.total_wh && s.total_wh > 0) ? s.total_wh.toFixed(1) : '0';
-        const activeDot = isActive ? `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#34C759;margin-right:4px;animation:pulse 1.5s infinite;"></span>` : '';
+        const activeDot = isActive ? `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--dot-on,#34C759);margin-right:4px;animation:pulse 1.5s infinite;"></span>` : '';
+        // 行原来是 div[onclick]，键盘/读屏用户打不开详情：补 role/tabindex/aria-label + 回车与空格
+        const rowLabel = `${portNames[s.port] || s.port} ${fmtTime(s.start_time)} ${I18N.t('charge.energy', { wh })}`;
+        const open = onClick || 'showSessionDetail';
         return `
-        <div class="session-item" data-id="${s.id}" onclick="(${onClick || 'showSessionDetail'})(this.dataset.id)"
+        <div class="session-item" data-id="${s.id}" onclick="(${open})(this.dataset.id)"
+             role="button" tabindex="0" aria-label="${rowLabel}"
+             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();(${open})(this.dataset.id);}"
              style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(128,128,128,0.1);cursor:pointer;">
             <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;">
                 ${activeDot}
@@ -165,7 +170,15 @@ async function showSessionDetail(sessionId) {
 function renderSessionChart(points) {
     const canvas = document.getElementById('sessionChart');
     if (!canvas) return;
-    const labels = points.map((p, i) => i % 60 === 0 ? fmtTime(p.timestamp) : '');
+    // X 轴刻度：把"索引 → 时间"的换算交给 ticks.callback，而不是预先把标签写进
+    // labels 数组。原因：Chart.js 自己决定抽哪几个索引当刻度（autoSkip + maxTicksLimit），
+    // 预先按索引打点只有恰好命中它的选择才显示——原来"每 60 点标一个"，300 点档下
+    // 只剩 19:37 一个刻度，等于没有横轴。
+    const labels = points.map(() => '');
+    const tickLabel = (value) => {
+        const p = points[value];
+        return p ? fmtTime(p.timestamp) : '';
+    };
     const powers = points.map(p => p.power);
 
     // Find protocol transitions for annotations
@@ -213,7 +226,7 @@ function renderSessionChart(points) {
                 }
             },
             scales: {
-                x: { display: true, ticks: { maxTicksLimit: 6, font: { size: 10 }, color: 'rgba(128,128,128,0.5)' }, grid: { display: false } },
+                x: { display: true, ticks: { maxTicksLimit: 6, font: { size: 10 }, color: 'rgba(128,128,128,0.5)', callback: tickLabel }, grid: { display: false } },
                 y: { display: true, ticks: { font: { size: 10 }, color: 'rgba(128,128,128,0.5)' }, grid: { color: 'rgba(128,128,128,0.1)' } }
             },
             interaction: { intersect: false, mode: 'index' }
@@ -228,7 +241,11 @@ function renderSessionChart(points) {
                 protoChanges.forEach(c => {
                     if (c.index === 0) return;
                     const x = xScale.getPixelForValue(c.index);
-                    const isDark = !document.body.classList.contains('light');
+                    // 主题判定要同时认两套信号：桌面页（index）用 html[data-appearance]，
+                    // 手机页（phone.js）用 body.light。原来只看 body.light，桌面页恒为
+                    // isDark=true，于是浅色主题下白线白字画在白底浮层上、协议标注整条看不见。
+                    const isDark = document.documentElement.getAttribute('data-appearance') !== 'light'
+                        && !document.body.classList.contains('light');
                     const lineColor = isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.2)';
                     const textColor = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)';
                     ctx.save();
@@ -251,7 +268,28 @@ function renderSessionChart(points) {
 
 // Pagination state
 let _chPage = 1;
-const _chPageSize = 2;
+// 每页条数：默认 2（手机端）。桌面端在 startChargeHistoryAutoRefresh 的第 5 个参数里
+// 传更大的值（index 页传 4：卡片高度要和右栏配平，行数多了就得压缩别的卡）。
+//
+// 注意这个数字是"列表里总共显示多少行"：正在充电的会话会插队排在最前面
+// （is_active=true），行数不固定——活跃会话一多仍按固定条数取数，卡片就会变高。
+// 所以实际请求条数 = _chPageSize - 活跃会话数，由 refreshChargeHistory() 每轮计算。
+let _chPageSize = 2;
+let _chActiveCount = 0;   // 上一次响应里的活跃会话数（0 = 还没拉过数据）
+let _chSignature = '';    // 上一轮渲染的数据指纹：没变就不重写 DOM（否则 hover/焦点会被打断）
+let _chStatsSig = '';     // 统计块同理
+
+// 指纹前缀：周期 / 页码 / 每页条数 / 语言——任何一项变了都必须重画，
+// 哪怕数据一模一样（切语言时中文数据指纹不变，但文案要换）。
+function _chSignaturePrefix() {
+    const loc = (typeof I18N !== 'undefined' && I18N.getLocale) ? I18N.getLocale() : '';
+    return `${window._chPeriod}|${_chPage}|${_chPageSize}|${loc}`;
+}
+
+function _chFetchLimit() {
+    // 至少取 1 条：活跃会话为 0 时就是完整的 _chPageSize
+    return Math.max(1, _chPageSize - _chActiveCount);
+}
 
 function closeSessionDetail() {
     const detail = document.getElementById('sessionDetail');
@@ -264,9 +302,10 @@ function chGoPage(page) {
 }
 
 // Auto-refresh sessions
-function startChargeHistoryAutoRefresh(containerId, statsId, period, interval) {
+function startChargeHistoryAutoRefresh(containerId, statsId, period, interval, pageSize) {
     window._chContainerId = containerId;
     window._chStatsId = statsId;
+    if (pageSize > 0) _chPageSize = pageSize;
     window._chPeriod = period;
     refreshChargeHistory();
     setInterval(refreshChargeHistory, interval || 30000);
@@ -278,21 +317,44 @@ function startChargeHistoryAutoRefresh(containerId, statsId, period, interval) {
     }
 }
 
-function refreshChargeHistory() {
+function refreshChargeHistory(force) {
     const containerId = window._chContainerId;
     const statsId = window._chStatsId;
     const period = window._chPeriod;
-    fetchEnergyStats(period).then(stats => renderStats(statsId, stats));
-    fetchSessions(null, period, _chPageSize, _chPage).then(data => {
+    // 实际请求条数 = 目标总行数 - 活跃会话数（活跃会话会插队排在最前面）
+    const limit = _chFetchLimit();
+    fetchEnergyStats(period).then(stats => {
+        // 统计块同理：数字没变就不重画
+        const sig = _chSignaturePrefix() + '|stats|' + JSON.stringify(stats);
+        if (force || sig !== _chStatsSig) {
+            _chStatsSig = sig;
+            renderStats(statsId, stats);
+        }
+    });
+    fetchSessions(null, period, limit, _chPage).then(data => {
+        // 活跃会话数与上一轮不同（开始充电/充满/换口）：用修正后的条数再取一次，
+        // 保证"列表总行数 = _chPageSize"恒成立，卡片高度因此不会跳
+        const activeCount = (data.sessions || []).filter(x => x.is_active).length;
+        if (activeCount !== _chActiveCount) {
+            _chActiveCount = activeCount;
+            refreshChargeHistory(force);
+            return;
+        }
         // 最后一页无数据时自动回退上一页
         if (data.sessions && data.sessions.length === 0 && data.page > 1) {
             _chPage = data.page - 1;
-            fetchSessions(null, period, _chPageSize, _chPage).then(data2 => {
+            fetchSessions(null, period, _chFetchLimit(), _chPage).then(data2 => {
+                _chSignature = '';
                 renderSessionList(containerId, data2.sessions);
                 renderPagination(containerId, data2);
             });
             return;
         }
+        // 行内容没变就不重建 DOM：轮询只负责"发现变化"，不负责"每轮重画"。
+        // 否则每轮 innerHTML 都会打断 hover / 键盘焦点，活跃会话的呼吸点动画也会重启。
+        const sig = _chSignaturePrefix() + '|' + JSON.stringify(data.sessions || []);
+        if (!force && sig === _chSignature) return;
+        _chSignature = sig;
         renderSessionList(containerId, data.sessions);
         renderPagination(containerId, data);
     });

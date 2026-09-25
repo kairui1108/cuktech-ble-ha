@@ -435,18 +435,20 @@ class PortHistory:
             "samples": row["samples"],
             "first_seen": datetime.fromtimestamp(row["first_seen"]).isoformat() if row["first_seen"] else None,
             "last_seen": datetime.fromtimestamp(row["last_seen"]).isoformat() if row["last_seen"] else None,
+            # 注意用 `is not None` 而不是真值判断：空载端口的 min/avg 就是 0，
+            # 用真值判断会把它当成"没有数据"返回 null（历史遗留 bug）。
             "voltage": {
-                "avg": round(row["avg_voltage"], 2) if row["avg_voltage"] else None,
-                "min": round(row["min_voltage"], 2) if row["min_voltage"] else None,
-                "max": round(row["max_voltage"], 2) if row["max_voltage"] else None,
+                "avg": round(row["avg_voltage"], 2) if row["avg_voltage"] is not None else None,
+                "min": round(row["min_voltage"], 2) if row["min_voltage"] is not None else None,
+                "max": round(row["max_voltage"], 2) if row["max_voltage"] is not None else None,
             },
             "current": {
-                "avg": round(row["avg_current"], 2) if row["avg_current"] else None,
-                "max": round(row["max_current"], 2) if row["max_current"] else None,
+                "avg": round(row["avg_current"], 2) if row["avg_current"] is not None else None,
+                "max": round(row["max_current"], 2) if row["max_current"] is not None else None,
             },
             "power": {
-                "avg": round(row["avg_power"], 2) if row["avg_power"] else None,
-                "max": round(row["max_power"], 2) if row["max_power"] else None,
+                "avg": round(row["avg_power"], 2) if row["avg_power"] is not None else None,
+                "max": round(row["max_power"], 2) if row["max_power"] is not None else None,
                 "total_wh": round(row["energy_wh"], 2) if row["energy_wh"] is not None else 0,
             },
             "active_ratio": round(row["active_count"] / row["samples"], 2) if row["samples"] > 0 else 0,
@@ -483,6 +485,57 @@ class PortHistory:
                 row["protocol"],
             ])
 
+        return output.getvalue()
+
+    def export_session_csv(self, session_id: int) -> str:
+        """把**单个充电会话**的采样点导成 CSV。
+
+        与 export_csv(port, hours) 的区别：那个按端口+时间窗导原始采样（包含会话之间的
+        空载片段），这个只导某一次会话的点（充电曲线本体），供会话详情浮层的"导出"用。
+        第一行是会话元信息（# 开头的注释行，Excel/Numbers 会当文本行保留），
+        之后是标准表头 + 采样点。
+        """
+        if not self._conn or not session_id:
+            return ""
+
+        self.flush()
+
+        sess = self._conn.execute(
+            """SELECT id, port, start_time, end_time, total_wh, avg_power_w, peak_power_w,
+                      avg_voltage, avg_current, duration_sec, protocol
+               FROM charge_sessions WHERE id = ?""",
+            (session_id,),
+        ).fetchone()
+        if not sess:
+            return ""
+
+        pts = self._conn.execute(
+            """SELECT timestamp, voltage, current, power, protocol
+               FROM charge_points WHERE session_id = ? ORDER BY timestamp""",
+            (session_id,),
+        ).fetchall()
+
+        def _ts(v):
+            return datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S") if v else ""
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([f"# session {sess['id']}",
+                         f"port {PORT_NAMES.get(sess['port'], sess['port'])}",
+                         f"protocol {sess['protocol'] or ''}"])
+        writer.writerow([f"# start {_ts(sess['start_time'])}",
+                         f"end {_ts(sess['end_time'])}",
+                         f"duration_s {sess['duration_sec'] or 0}"])
+        writer.writerow([f"# energy_wh {round(sess['total_wh'] or 0, 2)}",
+                         f"avg_power_w {round(sess['avg_power_w'] or 0, 2)}",
+                         f"peak_power_w {round(sess['peak_power_w'] or 0, 2)}"])
+        writer.writerow([])
+        writer.writerow(["timestamp", "datetime", "voltage", "current", "power", "protocol"])
+        for p in pts:
+            writer.writerow([
+                p["timestamp"], _ts(p["timestamp"]),
+                p["voltage"], p["current"], p["power"], p["protocol"],
+            ])
         return output.getvalue()
 
     def query_history_multi(self, start_port: int, end_port: int, hours: float, interval: int) -> list[dict]:
@@ -634,34 +687,32 @@ class PortHistory:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    @staticmethod
+    def _period_window(period: str):
+        """把周期名换算成 [start, end) 时间窗；end=None 表示"到此刻为止"。
+
+        口径说明：today / yesterday 是自然日；week / month 是**滚动** 7 / 30 天，
+        不是自然周 / 自然月——前端的文案因此写"近 7 天 / 近 30 天"，两者必须一致。
+        """
+        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        if period == "today":
+            return midnight.timestamp(), None
+        if period == "yesterday":
+            return midnight.timestamp() - 86400, midnight.timestamp()
+        if period == "week":
+            return time.time() - 7 * 86400, None
+        if period == "month":
+            return time.time() - 30 * 86400, None
+        return 0.0, None
+
     def get_energy_stats(self, period: str = "today") -> dict:
         """Get aggregated energy statistics."""
         if not self._conn:
             return {"period": period, "total_wh": 0, "session_count": 0}
 
-        now = time.time()
-        if period == "today":
-            from datetime import datetime
-            cutoff = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
-        elif period == "yesterday":
-            from datetime import datetime
-            today_start = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
-            cutoff = today_start - 86400
-            limit_end = today_start
-        elif period == "week":
-            cutoff = now - 7 * 86400
-        elif period == "month":
-            cutoff = now - 30 * 86400
-        else:
-            cutoff = 0
-
-        params1 = [cutoff]
-        params2 = [cutoff]
-        extra = ""
-        if period == "yesterday":
-            extra = " AND start_time < ?"
-            params1.append(limit_end)
-            params2.append(limit_end)
+        start, end = self._period_window(period)
+        where = "start_time >= ?" + (" AND start_time < ?" if end is not None else "")
+        params = [start] if end is None else [start, end]
 
         row = self._conn.execute(
             f"""SELECT
@@ -669,15 +720,15 @@ class PortHistory:
                 COALESCE(SUM(total_wh), 0) as total_wh,
                 COALESCE(MAX(peak_power_w), 0) as peak_power_w,
                 COALESCE(SUM(duration_sec), 0) as total_duration_sec
-            FROM charge_sessions WHERE start_time >= ?{extra} AND total_wh > 0""",
-            params1,
+            FROM charge_sessions WHERE {where} AND total_wh > 0""",
+            params,
         ).fetchone()
 
         by_port = self._conn.execute(
             f"""SELECT port, COALESCE(SUM(total_wh), 0) as wh, COUNT(*) as count
-               FROM charge_sessions WHERE start_time >= ?{extra} AND total_wh > 0
+               FROM charge_sessions WHERE {where} AND total_wh > 0
                GROUP BY port""",
-            params2,
+            params,
         ).fetchall()
 
         # Calculate avg power from total energy and duration (more accurate than DB avg)
@@ -694,4 +745,40 @@ class PortHistory:
             "total_duration_sec": total_dur,
             "by_port": {str(r["port"]): {"wh": round(r["wh"], 2), "count": r["count"]}
                         for r in by_port},
+        }
+
+    def get_protocol_stats(self, period: str = "today") -> dict:
+        """按充电协议聚合电量与会话数（"快充到底跑没跑上"）。
+
+        口径与 get_energy_stats 完全一致（同一个 _period_window），所以卡片上两个
+        视图的合计值能对上。历史记录里 protocol 可能为空（早于该列存在），
+        统一归到 'unknown' 而不是丢掉——否则各协议之和对不上总量。
+        """
+        if not self._conn:
+            return {"period": period, "protocols": [], "total_wh": 0, "session_count": 0}
+
+        start, end = self._period_window(period)
+        where = "start_time >= ?" + (" AND start_time < ?" if end is not None else "")
+        params = [start] if end is None else [start, end]
+
+        rows = self._conn.execute(
+            f"""SELECT COALESCE(NULLIF(TRIM(protocol), ''), 'unknown') AS proto,
+                       COALESCE(SUM(total_wh), 0) AS wh,
+                       COUNT(*) AS count,
+                       COALESCE(MAX(peak_power_w), 0) AS peak_w
+                FROM charge_sessions WHERE {where} AND total_wh > 0
+                GROUP BY proto ORDER BY wh DESC""",
+            params,
+        ).fetchall()
+
+        protocols = [
+            {"protocol": r["proto"], "wh": round(r["wh"], 2),
+             "count": r["count"], "peak_w": round(r["peak_w"], 1)}
+            for r in rows
+        ]
+        return {
+            "period": period,
+            "protocols": protocols,
+            "total_wh": round(sum(p["wh"] for p in protocols), 2),
+            "session_count": sum(p["count"] for p in protocols),
         }

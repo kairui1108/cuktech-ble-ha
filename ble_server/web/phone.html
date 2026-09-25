@@ -5,14 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title data-i18n="pageTitle.phone">CUKTECH 10 Ultra 充电器</title>
 <link rel="icon" href="/static/favicon.ico">
-<script src="/static/locales/zh-CN.js?v=3"></script>
-<script src="/static/locales/en.js?v=3"></script>
+<script src="/static/locales/zh-CN.js?v=7"></script>
+<script src="/static/locales/en.js?v=7"></script>
 <script src="/static/i18n.js?v=3"></script>
 <script defer src="/static/chart.umd.min.js"></script>
-<script defer src="/static/charge_history.js?v=3"></script>
-<link rel="stylesheet" href="/static/phone.css?v=4">
+<script defer src="/static/charge_history.js?v=8"></script>
+<link rel="stylesheet" href="/static/phone.css?v=6">
 </head>
 <body>
+
+<!--
+  外观引导（必须在卡片渲染之前执行）
+  主题存的是桌面页同一个键 cuktech-theme（system / ha-dark / light），
+  这里只负责尽早给 <body> 打上 light 类、并给 <html> 打上 data-appearance，
+  避免"系统浅色 + 已存浅色"时先闪一下深色。phone.js 会读同一份结果继续。
+-->
+<script>
+(function () {
+    var pref = 'system';
+    try { pref = localStorage.getItem('cuktech-theme') || 'system'; } catch (e) {}
+    var dark = true;
+    try { dark = !window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) {}
+    if (pref === 'light') dark = false;
+    else if (pref === 'ha-dark') dark = true;
+    window.__phoneThemeResolved = dark;
+    if (!dark && document.body) document.body.classList.add('light');
+    document.documentElement.setAttribute('data-appearance', dark ? 'dark' : 'light');
+})();
+</script>
 
 <div class="phone" id="app">
     <!-- Top Navigation -->
@@ -229,7 +249,7 @@
         <div class="card" style="margin-top:12px;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <span style="font-size:17px;color:var(--text-dim);" data-i18n="phone.chargeHistory">充电记录</span>
-                <select id="chargePeriod" onchange="startChargeHistoryAutoRefresh('chargeSessionList','chargeStats',this.value,30000)" style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:8px;padding:2px 6px;font-size:12px;color:var(--text-dim);">
+                <select id="chargePeriod" onchange="startChargeHistoryAutoRefresh('chargeSessionList','chargeStats',this.value,30000)" style="font-size:12px;">
                     <option value="today" data-i18n="charge.today">今日</option>
                     <option value="yesterday" data-i18n="charge.yesterday">昨日</option>
                     <option value="week" data-i18n="charge.week">本周</option>
@@ -247,7 +267,7 @@
                 </div>
                 <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:4px;">
                     <span style="font-size:11px;color:var(--text-dim);" data-i18n="charge.accuracy">精度</span>
-                    <select onchange="setDownsample(this.value)" style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:4px;padding:2px 4px;font-size:11px;color:var(--text-dim);">
+                    <select onchange="setDownsample(this.value)" style="font-size:11px;">
                         <option value="0" data-i18n="charge.allPoints">全部</option>
                         <option value="100" data-i18n="charge.points100">100点</option>
                         <option value="200" data-i18n="charge.points200">200点</option>
@@ -288,8 +308,8 @@
     <!-- No sim controls - using real data -->
 </div>
 
-<script defer src="/static/charge_limit.js?v=4"></script>
-<script defer src="/static/phone.js?v=4"></script>
+<script defer src="/static/charge_limit.js?v=7"></script>
+<script defer src="/static/phone.js?v=6"></script>
 
 </body>
 </html>

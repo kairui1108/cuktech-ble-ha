@@ -96,8 +96,10 @@ sync.sh
 *.lock
 .log_level
 baksmali.jar
+.qa
 
 esp32_ble/.github/
 esp32_ble/sdkconfig
 esp32_ble/sdkconfig.old
+esp32_ble/rust
 esp32_ble/main/embedded_files.h
