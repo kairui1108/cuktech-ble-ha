@@ -17,6 +17,7 @@
 - **巴法云 (Bemfa) 接入**：支持小爱同学/小度音箱语音控制充电器端口
 - **充电记录与电量统计**：自动记录充电会话（起止时间、电量、峰值功率），Web UI 查看历史详情
 - **电量积分 (Wh)**：基于梯形积分实时累积端口充电能量
+- **充电量限额**：为每个端口设置"充到指定 Wh 自动关断"（`once` 一次性 / `always` 长期有效），index/phone 页卡片直接设置
 - **SQLite 历史数据**：端口数据持久化存储，支持统计和导出
 - **BLE 连接质量评估**：实时评分（0-100），包含解密率、通知响应、连接稳定性等指标
 - **充电完成通知**：通过 MQTT 推送充电完成事件，支持 HA 自动化
@@ -192,6 +193,37 @@ docker compose up -d
 | `/api/chart` | GET | 图表数据 |
 | `/api/sessions` | GET | 充电记录 |
 | `/api/energy/stats` | GET | 能量统计 |
+| `/api/charge-limits` | GET/POST | 充电量限额（充到指定 Wh 自动关断端口） |
+
+### 充电量限额
+
+阈值的单位是**充电器输出能量**（Wh，由 V×I 梯形积分得出），不是被充设备的
+**实际充入电量**——线损与设备内转换损耗使后者偏小（典型 5~15%）。
+
+```bash
+# 设置 C1 充到 30Wh 自动关断，长期有效
+curl -X POST http://localhost:8199/api/charge-limits \
+  -H 'Content-Type: application/json' \
+  -d '{"port":"c1","wh":30,"mode":"always"}'
+
+# 批量设置；wh=0 表示关闭该端口限额
+curl -X POST http://localhost:8199/api/charge-limits \
+  -H 'Content-Type: application/json' \
+  -d '{"limits":{"c1":{"wh":30,"mode":"always"},"a":{"wh":0}}}'
+
+# 查询（含各端口本会话已充 Wh / 是否充电中 / 是否已触发）
+curl http://localhost:8199/api/charge-limits
+```
+
+`mode` 语义：
+
+| mode | 达到阈值 | 未达阈值会话结束（拔插/手动关端口/充满） | BLE 抖动重连 / 服务重启 |
+|---|---|---|---|
+| `once`（默认） | 关断并清零 | 清零 | 保留 |
+| `always` | 关断，保留待下次充电 | 保留 | 保留 |
+
+配置持久化在 `history.db` 的 meta 表，即时生效、无需重启。超冲量取决于采样周期
+（约 1 秒推送 + 命令循环），100W 负载下约 0.05 Wh。
 
 ## 服务管理
 

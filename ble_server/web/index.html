@@ -12,6 +12,7 @@
     <script src="/static/i18n.js?v=3"></script>
     <script defer src="/static/chart.umd.min.js"></script>
     <script defer src="/static/charge_history.js?v=3"></script>
+    <script defer src="/static/charge_limit.js?v=4"></script>
     <script src="/static/chart-loader.js"></script>
     <script src="/static/chart-config.js"></script>
     <link rel="stylesheet" href="static/index.css?v=3">
@@ -156,6 +157,12 @@
                     <div style="text-align:center;padding-top:6px;"><button onclick="closeSessionDetail()" data-i18n="common.close" style="background:rgba(255,59,48,0.1);border:1px solid rgba(255,59,48,0.3);color:#FF3B30;border-radius:8px;padding:8px 20px;font-size:12px;cursor:pointer;">关闭</button></div>
                 </div>
             </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title"><span data-i18n="chargeLimit.title">充电量限额</span></div>
+            <div class="charge-limit-hint" data-i18n="chargeLimit.hint">电量指充电器输出能量（Wh），非设备实际充入电量（有线损/转换损耗）</div>
+            <div class="charge-limit-grid" id="chargeLimitGrid"></div>
         </div>
 
         <div class="card">

@@ -219,6 +219,98 @@ class TestRuntimeMeta:
         h2.close()
 
 
+class TestChargeLimits:
+    """充电量阈值 meta 存取（单源 = history.db meta，键 charge_limit_wh）。"""
+
+    def test_default_all_disabled(self, history):
+        """未设置时四口全部禁用，mode 为默认值。"""
+        limits = history.get_charge_limits()
+        assert set(limits) == {"c1", "c2", "c3", "a"}
+        for entry in limits.values():
+            assert entry["wh"] == 0.0
+            assert entry["mode"] == "once"
+
+    def test_set_get_roundtrip(self, history):
+        history.set_charge_limits({
+            "c1": {"wh": 30.0, "mode": "always"},
+            "c2": {"wh": 10, "mode": "once"},
+        })
+        limits = history.get_charge_limits()
+        assert limits["c1"] == {"wh": 30.0, "mode": "always"}
+        assert limits["c2"] == {"wh": 10.0, "mode": "once"}
+        # 未提及的端口回落到禁用
+        assert limits["c3"] == {"wh": 0.0, "mode": "once"}
+
+    def test_set_normalizes_dirty_values(self, history):
+        """非法值写库时归一为禁用，保证读写往返一致。"""
+        history.set_charge_limits({
+            "c1": {"wh": float("nan"), "mode": "always"},
+            "c2": {"wh": float("inf"), "mode": "always"},
+            "c3": {"wh": -5, "mode": "always"},
+            "a": {"wh": 20, "mode": "sometimes"},
+        })
+        limits = history.get_charge_limits()
+        assert limits["c1"] == {"wh": 0.0, "mode": "always"}
+        assert limits["c2"] == {"wh": 0.0, "mode": "always"}
+        assert limits["c3"] == {"wh": 0.0, "mode": "always"}
+        # 合法 wh 保留，非法 mode 回落
+        assert limits["a"] == {"wh": 20.0, "mode": "once"}
+
+    def test_bare_number_form_accepted(self, history):
+        """兼容简写 {"c1": 30}（DB 脏数据 / 手工改库）。"""
+        history.set_meta("charge_limit_wh", '{"c1": 30}')
+        limits = history.get_charge_limits()
+        assert limits["c1"] == {"wh": 30.0, "mode": "once"}
+
+    def test_corrupt_json_falls_back_to_disabled(self, history):
+        for bad in ("not json", "[]", '"str"', "123"):
+            history.set_meta("charge_limit_wh", bad)
+            limits = history.get_charge_limits()
+            assert all(e["wh"] == 0.0 for e in limits.values()), f"{bad!r} should disable all"
+
+    def test_unknown_keys_ignored(self, history):
+        history.set_meta("charge_limit_wh", '{"c9": {"wh": 99}, "c1": {"wh": 5}}')
+        limits = history.get_charge_limits()
+        assert set(limits) == {"c1", "c2", "c3", "a"}
+        assert limits["c1"]["wh"] == 5.0
+
+    def test_persists_across_reconnect(self, temp_db):
+        from history import PortHistory
+
+        h1 = PortHistory(db_path=temp_db)
+        h1.connect()
+        h1.set_charge_limits({"c1": {"wh": 42.0, "mode": "always"}})
+        h1.close()
+
+        h2 = PortHistory(db_path=temp_db)
+        h2.connect()
+        assert h2.get_charge_limits()["c1"] == {"wh": 42.0, "mode": "always"}
+        h2.close()
+
+    def test_once_limit_survives_restart(self, temp_db):
+        """重启不消费 once 限额（决策 C：重启不算会话终止）。
+
+        once 只在"观察到真实会话终止"或"触发关断"时消费，因此限额必须能
+        跨越进程重启存活；always 同理。
+        """
+        from history import PortHistory
+
+        h1 = PortHistory(db_path=temp_db)
+        h1.connect()
+        h1.set_charge_limits({
+            "c1": {"wh": 30.0, "mode": "once"},
+            "c2": {"wh": 20.0, "mode": "always"},
+        })
+        h1.close()
+
+        h2 = PortHistory(db_path=temp_db)
+        h2.connect()   # 模拟新的进程启动
+        limits = h2.get_charge_limits()
+        assert limits["c1"] == {"wh": 30.0, "mode": "once"}
+        assert limits["c2"] == {"wh": 20.0, "mode": "always"}
+        h2.close()
+
+
 class TestSessionCleanup:
     """会话清理（H5）：闭环会话过期回收 + 崩溃孤儿会话启动回收。"""
 

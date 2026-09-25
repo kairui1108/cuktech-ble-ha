@@ -3,6 +3,8 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from energy import AdaptiveEnergyIntegrator, PortEnergyState, ChargeEndDetector
+from energy import (limit_reached, normalize_charge_limit,
+                    MAX_LIMIT_WH, LIMIT_MODES, DEFAULT_LIMIT_MODE)
 
 
 def test_basic_accumulation():
@@ -146,6 +148,46 @@ def test_high_power_resets_low_power_timer():
     print("PASS: test_high_power_resets_low_power_timer")
 
 
+# ── Charge limit ──
+
+def test_limit_reached_disabled_when_non_positive():
+    """limit_wh <= 0 means disabled — never reached, whatever the session energy."""
+    assert not limit_reached(100.0, 0.0)
+    assert not limit_reached(100.0, -5.0)
+    print("PASS: test_limit_reached_disabled_when_non_positive")
+
+
+def test_limit_reached_boundaries():
+    """Exact equality counts as reached; below does not."""
+    assert not limit_reached(29.99, 30.0)
+    assert limit_reached(30.0, 30.0)
+    assert limit_reached(30.01, 30.0)
+    print("PASS: test_limit_reached_boundaries")
+
+
+def test_normalize_charge_limit_valid():
+    assert normalize_charge_limit(30, "always") == (30.0, "always")
+    assert normalize_charge_limit(0.5, "once") == (0.5, "once")
+    assert normalize_charge_limit("12.5", "ONCE") == (12.5, "once")
+    assert normalize_charge_limit(MAX_LIMIT_WH, "always") == (MAX_LIMIT_WH, "always")
+    print("PASS: test_normalize_charge_limit_valid")
+
+
+def test_normalize_charge_limit_rejects_dirty_input():
+    """NaN/inf/负数/非数值一律回落禁用；mode 非法回落默认 mode。"""
+    for bad in (float("nan"), float("inf"), float("-inf"), -1, "-3", None,
+                "abc", [], {}):
+        wh, mode = normalize_charge_limit(bad, "always")
+        assert wh == 0.0, f"{bad!r} should normalize to disabled, got {wh}"
+        assert mode == "always", "valid mode must survive a bad wh value"
+    for bad_mode in (None, "", "sometimes", 123):
+        wh, mode = normalize_charge_limit(30, bad_mode)
+        assert wh == 30.0, "valid wh must survive a bad mode"
+        assert mode == DEFAULT_LIMIT_MODE, f"{bad_mode!r} -> {mode}"
+    assert DEFAULT_LIMIT_MODE in LIMIT_MODES
+    print("PASS: test_normalize_charge_limit_rejects_dirty_input")
+
+
 if __name__ == "__main__":
     test_basic_accumulation()
     test_zero_power()
@@ -154,4 +196,8 @@ if __name__ == "__main__":
     test_multiple_accumulation()
     test_charge_end_detection()
     test_cooldown()
+    test_limit_reached_disabled_when_non_positive()
+    test_limit_reached_boundaries()
+    test_normalize_charge_limit_valid()
+    test_normalize_charge_limit_rejects_dirty_input()
     print("\nAll tests passed!")

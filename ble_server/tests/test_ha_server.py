@@ -498,6 +498,244 @@ class TestWebLanguageAPI:
         assert body["language"] == "en"
 
 
+class TestChargeLimitsAPI:
+    """/api/charge-limits 指定充电量后自动关断（DB meta 持久化，即时生效）。"""
+
+    @pytest.fixture
+    def server(self, real_history):
+        """Server + 真实 BLEManager（限额状态在 manager 内存中）。"""
+        from ha_server import Server
+        from ble_manager import BLEManager
+        from state import ChargerState
+
+        s = Server.__new__(Server)
+        s.history = real_history
+        config = MagicMock()
+        config.server.reconnect_base_delay = 1.0
+        config.server.reconnect_max_delay = 300.0
+        config.server.command_timeout = 10.0
+        config.server.settings_refresh_interval = 60.0
+        config.topic_status = "cuktech/charger/status"
+        config.topic_settings = "cuktech/charger/settings"
+        config.topic_port = "cuktech/charger/port"
+        s.ble = BLEManager(mac="AA:BB:CC:DD:EE:FF", token="aabbccddeeff",
+                           state=ChargerState(), config=config)
+        s.ble.set_history(real_history)
+        s._status_cache_valid = False
+        s._status_cache_bytes = None
+        return s
+
+    def _post(self, body):
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value=body)
+        return request
+
+    @pytest.mark.asyncio
+    async def test_get_defaults_all_disabled(self, server):
+        request = AsyncMock()
+        request.method = "GET"
+        result = await server.handle_charge_limits(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert set(body["limits"]) == {"c1", "c2", "c3", "a"}
+        for entry in body["limits"].values():
+            assert entry["wh"] == 0.0
+            assert entry["mode"] == "once"
+            assert entry["session_wh"] == 0.0
+            assert entry["is_charging"] is False
+            assert entry["fired"] is False
+
+    @pytest.mark.asyncio
+    async def test_post_single_port_persists_and_applies(self, server):
+        result = await server.handle_charge_limits(
+            self._post({"port": "c1", "wh": 30, "mode": "always"}))
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert body["limits"]["c1"]["wh"] == 30.0
+        assert body["limits"]["c1"]["mode"] == "always"
+        assert body["limits"]["c1"]["fired"] is False
+        # 内存即时生效
+        assert server.ble._charge_limits[1] == 30.0
+        assert server.ble._limit_modes[1] == "always"
+        # DB 持久化（重启后仍生效）
+        assert server.history.get_charge_limits()["c1"] == {"wh": 30.0, "mode": "always"}
+        assert server._status_cache_valid is False
+
+    @pytest.mark.asyncio
+    async def test_post_batch(self, server):
+        result = await server.handle_charge_limits(
+            self._post({"limits": {"c1": {"wh": 30, "mode": "always"},
+                                   "a": {"wh": 10, "mode": "once"}}}))
+        body = json.loads(result.body)
+        assert body["limits"]["c1"]["wh"] == 30.0
+        assert body["limits"]["a"]["wh"] == 10.0
+        assert body["limits"]["a"]["mode"] == "once"
+        assert body["limits"]["a"]["fired"] is False
+        assert body["limits"]["c2"]["wh"] == 0.0   # 未提及的端口不动
+
+    @pytest.mark.asyncio
+    async def test_wh_zero_disables(self, server):
+        await server.handle_charge_limits(self._post({"port": "c1", "wh": 30}))
+        result = await server.handle_charge_limits(self._post({"port": "c1", "wh": 0}))
+        body = json.loads(result.body)
+        assert body["limits"]["c1"]["wh"] == 0.0
+        assert server.ble._charge_limits[1] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_omitted_mode_keeps_existing(self, server):
+        """只改 wh 时不应把已有 mode 重置为默认。"""
+        await server.handle_charge_limits(self._post({"port": "c1", "wh": 30, "mode": "always"}))
+        result = await server.handle_charge_limits(self._post({"port": "c1", "wh": 40}))
+        body = json.loads(result.body)
+        assert body["limits"]["c1"]["wh"] == 40.0
+        assert body["limits"]["c1"]["mode"] == "always"
+        assert body["limits"]["c1"]["fired"] is False
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_finite_and_negative(self, server):
+        """NaN/inf/负数必须整体拒绝——静默归一成"禁用"会让用户以为设了限额。"""
+        for bad in (float("nan"), float("inf"), float("-inf"), -1, -0.5):
+            result = await server.handle_charge_limits(self._post({"port": "c1", "wh": bad}))
+            assert result.status == 400, f"{bad!r} should be rejected"
+        # 拒绝后配置未被改动
+        assert server.ble._charge_limits[1] == 0.0
+        assert server.history.get_charge_limits()["c1"]["wh"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_rejects_out_of_range(self, server):
+        result = await server.handle_charge_limits(self._post({"port": "c1", "wh": 1001}))
+        assert result.status == 400
+        result = await server.handle_charge_limits(self._post({"port": "c1", "wh": "abc"}))
+        assert result.status == 400
+
+    @pytest.mark.asyncio
+    async def test_accepts_boundary_values(self, server):
+        result = await server.handle_charge_limits(self._post({"port": "c1", "wh": 1000}))
+        assert result.status == 200
+        result = await server.handle_charge_limits(self._post({"port": "c1", "wh": 0}))
+        assert result.status == 200
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_port(self, server):
+        result = await server.handle_charge_limits(self._post({"port": "c9", "wh": 10}))
+        assert result.status == 400
+        result = await server.handle_charge_limits(
+            self._post({"limits": {"c1": {"wh": 10}, "zz": {"wh": 5}}}))
+        assert result.status == 400
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_mode(self, server):
+        result = await server.handle_charge_limits(
+            self._post({"port": "c1", "wh": 10, "mode": "sometimes"}))
+        assert result.status == 400
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_fields_and_bad_json(self, server):
+        result = await server.handle_charge_limits(self._post({}))
+        assert result.status == 400
+        result = await server.handle_charge_limits(self._post({"port": "c1"}))
+        assert result.status == 400   # wh 缺失
+        result = await server.handle_charge_limits(self._post({"limits": {}}))
+        assert result.status == 400
+
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(side_effect=json.JSONDecodeError("bad", "", 0))
+        result = await server.handle_charge_limits(request)
+        assert result.status == 400
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_does_not_write_anything(self, server):
+        """批量中任一项非法 → 整体拒绝，不留半写状态。"""
+        result = await server.handle_charge_limits(
+            self._post({"limits": {"c1": {"wh": 30}, "c2": {"wh": -5}}}))
+        assert result.status == 400
+        assert server.ble._charge_limits[1] == 0.0
+        assert server.history.get_charge_limits()["c1"]["wh"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_get_reports_session_progress(self, server):
+        """GET 带各端口本会话已充能量，前端可算剩余。"""
+        await server.handle_charge_limits(self._post({"port": "c1", "wh": 30}))
+        server.ble._energy_states[1].is_charging = True
+        server.ble._energy_states[1].session_wh = 12.3456
+        request = AsyncMock()
+        request.method = "GET"
+        result = await server.handle_charge_limits(request)
+        body = json.loads(result.body)
+        assert body["limits"]["c1"]["session_wh"] == 12.346
+        assert body["limits"]["c1"]["is_charging"] is True
+        assert body["limits"]["c1"]["wh"] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_works_without_history(self, server):
+        """history 不可用时仍能改内存配置（不写库），不抛异常。"""
+        server.history = None
+        result = await server.handle_charge_limits(self._post({"port": "c1", "wh": 30}))
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert server.ble._charge_limits[1] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_once_limit_survives_restart_load(self, server):
+        """重启加载配置不消费 once 限额（决策 C：重启不算会话终止）。"""
+        await server.handle_charge_limits(
+            self._post({"port": "c1", "wh": 30, "mode": "once"}))
+        # 模拟新进程启动：从 DB 重新加载
+        server.ble._charge_limits = {i: 0.0 for i in range(1, 5)}
+        server.ble.set_charge_limits(server.history.get_charge_limits())
+        assert server.ble._charge_limits[1] == 30.0
+
+
+class TestShutdownPreservesOnceLimit:
+    """on_shutdown 必须传 shutdown 原因：服务停止不是用户意图终止，不消费 once。
+
+    实际生产关机路径是 aiohttp 的 on_shutdown 钩子（不是 ble.stop()），修复前
+    它调用无参 _close_active_sessions() → reason=unknown → 误消费限额。
+    """
+
+    @pytest.mark.asyncio
+    async def test_on_shutdown_keeps_once_limit(self):
+        import ha_server
+        from ble_manager import BLEManager, END_REASON_SHUTDOWN
+        from state import ChargerState
+
+        cfg = MagicMock()
+        for k, v in dict(reconnect_base_delay=1.0, reconnect_max_delay=300.0,
+                         command_timeout=10.0, settings_refresh_interval=60.0).items():
+            setattr(cfg.server, k, v)
+        cfg.topic_status = cfg.topic_settings = cfg.topic_port = "x"
+        mgr = BLEManager(mac="AA:BB:CC:DD:EE:FF", token="aabbccddeeff",
+                         state=ChargerState(), config=cfg)
+        mgr._history = MagicMock()
+        mgr._mqtt_publish = MagicMock()
+        mgr.set_charge_limits({"c1": {"wh": 30.0, "mode": "once"}})
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_wh = 3.0
+        es.session_start = time.time() - 60
+        mgr.state.ports[1].voltage = 20.0
+        mgr.state.ports[1].current = 2.0
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 7
+
+        # 复现 on_shutdown 的第一条语句
+        mgr._close_active_sessions(END_REASON_SHUTDOWN)
+
+        assert mgr._charge_limits[1] == 30.0, "服务停止不应消费 once 限额"
+        assert es.is_charging is False, "会话仍应正常闭合"
+
+    @pytest.mark.asyncio
+    async def test_on_shutdown_source_passes_shutdown_reason(self):
+        """静态断言：on_shutdown 里必须显式传 shutdown 原因（防止回归成无参调用）。"""
+        import inspect
+        import ha_server
+        src = inspect.getsource(ha_server.on_shutdown)
+        assert "_close_active_sessions(END_REASON_SHUTDOWN)" in src, \
+            "on_shutdown 必须以 END_REASON_SHUTDOWN 关闭会话，否则关机误消费 once 限额"
+
+
 class TestStaticCacheKeys:
     """静态缓存 key 的 Windows 路径兼容性（反斜杠 → 404 bug 回归测试）。"""
 

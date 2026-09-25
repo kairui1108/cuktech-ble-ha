@@ -17,8 +17,24 @@ except ImportError:
     from cuktech_ble.protocol import READABLE_SETTINGS_PIIDS, UUID_FE95, mac_str_to_bytes
 
 from state import ChargerState, PORT_NAMES, PORT_BITS, PORT_DEFAULT, decode_port, decode_pdo_caps
+from energy import (limit_reached, normalize_charge_limit, DEFAULT_LIMIT_MODE,
+                    LIMIT_MODE_ONCE)
 
 _LOGGER = logging.getLogger("cuktech_ble")
+
+# 端口名 -> PIID（PORT_NAMES 的反向映射，限额配置以稳定端口名对外）
+PORT_IDS = {name: piid for piid, name in PORT_NAMES.items()}
+
+# 会话终止原因：决定 once 限额是否被消费（见 _release_limit）
+END_REASON_USER_OFF = "port_off"      # 用户/限额触发的端口关闭
+END_REASON_UNPLUG = "unplug"          # 拔出负载（V=0,I=0 主动探测确认）
+END_REASON_LOW_POWER = "low_power"    # 功率衰减/低电流自然结束（充满）
+END_REASON_LINK_LOSS = "link_loss"    # BLE 链路中断/重连（基础设施，会话可续）
+END_REASON_SHUTDOWN = "shutdown"      # 服务停止/关机
+END_REASON_UNKNOWN = "unknown"        # 未标注原因（保守：视为真实终止）
+
+# 这些原因不清零 once 限额——会话并非用户意图终止，保留用户刚设的限制。
+END_REASONS_PRESERVING_LIMIT = frozenset({END_REASON_LINK_LOSS, END_REASON_SHUTDOWN})
 
 _status_cache_invalidator = None
 
@@ -46,6 +62,7 @@ class BLEManager:
     CIRCUIT_BREAKER_MAX_FAIL = 20  # consecutive failures before cooling off
     CIRCUIT_BREAKER_COOLDOWN = 300  # 5 minutes
     MAX_AUTH_FAILURES = 15  # consecutive auth failures before restarting process
+    LIMIT_RETRY_SEC = 15    # 限额关断命令未生效的重试窗口（命令超时 10s）
 
     def __init__(self, mac, token, state, config):
         self.mac = mac
@@ -84,6 +101,12 @@ class BLEManager:
         self._energy_states = {i: PortEnergyState() for i in range(1, 5)}
         self._charge_detectors = {i: ChargeEndDetector() for i in range(1, 5)}
         self._active_sessions = {}  # port -> session_id
+        # Charge limits (指定充电量后自动关断端口)
+        # wh<=0 = 禁用；mode: once(命中即消费清零) / always(长期有效，每次会话重新武装)
+        self._charge_limits = {i: 0.0 for i in range(1, 5)}
+        self._limit_modes = {i: DEFAULT_LIMIT_MODE for i in range(1, 5)}
+        self._limit_fired = {i: False for i in range(1, 5)}   # 本会话已入队关断（防重入）
+        self._limit_fired_at = {i: 0.0 for i in range(1, 5)}
         # Protocol debounce: track consecutive protocol readings per port
         self._proto_buf = {i: [] for i in range(1, 5)}  # port -> [last N protocols]
         self._PROTO_DEBOUNCE_N = 3  # consecutive readings to confirm protocol
@@ -182,16 +205,136 @@ class BLEManager:
                 }
         return result
 
+    # ── Charge limits ────────────────────────────────────────────────
+    # 语义：本端口"本次充电会话"输出能量达到阈值后自动关闭该端口断电。
+    # 阈值单位是充电器输出能量（es.session_wh，由 V×I 梯形积分），不是被充设备的
+    # 实际充入电量——线损与设备内转换损耗使后者偏小。
+    # mode: once=命中即消费清零（一次性）；always=长期有效，每次会话重新武装。
+
+    def set_charge_limits(self, limits: dict) -> dict:
+        """应用限额配置（启动注入 / API 调用），返回归一后的完整状态。
+
+        进程内即时生效；DB 写入由调用方负责（set_meta 是同步 sqlite 调用，
+        不应压在事件循环上）。
+        """
+        for name, entry in (limits or {}).items():
+            piid = PORT_IDS.get(name)
+            if piid is None:
+                continue
+            if isinstance(entry, dict):
+                wh, mode = normalize_charge_limit(entry.get("wh"), entry.get("mode"))
+            else:
+                wh, mode = normalize_charge_limit(entry, None)
+            self._charge_limits[piid] = wh
+            self._limit_modes[piid] = mode
+        return self.get_charge_limits_state()
+
+    def get_charge_limits_state(self) -> dict:
+        """当前限额配置 + 各端口本会话充电进度（供 API/前端读取）。
+
+        session_wh 是"本会话已输出能量"，前端据此显示"已充 X / 限额 Y Wh"。
+        """
+        return {
+            PORT_NAMES.get(p, str(p)): {
+                "wh": self._charge_limits[p],
+                "mode": self._limit_modes[p],
+                "fired": self._limit_fired[p],
+                "session_wh": round(self._energy_states[p].session_wh, 3),
+                "is_charging": self._energy_states[p].is_charging,
+            }
+            for p in range(1, 5)
+        }
+
+    def _enforce_charge_limit(self, piid: int, timestamp: float) -> None:
+        """达到阈值时把"关闭该端口"入队，由命令循环统一执行。
+
+        走 cmd_queue 而非直接 await，是为了与用户命令串行执行，避免与
+        _connect_and_run 的 MIOT 序列在 GATT 上交错。真正的关断、会话闭合、
+        状态广播全部复用 _handle_port_command 既有路径。
+
+        命中后置 _limit_fired 收敛窗口内（命令入队到执行有 1-3 帧推送）的重复
+        入队；若 LIMIT_RETRY_SEC 内端口仍在充电（命令超时/失败），说明配置未
+        生效，复位标记让下一帧重试。
+        """
+        wh = self._charge_limits[piid]
+        if wh <= 0:
+            return
+        es = self._energy_states[piid]
+        if not es.is_charging or not limit_reached(es.session_wh, wh):
+            return
+        if self._limit_fired[piid]:
+            if timestamp - self._limit_fired_at[piid] < self.LIMIT_RETRY_SEC:
+                return
+            _LOGGER.warning("Charge limit for port %d not enforced within %ds, retrying",
+                            piid, self.LIMIT_RETRY_SEC)
+        self._limit_fired[piid] = True
+        self._limit_fired_at[piid] = timestamp
+        _LOGGER.info("Charge limit reached: port=%s %.2fWh >= %.2fWh (%s), switching off",
+                     PORT_NAMES.get(piid, piid), es.session_wh, wh, self._limit_modes[piid])
+        try:
+            self.cmd_queue.put_nowait(("port", (PORT_NAMES[piid], "off"), None))
+        except asyncio.QueueFull:
+            self._limit_fired[piid] = False
+            _LOGGER.error("Command queue full, charge limit not enqueued for port %d", piid)
+
+    def _release_limit(self, piid: int, reason: str = END_REASON_UNKNOWN) -> None:
+        """会话终止时的限额生命周期处理。
+
+        - _limit_fired 一律复位（会话已终止，与"重新武装"双保险）。
+        - once：仅在"真实终止"（端口关闭/拔出/充电自然结束）时消费清零；
+          link_loss / shutdown 属基础设施中断，会话可续，保留限额——否则一次
+          BLE 抖动或一次服务重启就会静默解除用户刚设的限制。
+        - always：长期有效，此处不动，由下次会话起点重新武装。
+        """
+        self._limit_fired[piid] = False
+        if self._charge_limits[piid] <= 0:
+            return
+        if self._limit_modes[piid] != LIMIT_MODE_ONCE:
+            return
+        if reason in END_REASONS_PRESERVING_LIMIT:
+            _LOGGER.info("Charge limit preserved on port %d (reason=%s, mode=once)",
+                         piid, reason)
+            return
+        self._charge_limits[piid] = 0.0
+        _LOGGER.info("One-shot charge limit consumed (port %d, reason=%s, %.2fWh session)",
+                     piid, reason, self._energy_states[piid].session_wh)
+        self._persist_limits_async()
+
+    def _persist_limits_async(self) -> None:
+        """把限额写回 DB meta（once 被消费后自动回写）。非阻塞。
+
+        同步 sqlite 写不该压在事件循环上，因此走线程池。
+        """
+        if not self._history:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 关机末期无事件循环（对齐 _close_session 既有处理）：内存已更新，
+            # DB 保留旧值，重启后按旧值重新武装，属可接受降级。
+            _LOGGER.warning("No event loop, charge limits not persisted to DB")
+            return
+        snapshot = {
+            PORT_NAMES.get(p, str(p)): {
+                "wh": self._charge_limits[p], "mode": self._limit_modes[p],
+            }
+            for p in range(1, 5)
+        }
+        task = loop.run_in_executor(None, self._history.set_charge_limits, snapshot)
+        task.add_done_callback(
+            lambda t: _LOGGER.error("Persist charge limits failed: %s", t.exception())
+            if t.exception() else None)
+
     async def request_stop(self):
         """请求停止 BLE 循环 (设置 _stop_event，不直接断开)。"""
-        self._close_active_sessions()
+        self._close_active_sessions(END_REASON_SHUTDOWN)
         self._stop_event.set()
 
-    def _close_active_sessions(self):
+    def _close_active_sessions(self, reason: str = END_REASON_UNKNOWN):
         """Gracefully close all active charge sessions on shutdown.
 
         事件（MQTT 充电完成）始终发布；DB 记录仅当真实会话（正 sid）且记录
-        开关开启时写入。
+        开关开启时写入。reason 决定 once 限额是否被消费（见 _release_limit）。
         """
         now = time.time()
         for port, es in self._energy_states.items():
@@ -202,6 +345,7 @@ class BLEManager:
                 det = self._charge_detectors[port]
                 det.on_session_end(now)
                 es.is_charging = False
+                self._release_limit(port, reason)
                 es.last_end_time = now
                 db_sid = sid if (sid and sid > 0) else 0
                 if es.session_wh >= 0.05:
@@ -301,13 +445,29 @@ class BLEManager:
             lambda t: _LOGGER.error("Record charge point failed: %s", t.exception()) if t.exception() else None)
         return True
 
-    def _close_session(self, piid, timestamp, voltage=0, current=0):
+    def _session_active(self, piid: int) -> bool:
+        """该端口是否存在需要闭合的会话（内存态或已注册 sid）。
+
+        会话建立是两步的：push 处理器先同步置 is_charging=True，再把
+        start_session 交给线程池，sid 由回调写入 _active_sessions。因此存在
+        "is_charging=True 但尚无 sid" 的窗口（DB 写失败时则长期如此）。
+        只看 _active_sessions 会漏掉该窗口：端口被关断后 is_charging 永远
+        停在 True，get_live_session_data() 会持续上报一个已断电端口的"实时会话"。
+        """
+        return piid in self._active_sessions or self._energy_states[piid].is_charging
+
+    def _close_session(self, piid, timestamp, voltage=0, current=0,
+                       reason: str = END_REASON_UNKNOWN):
         """Close a charge session: cleanup state, notify, and write to DB.
 
         会话记录开关（record_sessions）只影响 DB 写入：关闭记录期间创建的会话
         使用内存占位 sid（负值），实时显示与充电完成事件（MQTT，存在有效能量
         >=0.05Wh 时）照常；仅真实会话（开启期间创建的正 sid）且开关开启时才落库。
         重开开关后正在充电的会话保持显示（占位 sid 仍在 _active_sessions）。
+
+        reason 标注终止原因，决定 once 限额是否被消费（见 _release_limit）。
+        所有会话终止路径都收敛到本方法的 is_charging 跃迁，因此限额清理挂在
+        跃迁处即可覆盖全部出口（本方法有多个 return）。
         """
         det = self._charge_detectors[piid]
         es = self._energy_states[piid]
@@ -316,7 +476,12 @@ class BLEManager:
         if sid is None and not es.is_charging:
             return None
         det.on_session_end(timestamp)
+        # 仅在真实跃迁时清理限额：占位清理路径（sid 残留但 is_charging 已 False）
+        # 会再次进入本方法，此时限额早已消费，重复清理会误伤新会话的配置。
+        was_charging = es.is_charging
         es.is_charging = False
+        if was_charging:
+            self._release_limit(piid, reason)
         es.last_end_time = timestamp
         duration = int(timestamp - (es.session_start or timestamp))
         # 仅真实会话（开启记录期间创建的正 sid）可以写库；负 sid 为关闭期间占位
@@ -568,7 +733,7 @@ class BLEManager:
                     pass
 
     async def stop(self):
-        self._close_active_sessions()
+        self._close_active_sessions(END_REASON_SHUTDOWN)
         self._stop_event.set()
         await self._disconnect()
         if _has_bluetoothctl():
@@ -729,8 +894,10 @@ class BLEManager:
             self._ble_connect_time = 0.0  # reset uptime on disconnect
             self._last_notify_time = 0.0  # reset push tracking on disconnect
             self._total_frames = 0       # reset frame counter on disconnect
-            # Close active charge sessions on disconnect
-            self._close_active_sessions()
+            # Close active charge sessions on disconnect。链路中断属基础设施故障
+            # （服务会重连，会话可续），不清零 once 限额——否则一次 BLE 抖动就会
+            # 静默解除用户刚设的限制（见 END_REASONS_PRESERVING_LIMIT）。
+            self._close_active_sessions(END_REASON_LINK_LOSS)
             if was_connected and not self._stop_event.is_set():
                 _LOGGER.error("BLE device disconnected unexpectedly")
         await self.state.set_connection(False, False)
@@ -991,7 +1158,8 @@ class BLEManager:
                             # Check if session should end (gradual power decline)
                             if det.should_end_session(es, now):
                                 self._low_current_count[piid] = 0
-                                sid = self._close_session(piid, now, ps.voltage, ps.current)
+                                sid = self._close_session(piid, now, ps.voltage, ps.current,
+                                                          END_REASON_LOW_POWER)
                                 if sid and sid > 0:
                                     _LOGGER.info("Timer ended session %d (port %d, %.1fWh)",
                                                  sid, piid, es.session_wh)
@@ -999,6 +1167,8 @@ class BLEManager:
                                 # 仅真实会话（正 sid）且记录开启时写入采样点
                                 self._record_charge_point(
                                     piid, ps.voltage, ps.current, ps.protocol or "")
+                            # 充电量达到阈值 → 入队关断（与 push 路径同一判定）
+                            self._enforce_charge_limit(piid, now)
                         # port_history: always write for chart continuity
                         task = loop.run_in_executor(
                             None, self._history.record_port_data,
@@ -1174,16 +1344,20 @@ class BLEManager:
                 if port == "all":
                     for piid in range(1, 5):
                         if not bool(new_val & (1 << (piid - 1))):
-                            if piid in self._active_sessions:
-                                self._close_session(piid, time.time())
+                            if self._session_active(piid):
+                                self._close_session(piid, time.time(),
+                                                    reason=END_REASON_USER_OFF)
                             await self.state.update_port(piid, PORT_DEFAULT)
                         self._emit_port_state(piid)
                 else:
                     piid = {"c1": 1, "c2": 2, "c3": 3, "a": 4}.get(port)
                     if piid:
                         if action == "off":
-                            if piid in self._active_sessions:
-                                self._close_session(piid, time.time())
+                            if self._session_active(piid):
+                                # 用户手动关端口，或限额触发（_enforce_charge_limit
+                                # 入队的正是 ("port", (name,"off"))）——两者同路。
+                                self._close_session(piid, time.time(),
+                                                    reason=END_REASON_USER_OFF)
                             await self.state.update_port(piid, PORT_DEFAULT)
                         self._emit_port_state(piid)
                 _invalidate()
@@ -1246,8 +1420,8 @@ class BLEManager:
             # Only update if the live reading differs meaningfully from what we
             # hold — prevents redundant MQTT/SSE emits on unchanged polls.
             if old is None or (port_info["voltage"], port_info["current"]) != (old.voltage, old.current):
-                if not port_info["active"] and piid in self._active_sessions:
-                    self._close_session(piid, time.time())
+                if not port_info["active"] and self._session_active(piid):
+                    self._close_session(piid, time.time(), reason=END_REASON_UNPLUG)
                 _LOGGER.info("verify_port: Port %s update: %s", PORT_NAMES[piid], port_info)
                 await self.state.update_port(piid, port_info)
                 _invalidate()
@@ -1388,7 +1562,8 @@ class BLEManager:
                 # Check gradual power decline on every push (not just low-current)
                 if es.is_charging and det.should_end_session(es, timestamp):
                     self._low_current_count[piid] = 0
-                    sid = self._close_session(piid, timestamp, voltage, current)
+                    sid = self._close_session(piid, timestamp, voltage, current,
+                                              END_REASON_LOW_POWER)
                     if sid and sid > 0:
                         _LOGGER.info("Det ended session %d (port %d, %.1fWh)",
                                      sid, piid, es.session_wh)
@@ -1409,6 +1584,9 @@ class BLEManager:
                     es.session_start = timestamp
                     es.max_power = voltage * current
                     es.max_current = current
+                    # 会话起点重新武装限额（always 长期有效靠此持续；once 若已消费
+                    # 则 wh<=0，此处复位标志无副作用）
+                    self._limit_fired[piid] = False
                     if self._history:
                         loop = asyncio.get_running_loop()
                         protocol = port_info.get("protocol", "")
@@ -1440,7 +1618,8 @@ class BLEManager:
                 elif not active and es.is_charging:
                     # Port closed — end session immediately (no debounce needed)
                     self._low_current_count[piid] = 0
-                    self._close_session(piid, timestamp, voltage, current)
+                    self._close_session(piid, timestamp, voltage, current,
+                                        END_REASON_USER_OFF)
 
                 elif current <= 0.1 and es.is_charging:
                     # Current dropped — debounce before ending
@@ -1448,15 +1627,23 @@ class BLEManager:
                     # Also check ChargeEndDetector for gradual power decline
                     if self._low_current_count[piid] >= self._LOW_CURRENT_N or det.should_end_session(es, timestamp):
                         self._low_current_count[piid] = 0
-                        sid = self._close_session(piid, timestamp, voltage, current)
+                        sid = self._close_session(piid, timestamp, voltage, current,
+                                                  END_REASON_LOW_POWER)
                         if sid and sid > 0:
                             _LOGGER.info("LowCurrent ended session %d (port %d, %.1fWh)",
                                          sid, piid, es.session_wh)
                 # Catch missed end_session: port turns off but session not tracked
                 elif current <= 0.1 and not es.is_charging and piid in self._active_sessions:
-                    sid = self._close_session(piid, timestamp)
+                    sid = self._close_session(piid, timestamp, reason=END_REASON_USER_OFF)
                     if sid and sid > 0:
                         _LOGGER.warning("Closing stale session %d on port %d", sid, piid)
+
+                # 充电量达到阈值 → 入队关断该端口（限流断电）。
+                # 放在会话管理之后：本帧若已因拔插/低电流结束会话（is_charging
+                # 已置 False），判定自然跳过，不会多入队一条多余的 off 命令。
+                # 与用户命令共用 _handle_port_command 路径（命令循环异步执行后
+                # 才真正关断），本帧继续走完采样/曲线写入无副作用。
+                self._enforce_charge_limit(piid, timestamp)
 
                 # Record charge points (every push during active session)
                 if self._history and es.is_charging and piid in self._active_sessions:

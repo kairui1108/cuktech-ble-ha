@@ -139,6 +139,24 @@
             quick: '{{count}}m'
         },
 
+        // ── Charge limit (auto power-off at a set Wh) ──
+        chargeLimit: {
+            title: 'Charge Limit',
+            hint: 'Energy is the charger output (Wh), not what the device actually absorbs (cable/conversion losses)',
+            unit: 'Wh',
+            placeholder: 'Wh',
+            off: 'Off',
+            once: 'Once',
+            always: 'Always',
+            fired: 'Triggered',
+            progress: '{{used}} / {{total}} Wh',
+            set: 'Set',
+            clear: 'Clear',
+            saved: 'Charge limit saved',
+            cleared: 'Charge limit cleared',
+            saveFailed: 'Failed: {{msg}}'
+        },
+
         // ── Charge history ──
         charge: {
             today: 'Today',

@@ -29,10 +29,24 @@ function makeNoop() {
     });
 }
 
+// 真实的 CSSStyleDeclaration 至少要有 setProperty/removeProperty——phone.js 用它
+// 往卡片上写 --depth 这类自定义属性。只给 {} 的话这些赋值会被静默跳过，
+// 冒烟测试就测不到那条路径了。按元素缓存一份，便于"写后读"。
+function makeStyle() {
+    const props = {};
+    return {
+        setProperty(k, v) { props[k] = String(v); },
+        getPropertyValue(k) { return props[k] || ''; },
+        removeProperty(k) { delete props[k]; },
+    };
+}
+
 function makeEl() {
+    const style = makeStyle();
     return new Proxy(function el() {}, {
         get(t, p) {
-            if (p === 'style' || p === 'dataset') return {};
+            if (p === 'style') return style;
+            if (p === 'dataset') return {};
             if (p === 'classList') {
                 return { add() {}, remove() {}, toggle() {}, contains() { return false; } };
             }
@@ -145,20 +159,22 @@ function extractInlineScripts(htmlPath) {
     return scripts.join('\n');
 }
 
-check('index.html chain: chart-config + chart-loader + charge_history + app', () => {
+check('index.html chain: chart-config + chart-loader + charge_history + charge_limit + app', () => {
     const parts = [
         fs.readFileSync(path.join(STATIC, 'chart-config.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'chart-loader.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'charge_history.js'), 'utf8'),
+        fs.readFileSync(path.join(STATIC, 'charge_limit.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'app.js'), 'utf8'),
     ].join('\n;\n');
     const ctx = load(parts);
     flipLocales(ctx); // exercises app.js rerenderDynamic + charge_history refresh
 });
 
-check('phone.html chain: charge_history + phone.js', () => {
+check('phone.html chain: charge_history + charge_limit + phone.js', () => {
     const parts = [
         fs.readFileSync(path.join(STATIC, 'charge_history.js'), 'utf8'),
+        fs.readFileSync(path.join(STATIC, 'charge_limit.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'phone.js'), 'utf8'),
     ].join('\n;\n');
     const ctx = load(parts);

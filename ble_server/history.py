@@ -2,6 +2,7 @@
 import asyncio
 import csv
 import io
+import json
 import logging
 import sqlite3
 import threading
@@ -9,6 +10,16 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+try:
+    from energy import normalize_charge_limit, DEFAULT_LIMIT_MODE
+    from state import PORT_NAMES
+except ImportError:
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from energy import normalize_charge_limit, DEFAULT_LIMIT_MODE
+    from state import PORT_NAMES
 
 _LOGGER = logging.getLogger("cuktech_history")
 
@@ -176,6 +187,57 @@ class PortHistory:
     def set_web_language(self, lang: str) -> None:
         """Persist the Web UI language preference (DB meta, survives restart)."""
         self.set_meta("web_language", lang)
+
+    # ── Charge limits (自动断电阈值，单源 = DB meta) ──
+
+    LIMIT_META_KEY = "charge_limit_wh"
+
+    def get_charge_limits(self) -> dict:
+        """读取各端口充电量阈值，返回 {port_name: {"wh": float, "mode": str}}。
+
+        meta 缺失/JSON 损坏/字段类型非法时逐端口回落禁用（wh=0），不抛异常。
+        端口名以 PORT_NAMES 为准（c1/c2/c3/a），meta 中的未知键忽略。
+        """
+        limits = {name: {"wh": 0.0, "mode": DEFAULT_LIMIT_MODE}
+                  for name in PORT_NAMES.values()}
+        raw = self.get_meta(self.LIMIT_META_KEY, "")
+        if not raw:
+            return limits
+        try:
+            stored = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            _LOGGER.warning("Charge limits meta is not valid JSON, falling back to disabled")
+            return limits
+        if not isinstance(stored, dict):
+            _LOGGER.warning("Charge limits meta is not an object, falling back to disabled")
+            return limits
+        for name in limits:
+            entry = stored.get(name)
+            if entry is None:
+                continue
+            if isinstance(entry, dict):
+                wh, mode = normalize_charge_limit(entry.get("wh"), entry.get("mode"))
+            else:
+                # 兼容简写形式 {"c1": 30}
+                wh, mode = normalize_charge_limit(entry, None)
+            limits[name] = {"wh": wh, "mode": mode}
+        return limits
+
+    def set_charge_limits(self, limits: dict) -> None:
+        """Persist per-port charge limits as JSON in the meta table.
+
+        入参形如 {port_name: {"wh": float, "mode": str}}；未知键忽略，
+        非法值归一为禁用（与 get_charge_limits 对称，保证往返一致）。
+        """
+        clean = {}
+        for name in PORT_NAMES.values():
+            entry = limits.get(name) if isinstance(limits, dict) else None
+            if isinstance(entry, dict):
+                wh, mode = normalize_charge_limit(entry.get("wh"), entry.get("mode"))
+            else:
+                wh, mode = normalize_charge_limit(entry, None)
+            clean[name] = {"wh": wh, "mode": mode}
+        self.set_meta(self.LIMIT_META_KEY, json.dumps(clean))
 
     def _checkpoint_wal(self):
         """Run WAL checkpoint if enough pages have accumulated."""

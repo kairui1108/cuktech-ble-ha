@@ -11,6 +11,7 @@ import gzip
 import hashlib
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -20,7 +21,8 @@ from aiohttp import web
 
 from config import load_config, LOG_LEVELS
 from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS, PIID_RANGES, PROTOCOL_SWITCH_BITS
-from ble_manager import BLEManager, set_status_cache_invalidator
+from ble_manager import BLEManager, set_status_cache_invalidator, END_REASON_SHUTDOWN
+from energy import MAX_LIMIT_WH, LIMIT_MODES
 from history import PortHistory
 try:
     from xiaomi_cloud import XiaomiCloudLoginError, QrCodeXiaomiCloudClient
@@ -696,6 +698,92 @@ class Server:
             self.history.set_web_language(canonical)
         _LOGGER.info("Web UI language set to %s", canonical)
         return web.json_response({"ok": True, "language": canonical})
+
+    async def handle_charge_limits(self, request):
+        """GET/POST /api/charge-limits — 指定充电量后自动关断端口。
+
+        阈值单位是充电器输出能量（Wh，由 V×I 梯形积分得出），不是被充设备的
+        实际充入电量——线损与设备内转换损耗使后者偏小。
+
+        mode: once   达到阈值即消费清零（一次性）
+              always 长期有效，每次充电会话重新武装
+
+        GET 返回每端口配置 + 本会话实时进度（wh/mode/fired/session_wh/is_charging），
+        前端据此显示"已充 X / 限额 Y Wh"并自算剩余。配置持久化在 history.db 的
+        meta 表（单源，随数据库备份/清除），即时生效、无需重启。
+        """
+        if request.method == "GET":
+            return web.json_response({
+                "ok": True,
+                "limits": self.ble.get_charge_limits_state(),
+            })
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+
+        if "limits" in data:
+            raw = data["limits"]
+            if not isinstance(raw, dict) or not raw:
+                return web.json_response(
+                    {"ok": False, "error": "limits must be a non-empty object"}, status=400)
+            updates = raw
+        elif "port" in data:
+            port = str(data["port"]).strip().lower()
+            if port not in PORT_BITS:
+                return web.json_response({"ok": False, "error": f"unknown port: {port}"}, status=400)
+            updates = {port: {"wh": data.get("wh"), "mode": data.get("mode")}}
+        else:
+            return web.json_response({"ok": False, "error": "missing port or limits"}, status=400)
+
+        # 校验：任何非法项都应拒绝整个请求，而不是静默归一成"禁用"（否则用户
+        # 以为设了限额，实际被封禁，属于危险的静默降级）。
+        cleaned = {}
+        for port, entry in updates.items():
+            port = str(port).strip().lower()
+            if port not in PORT_BITS:
+                return web.json_response({"ok": False, "error": f"unknown port: {port}"}, status=400)
+            wh_raw = entry.get("wh") if isinstance(entry, dict) else entry
+            mode_raw = entry.get("mode") if isinstance(entry, dict) else None
+            try:
+                wh = float(wh_raw)
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"ok": False, "error": f"port {port}: wh must be a number"}, status=400)
+            if not math.isfinite(wh) or wh < 0 or wh > MAX_LIMIT_WH:
+                return web.json_response(
+                    {"ok": False, "error": f"port {port}: wh must be finite and within 0-{MAX_LIMIT_WH:g}"},
+                    status=400)
+            if mode_raw is None:
+                mode = None   # 保留该端口既有 mode
+            else:
+                mode = str(mode_raw).strip().lower()
+                if mode not in LIMIT_MODES:
+                    return web.json_response(
+                        {"ok": False, "error": f"port {port}: mode must be one of {LIMIT_MODES}"},
+                        status=400)
+            cleaned[port] = {"wh": wh} if mode is None else {"wh": wh, "mode": mode}
+
+        # 合并既有配置（未提及的端口与 mode 保持原值），写库后应用到内存
+        merged = {name: {"wh": e["wh"], "mode": e["mode"]}
+                  for name, e in self.ble.get_charge_limits_state().items()}
+        for port, entry in cleaned.items():
+            merged[port]["wh"] = entry["wh"]
+            if "mode" in entry:
+                merged[port]["mode"] = entry["mode"]
+
+        # 同步 sqlite 写：放到线程池，避免阻塞事件循环
+        if self.history:
+            await asyncio.get_running_loop().run_in_executor(
+                None, self.history.set_charge_limits, merged)
+        self.ble.set_charge_limits(merged)
+        self.invalidate_status_cache()
+        _LOGGER.info("Charge limits updated: %s",
+                     {p: f'{e["wh"]:g}Wh/{e["mode"]}' for p, e in merged.items() if e["wh"] > 0})
+        return web.json_response({
+            "ok": True,
+            "limits": self.ble.get_charge_limits_state(),
+        })
 
     async def handle_chart(self, request):
         """Get chart-ready data for all ports with caching and ETag."""
@@ -1532,6 +1620,8 @@ app.router.add_get("/api/session-recording", lambda r: get_server().handle_sessi
 app.router.add_post("/api/session-recording", lambda r: get_server().handle_session_recording(r))
 app.router.add_get("/api/web-language", lambda r: get_server().handle_web_language(r))
 app.router.add_post("/api/web-language", lambda r: get_server().handle_web_language(r))
+app.router.add_get("/api/charge-limits", lambda r: get_server().handle_charge_limits(r))
+app.router.add_post("/api/charge-limits", lambda r: get_server().handle_charge_limits(r))
 app.router.add_get("/api/chart", lambda r: get_server().handle_chart(r))
 app.router.add_get("/api/statistics/{port}", lambda r: get_server().handle_statistics(r))
 app.router.add_get("/api/export/{port}", lambda r: get_server().handle_export(r))
@@ -1567,6 +1657,11 @@ async def on_startup(app_):
         s.ble.set_history(s.history)
         # 加载充电会话记录开关（history.db meta 单源，默认开启，即时切换无需重启）
         s.ble.record_sessions = s.history.get_session_recording()
+        # 加载充电量阈值（history.db meta 单源，即时生效无需重启）。
+        # 重启本身不算"会话终止"：once 限额只在"观察到真实会话终止"（端口关闭/
+        # 拔出/充电自然结束）或"触发关断"时消费，因此这里直接读取、不做任何清零。
+        # 代价：进程被强杀期间若用户已拔插（未被观测到），限额会留到下次充电。
+        s.ble.set_charge_limits(s.history.get_charge_limits())
         await s.setup_mqtt()
         if s.mqtt_client:
             s.setup_mqtt_subscriptions()
@@ -1578,8 +1673,9 @@ async def on_startup(app_):
 async def on_shutdown(app_):
     _LOGGER.info("Shutting down...")
     s = get_server()
-    # Close active sessions first
-    s.ble._close_active_sessions()
+    # Close active sessions first. 必须标注 shutdown 原因：只有"用户意图终止"
+    # （端口关闭/拔出/充电自然结束）才消费 once 限额，服务停止不是用户意图终止。
+    s.ble._close_active_sessions(END_REASON_SHUTDOWN)
     # BLE disconnect with timeout
     try:
         await asyncio.wait_for(s.ble.request_stop(), timeout=5.0)

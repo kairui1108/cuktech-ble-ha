@@ -18,6 +18,7 @@ Standalone BLE server for connecting CUKTECH chargers and pushing real-time data
 - **Bemfa Cloud**: XiaoAi / DuerOS voice control for charger ports
 - **Charge Sessions & Energy Stats**: Auto-record charge sessions (duration, energy Wh, peak power), view history via Web UI
 - **Energy Integration (Wh)**: Real-time trapezoidal energy accumulation per port
+- **Charge Limit**: Per-port "switch off after N Wh" (`once` one-shot / `always` persistent), configurable from the index/phone UI cards
 - **SQLite History**: Persistent port data with statistics and CSV export
 - **BLE Connection Quality**: Real-time scoring (0-100) with decrypt rate, notification response, stability metrics
 - **Environment Check**: `check_env.sh` for system compatibility
@@ -216,6 +217,39 @@ cp config.yaml.example config.yaml
 | `/api/chart` | GET | Chart data |
 | `/api/sessions` | GET | Charge sessions |
 | `/api/energy/stats` | GET | Energy statistics |
+| `/api/charge-limits` | GET/POST | Charge limit (auto power-off at a set Wh) |
+
+### Charge Limit
+
+The threshold is **charger output energy** (Wh, trapezoidal integral of V×I), not
+the energy the device actually absorbs — cable and in-device conversion losses make
+the latter smaller (typically 5–15%).
+
+```bash
+# Switch C1 off after 30 Wh, persistently
+curl -X POST http://localhost:8199/api/charge-limits \
+  -H 'Content-Type: application/json' \
+  -d '{"port":"c1","wh":30,"mode":"always"}'
+
+# Batch set; wh=0 disables the limit for that port
+curl -X POST http://localhost:8199/api/charge-limits \
+  -H 'Content-Type: application/json' \
+  -d '{"limits":{"c1":{"wh":30,"mode":"always"},"a":{"wh":0}}}'
+
+# Query (includes per-port session energy / charging state / fired flag)
+curl http://localhost:8199/api/charge-limits
+```
+
+`mode` semantics:
+
+| mode | Threshold reached | Session ended below it (unplug / manual off / full) | BLE reconnect / restart |
+|---|---|---|---|
+| `once` (default) | Port off, limit cleared | Cleared | Preserved |
+| `always` | Port off, limit kept for next session | Preserved | Preserved |
+
+Configuration persists in the `history.db` meta table and applies immediately with
+no restart. Over-shoot depends on the sampling period (~1 s push + command loop),
+about 0.05 Wh at 100 W.
 
 ## Tests
 

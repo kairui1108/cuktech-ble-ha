@@ -7,6 +7,16 @@
     --text: rgba(255,255,255,0.9); --text-dim: rgba(255,255,255,0.4);
     --text-sub: rgba(255,255,255,0.6);
     --page-width: 430px;
+    /* 充电量限额卡片端口色：两套主题共用这同一批值（浅色不覆盖）。
+       这些是亮色，作白底小字只有 1.44～2.6:1，因此卡片里颜色一律作为
+       "填充"使用（实底按钮 + 深色字），文字色走 --text/--text-dim。 */
+    --limit-c1: #FF7A00; --limit-c1-rgb: 255, 122, 0;
+    --limit-c2: #46B4FF; --limit-c2-rgb: 70, 180, 255;
+    --limit-c3: #89D8F3; --limit-c3-rgb: 137, 216, 243;
+    --limit-a:  #FFD24B; --limit-a-rgb:  255, 210, 75;
+    --limit-danger: #FF6B60; --limit-danger-rgb: 255, 107, 96;
+    /* 进度槽：浅色主题要更深，亮色填充才看得出填到哪儿（见 body.light） */
+    --limit-track: rgba(128, 128, 128, 0.2);
 }
 
 body {
@@ -19,6 +29,11 @@ body.light {
     --bg: #f0f0f5; --card-bg: #fff; --card-border: rgba(0,0,0,0.1);
     --text: #1a1a1a; --text-dim: #888; --text-sub: #666;
     --pval-color: #000;
+    /* 端口色本身不覆盖（和暗色主题完全是同一批亮色）。
+       进度槽压深到近黑：亮填充对浅灰槽只有 1.3～1.6:1，等于看不出填了多少；
+       压到 rgba(0,0,0,0.75) 后四种端口色对槽底都 >=3:1（最差 c1 橙 3.97:1）。
+       顺带和暗色主题一致了——那边槽底 #28282a 也是深的，都是"深槽 + 亮填充"。 */
+    --limit-track: rgba(0, 0, 0, 0.75);
 }
 
 .phone {
@@ -364,4 +379,170 @@ select option {
     font-size: 11px;
     color: var(--text-dim);
     margin-top: 2px;
+}
+
+/* ── Charge Limit card（端口色/墨色变量见文件顶部 :root / body.light）──
+   手机端 4 个端口改成"堆叠卡组"：4 张卡落在同一格 grid 里，只有栈顶那张完整
+   可见，其余按 --depth 逐层下移 + 左右收窄，只露出底部一条边。整卡高度因此从
+   4 份降到 1 份，这是本次改版的主要目的。
+   --depth / --limit-count 由 phone.js 写入，翻页手势也在那边（bindLimitGesture）。
+   overflow: hidden 是让被划走的卡片滑出卡外即被裁掉，别去掉。 */
+.charge-limit-deck {
+    display: grid;
+    grid-template-columns: 100%;   /* 显式定宽：卡片的 width: calc(100% - …) 要有确定基准 */
+    --limit-peek: 9px;             /* 每层露出的边缘高度 */
+    /* 给下面几层留出露边空间（层数由 phone.js 按端口数写入）；+2px 是余量，
+       保证最深那张的底边落在裁剪边界内侧，不被切掉。 */
+    padding-bottom: calc((var(--limit-count, 4) - 1) * var(--limit-peek) + 2px);
+    overflow: hidden;
+    touch-action: pan-y;           /* 纵向留给页面滚动，横向手势自己接管 */
+}
+.charge-limit-deck.no-anim .charge-limit-card { transition: none; }
+
+.charge-limit-card {
+    grid-area: 1 / 1;
+    justify-self: center;
+    width: calc(100% - var(--depth, 0) * 8px);
+    transform: translateY(calc(var(--depth, 0) * var(--limit-peek)));
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 12px 14px 14px;
+    transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.3s, width 0.3s;
+    user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+/* 整卡不可选中（拖拽时不会选中文字），但输入控件里仍要能编辑 */
+.charge-limit-card input, .charge-limit-card select { user-select: text; -webkit-user-select: text; }
+
+/* 白色主题的内层端口卡：纯白 + 加深一档的描边 + 两层轻投影。
+   白卡叠在白卡上没有任何颜色差，全靠描边和投影把层级立住——所以这两样都不能省
+   （测试里有断言盯着：卡面与外层同色时，必须有投影）。投影偏下方，正好落在下层
+   卡片露出的那条边上，一沓卡"叠起来"的观感就来自这里。
+   深色主题保持不动：那边靠 --bg(#121215) 与 --card-bg(#000) 的色差分层，本来就
+   有层次，加投影反而糊。 */
+body.light .charge-limit-card {
+    background: #fff;
+    border-color: rgba(0, 0, 0, 0.12);
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08), 0 2px 8px rgba(16, 24, 40, 0.10);
+}
+/* 白卡上的输入/下拉改用浅灰填充：不然白底 + 几乎看不见的描边，控件边界会糊掉 */
+body.light .charge-limit-wh,
+body.light .charge-limit-mode {
+    background: var(--bg);
+}
+
+/* 图形描边：亮端口色在黑底上有 7:1 以上，但白底小图形只有 1.3～2.6:1，浅色主题
+   得靠一圈中性深色把轮廓撑出来。不能改成"浅色主题换一批暗端口色"——那样进度条
+   和圆点会明显发暗、和暗色主题对不上（已经踩过一次）。
+   深色主题直接用端口色（同色描边，看不出多一圈）；浅色主题用下面
+   body.light .charge-limit-* 覆盖成中性深色。 */
+.charge-limit-card, .charge-limit-dotnav {
+    --limit-graphic-edge: var(--port-color);
+    --limit-graphic-edge-danger: var(--limit-danger);
+}
+body.light .charge-limit-card, body.light .charge-limit-dotnav {
+    --limit-graphic-edge: #7A7A7A;
+    --limit-graphic-edge-danger: #7A7A7A;
+}
+
+.charge-limit-card.c1, .charge-limit-dotnav.c1 { --port-color: var(--limit-c1); --port-color-rgb: var(--limit-c1-rgb); }
+.charge-limit-card.c2, .charge-limit-dotnav.c2 { --port-color: var(--limit-c2); --port-color-rgb: var(--limit-c2-rgb); }
+.charge-limit-card.c3, .charge-limit-dotnav.c3 { --port-color: var(--limit-c3); --port-color-rgb: var(--limit-c3-rgb); }
+.charge-limit-card.a,  .charge-limit-dotnav.a  { --port-color: var(--limit-a);  --port-color-rgb: var(--limit-a-rgb);  }
+
+.charge-limit-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.charge-limit-title { display: flex; align-items: center; gap: 8px; }
+/* 端口色小圆点：两套主题用同一个亮色（和暗色主题观感一致）；浅色主题下由
+   --limit-graphic-edge 补一圈描边，否则黄/浅蓝点在白底上只剩 1.3～1.6:1。 */
+.charge-limit-dot {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    background: var(--port-color);
+    border: 1px solid var(--limit-graphic-edge);
+}
+.charge-limit-name { font-size: 15px; color: var(--text); }
+.charge-limit-status { font-size: 13px; color: var(--text-dim); }
+.charge-limit-status.on { color: var(--text); font-weight: 600; }
+.charge-limit-track { height: 4px; border-radius: 2px; background: var(--limit-track); overflow: hidden; margin-bottom: 6px; }
+/* 进度条填充同样是两主题统一的亮色；浅色主题下槽底更深，靠对比看出进度 */
+.charge-limit-fill { height: 100%; width: 0; border-radius: 2px; background: var(--port-color); transition: width 0.4s ease; }
+.charge-limit-progress { font-size: 11px; color: var(--text-dim); text-align: center; height: 14px; margin-bottom: 6px; }
+.charge-limit-inputs { display: flex; gap: 8px; margin-bottom: 6px; }
+.charge-limit-wh {
+    flex: 1; padding: 8px; border: 1px solid var(--card-border); border-radius: 10px;
+    background: var(--card-bg); color: var(--text); font-size: 14px; text-align: center; min-width: 0;
+}
+.charge-limit-mode {
+    padding: 8px; border: 1px solid var(--card-border); border-radius: 10px;
+    background: var(--card-bg); color: var(--text); font-size: 13px;
+}
+/* 快捷值一排 5 个，固定不换行：卡片越靠下越窄，一旦换行会把这层撑高、连带
+   把整沓卡的高度带上去（grid 行高取最大值）。内容只有 "5Wh" 这类短串，
+   缩到最窄也放得下。 */
+.charge-limit-quick { display: flex; gap: 5px; flex-wrap: nowrap; margin-bottom: 6px; }
+/* 快捷值 chip 与操作按钮都不复用 .sim-btn：那个类是为固定悬浮控件设计的，
+   底色写死 rgba(0,0,0,0.6)（在白色卡片上合成 #666）且不随主题变化；靠源码
+   顺序去覆盖它太脆弱，这里各自定义，颜色一律走主题变量。 */
+.charge-limit-chip {
+    flex: 1; min-width: 0; padding: 6px 10px; border-radius: 8px; font-size: 12px;
+    border: 1px solid var(--card-border);
+    background: rgba(128, 128, 128, 0.12);
+    color: var(--text);
+    cursor: pointer; transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+}
+.charge-limit-chip:active { border-color: var(--port-color); background: rgba(var(--port-color-rgb), 0.25); }
+.charge-limit-actions { display: flex; gap: 8px; }
+.charge-limit-action {
+    flex: 1; padding: 8px; border-radius: 10px; font-size: 13px;
+    background: transparent; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; transition: all 0.2s;
+}
+/* 柔和淡染底 + 主题文字色（对齐 .countdown-toggle-btn 的既有淡染风格，
+   但文字用 --text 而非端口色——端口色是亮色，作白底小字仅 1.44～2.6:1 不可读；
+   作淡染底则没问题）。实底全饱和太扎眼，故用 0.15 淡染 + 同色细边框区分。
+   实测 --text 落淡染底：暗色最差 12.7:1 / 白色最差 13.4:1，远超 AA 的 4.5:1。 */
+.charge-limit-set {
+    color: var(--text);
+    background: rgba(var(--port-color-rgb), 0.15);
+    border: 1px solid rgba(var(--port-color-rgb), 0.3);
+    font-weight: 600;
+}
+.charge-limit-set:active { background: rgba(var(--port-color-rgb), 0.28); }
+.charge-limit-clear {
+    color: var(--text);
+    background: rgba(var(--limit-danger-rgb), 0.15);
+    border: 1px solid rgba(var(--limit-danger-rgb), 0.3);
+    font-weight: 600;
+}
+.charge-limit-clear:active { background: rgba(var(--limit-danger-rgb), 0.28); }
+
+/* ── 翻页指示点：不只指示"现在看的是哪个端口"，还要能一眼看出哪些端口设了限额
+   （卡组一次只显示一个端口，不滑过去就看不到别的端口）。状态编码：
+   空心 = 未设限额；实心 = 已设；实心且换成警示墨色 = 本次已触发关断；
+   拉长成胶囊 = 当前置顶的那张 —— 形状差异不依赖颜色，色盲用户同样能分辨。
+   按钮本体 24×24 是为了够到触摸目标，视觉圆点由 ::before 画。 ── */
+.charge-limit-dots { display: flex; justify-content: center; align-items: center; gap: 6px; margin-top: 10px; }
+.charge-limit-dotnav {
+    width: 24px; height: 24px; padding: 0; border: 0; background: none;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.charge-limit-dotnav::before {
+    content: ''; box-sizing: border-box;
+    width: 10px; height: 10px; border-radius: 5px;
+    border: 2px solid var(--limit-graphic-edge);
+    background: transparent;
+    transition: width 0.25s ease, background-color 0.25s ease, border-color 0.25s ease;
+}
+.charge-limit-dotnav.is-set::before { background: var(--port-color); }
+.charge-limit-dotnav.is-fired::before {
+    border-color: var(--limit-graphic-edge-danger); background: var(--limit-danger);
+}
+.charge-limit-dotnav.is-current::before { width: 22px; }
+
+/* 翻卡是纯装饰动效：用户要求减少动态时直接关掉过渡（JS 的状态机不依赖过渡事件） */
+@media (prefers-reduced-motion: reduce) {
+    .charge-limit-deck .charge-limit-card { transition: none; }
+    .charge-limit-dotnav::before { transition: none; }
 }

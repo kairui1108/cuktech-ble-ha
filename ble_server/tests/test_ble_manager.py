@@ -10,6 +10,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from ble_manager import BLEManager, set_status_cache_invalidator, _invalidate
+from ble_manager import (END_REASON_USER_OFF, END_REASON_UNPLUG, END_REASON_LOW_POWER,
+                         END_REASON_LINK_LOSS, END_REASON_SHUTDOWN, END_REASON_UNKNOWN,
+                         PORT_IDS)
 from state import ChargerState, PORT_NAMES, PORT_BITS, PORT_DEFAULT
 
 
@@ -896,6 +899,493 @@ class TestSessionRecording:
         mgr._close_resumed_orphan(1, 100)
         await asyncio.sleep(0.05)
         mgr._history.delete_session.assert_called_once_with(100)
+
+
+class TestChargeLimitWiring:
+    """判定确实挂在两条数据路径上（push 帧 + 1s timer）。"""
+
+    @pytest.mark.asyncio
+    async def test_push_path_enforces_limit(self):
+        """BLE 推送路径：能量累计到阈值后自动入队关断。"""
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+        mgr.ctrl.decrypt = MagicMock(return_value=bytes(
+            [0, 0, 0, 0, 0x04, 0, 0, 1, 0, 0x0a, 25, 201]))   # 20.1V 2.5A
+        mgr.set_mqtt_publisher(MagicMock())
+        mgr.set_charge_limits({"c1": {"wh": 0.01, "mode": "once"}})
+        # 会话已在进行中且本次会话能量已达阈值（测试帧 dt≈0，无法靠积分累积）
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_wh = 5.0
+        es.session_start = time.time() - 60
+
+        data = bytes([0, 0, 0x02, 4]) + b'\x00' * 10
+        await mgr._handle_inline_data(data)
+
+        assert mgr._limit_fired[1] is True, "push 路径应触发限额"
+        assert mgr.cmd_queue.get_nowait()[1] == ("c1", "off")
+
+    @pytest.mark.asyncio
+    async def test_push_path_ignores_limit_below_threshold(self):
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+        mgr.ctrl.decrypt = MagicMock(return_value=bytes(
+            [0, 0, 0, 0, 0x04, 0, 0, 1, 0, 0x0a, 25, 201]))
+        mgr.set_mqtt_publisher(MagicMock())
+        mgr.set_charge_limits({"c1": {"wh": 100.0, "mode": "once"}})
+
+        data = bytes([0, 0, 0x02, 4]) + b'\x00' * 10
+        for _ in range(6):
+            await mgr._handle_inline_data(data)
+
+        assert mgr._limit_fired[1] is False
+        assert mgr.cmd_queue.empty()
+
+    @pytest.mark.asyncio
+    async def test_timer_path_enforces_limit(self):
+        """1s timer 路径（端口 idle 无推送时）同样触发限额。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.set_charge_limits({"c1": {"wh": 0.005, "mode": "once"}})
+        mgr.state.ports[1].voltage = 20.0
+        mgr.state.ports[1].current = 1.0
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_wh = 0.0
+        es.session_start = time.time() - 60
+        es.last_time = time.time() - 10      # 触发 idle 分支
+
+        with patch("asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError])):
+            with pytest.raises(asyncio.CancelledError):
+                await mgr._port_timer()
+
+        assert mgr._limit_fired[1] is True, "timer 路径应触发限额"
+        # C3/A 主动轮询也会入队 verify_port，故按内容查找而非依赖队首顺序
+        queued = []
+        while not mgr.cmd_queue.empty():
+            queued.append(mgr.cmd_queue.get_nowait()[1])
+        assert ("c1", "off") in queued
+
+
+class TestChargeLimitEnforce:
+    """限额判定与入队（_enforce_charge_limit）。"""
+
+    def _charging(self, mgr, port=1, wh=0.0, session_wh=0.0):
+        mgr._charge_limits[port] = wh
+        es = mgr._energy_states[port]
+        es.is_charging = True
+        es.session_wh = session_wh
+        es.session_start = 1000.0
+        return es
+
+    def test_disabled_never_enqueues(self):
+        mgr = make_manager()
+        self._charging(mgr, wh=0.0, session_wh=100.0)
+        mgr._enforce_charge_limit(1, 2000.0)
+        assert mgr.cmd_queue.empty()
+
+    def test_not_charging_never_enqueues(self):
+        mgr = make_manager()
+        mgr._charge_limits[1] = 30.0
+        mgr._energy_states[1].session_wh = 100.0   # is_charging 仍为 False
+        mgr._enforce_charge_limit(1, 2000.0)
+        assert mgr.cmd_queue.empty()
+
+    def test_below_threshold_never_enqueues(self):
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, session_wh=29.99)
+        mgr._enforce_charge_limit(1, 2000.0)
+        assert mgr.cmd_queue.empty()
+
+    def test_at_threshold_enqueues_port_off(self):
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, session_wh=30.0)
+        mgr._enforce_charge_limit(1, 2000.0)
+        cmd_type, cmd_data, future = mgr.cmd_queue.get_nowait()
+        assert cmd_type == "port"
+        assert cmd_data == ("c1", "off")
+        assert future is None
+
+    def test_above_threshold_enqueues(self):
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, session_wh=31.5)
+        mgr._enforce_charge_limit(1, 2000.0)
+        assert mgr.cmd_queue.qsize() == 1
+
+    def test_port_name_mapping_all_ports(self):
+        """四个端口名映射正确（c1/c2/c3/a）。"""
+        mgr = make_manager()
+        for piid, name in ((1, "c1"), (2, "c2"), (3, "c3"), (4, "a")):
+            self._charging(mgr, port=piid, wh=1.0, session_wh=1.0)
+            mgr._enforce_charge_limit(piid, 2000.0)
+            assert mgr.cmd_queue.get_nowait()[1] == (name, "off")
+
+    def test_no_duplicate_enqueue_within_retry_window(self):
+        """命中后同一会话内不重复入队（防 1-3 帧窗口内重复 GATT 往返）。"""
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, session_wh=30.0)
+        mgr._enforce_charge_limit(1, 2000.0)
+        mgr._enforce_charge_limit(1, 2001.0)
+        mgr._enforce_charge_limit(1, 2002.0)
+        assert mgr.cmd_queue.qsize() == 1
+
+    def test_retries_after_watchdog_window(self):
+        """入队后超过 LIMIT_RETRY_SEC 端口仍在充电（命令失败/超时）→ 重试。"""
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, session_wh=30.0)
+        mgr._enforce_charge_limit(1, 2000.0)
+        mgr._enforce_charge_limit(1, 2000.0 + mgr.LIMIT_RETRY_SEC + 1)
+        assert mgr.cmd_queue.qsize() == 2
+
+    def test_queue_full_resets_fired_flag(self):
+        """队列满时复位标志，下一帧重试（不做静默丢弃）。"""
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, session_wh=30.0)
+        for _ in range(mgr.CMD_QUEUE_MAXSIZE):
+            mgr.cmd_queue.put_nowait(("set", (5, 1), None))
+        mgr._enforce_charge_limit(1, 2000.0)
+        assert mgr._limit_fired[1] is False
+
+
+class TestChargeLimitRelease:
+    """会话终止时的限额生命周期（_release_limit / 两种 mode）。"""
+
+    def _charging(self, mgr, port=1, wh=30.0, mode="once", session_wh=1.0):
+        mgr._charge_limits[port] = wh
+        mgr._limit_modes[port] = mode
+        es = mgr._energy_states[port]
+        es.is_charging = True
+        es.session_wh = session_wh
+        es.session_start = 1000.0
+        return es
+
+    def test_once_consumed_on_user_off(self):
+        """once + 手动关端口（未达阈值）→ 消费清零。"""
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, mode="once", session_wh=5.0)
+        mgr._release_limit(1, END_REASON_USER_OFF)
+        assert mgr._charge_limits[1] == 0.0
+        assert mgr._limit_fired[1] is False
+
+    def test_once_consumed_on_unplug(self):
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, mode="once", session_wh=5.0)
+        mgr._release_limit(1, END_REASON_UNPLUG)
+        assert mgr._charge_limits[1] == 0.0
+
+    def test_once_consumed_on_low_power_end(self):
+        """低功率自然结束（充满）也属真实终止 → 消费。"""
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, mode="once", session_wh=5.0)
+        mgr._release_limit(1, END_REASON_LOW_POWER)
+        assert mgr._charge_limits[1] == 0.0
+
+    def test_once_preserved_on_link_loss(self):
+        """BLE 抖动重连不得静默解除用户刚设的 once 限额。"""
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, mode="once", session_wh=5.0)
+        mgr._release_limit(1, END_REASON_LINK_LOSS)
+        assert mgr._charge_limits[1] == 30.0
+        assert mgr._limit_fired[1] is False
+
+    def test_once_preserved_on_shutdown(self):
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, mode="once", session_wh=5.0)
+        mgr._release_limit(1, END_REASON_SHUTDOWN)
+        assert mgr._charge_limits[1] == 30.0
+
+    def test_unknown_reason_conservatively_consumes(self):
+        """未标注原因视为真实终止（保守：不可假定基础设施中断）。"""
+        mgr = make_manager()
+        self._charging(mgr, wh=30.0, mode="once", session_wh=5.0)
+        mgr._release_limit(1)
+        assert mgr._charge_limits[1] == 0.0
+
+    def test_always_mode_never_consumed(self):
+        """always 长期有效：任何原因都不清零，仅复位 fired 待重新武装。"""
+        mgr = make_manager()
+        for reason in (END_REASON_USER_OFF, END_REASON_UNPLUG, END_REASON_LOW_POWER,
+                       END_REASON_LINK_LOSS, END_REASON_SHUTDOWN, END_REASON_UNKNOWN):
+            self._charging(mgr, wh=30.0, mode="always", session_wh=5.0)
+            mgr._limit_fired[1] = True
+            mgr._release_limit(1, reason)
+            assert mgr._charge_limits[1] == 30.0, f"always must survive {reason}"
+            assert mgr._limit_fired[1] is False
+
+    def test_disabled_port_untouched(self):
+        mgr = make_manager()
+        self._charging(mgr, wh=0.0, mode="once", session_wh=5.0)
+        mgr._release_limit(1, END_REASON_USER_OFF)
+        assert mgr._charge_limits[1] == 0.0
+        assert mgr._limit_fired[1] is False
+
+    @pytest.mark.asyncio
+    async def test_once_consumed_through_close_session(self):
+        """端到端：_close_session 的人工关端口路径消费 once 限额并回写 DB。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._mqtt_publish = MagicMock()
+        self._charging(mgr, wh=30.0, mode="once", session_wh=2.0)
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 7
+        mgr._close_session(1, 2000.0, 20.0, 0.5, END_REASON_USER_OFF)
+        await asyncio.sleep(0.05)
+        assert mgr._charge_limits[1] == 0.0
+        mgr._history.set_charge_limits.assert_called_once()
+        persisted = mgr._history.set_charge_limits.call_args[0][0]
+        assert persisted["c1"]["wh"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_close_session_second_entry_does_not_reclear(self):
+        """占位清理路径（is_charging 已 False 但 sid 残留）不得二次消费——
+        否则会误伤刚设的新限额。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        self._charging(mgr, wh=30.0, mode="once", session_wh=2.0)
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 7
+        mgr._close_session(1, 2000.0, 20.0, 0.5, END_REASON_USER_OFF)
+        assert mgr._charge_limits[1] == 0.0
+        # 用户在两次调用之间重新设了限额
+        mgr._charge_limits[1] = 10.0
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 8      # 残留 sid，但 is_charging 已 False
+        mgr._close_session(1, 2001.0, 20.0, 0.5, END_REASON_USER_OFF)
+        assert mgr._charge_limits[1] == 10.0, "stale cleanup must not consume the new limit"
+
+    @pytest.mark.asyncio
+    async def test_link_loss_reason_preserves_limit_end_to_end(self):
+        """端到端：_disconnect 触发的会话关闭（link_loss）保留 once 限额。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._mqtt_publish = MagicMock()
+        self._charging(mgr, wh=30.0, mode="once", session_wh=2.0)
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 7
+        mgr._close_active_sessions(END_REASON_LINK_LOSS)
+        await asyncio.sleep(0.05)
+        assert mgr._charge_limits[1] == 30.0
+        mgr._history.set_charge_limits.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_reason_preserves_limit_end_to_end(self):
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._mqtt_publish = MagicMock()
+        self._charging(mgr, wh=30.0, mode="once", session_wh=2.0)
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 7
+        await mgr.request_stop()
+        await asyncio.sleep(0.05)
+        assert mgr._charge_limits[1] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_persist_skipped_without_history(self):
+        """无 history 时清理仍是内存操作，不抛异常。"""
+        mgr = make_manager()
+        assert mgr._history is None
+        self._charging(mgr, wh=30.0, mode="once", session_wh=2.0)
+        mgr._release_limit(1, END_REASON_USER_OFF)
+        assert mgr._charge_limits[1] == 0.0
+
+
+class TestSessionActivePredicate:
+    """_session_active：会话建立窗口（is_charging=True 但尚无 sid）也必须闭合。
+
+    会话建立分两步——push 同步置 is_charging=True，sid 由 start_session 回调
+    写入。只看 _active_sessions 会漏掉该窗口（DB 写失败时则长期如此），导致
+    端口已断电但 is_charging 永远为 True（幽灵实时会话）。
+    """
+
+    def test_sid_only(self):
+        mgr = make_manager()
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 7
+        assert mgr._session_active(1) is True
+
+    def test_charging_without_sid(self):
+        """关键窗口：is_charging=True、_active_sessions 空。"""
+        mgr = make_manager()
+        mgr._energy_states[1].is_charging = True
+        assert mgr._session_active(1) is True
+
+    def test_neither(self):
+        mgr = make_manager()
+        assert mgr._session_active(1) is False
+
+    def test_other_port_untouched(self):
+        mgr = make_manager()
+        mgr._energy_states[1].is_charging = True
+        assert mgr._session_active(2) is False
+
+    @pytest.mark.asyncio
+    async def test_port_off_closes_session_without_sid(self):
+        """用户关端口且尚无 sid：会话必须闭合，once 限额被消费。"""
+        mgr = make_manager()
+        mgr._mqtt_publish = MagicMock()
+        mgr._energy_states[1].is_charging = True
+        mgr._energy_states[1].session_wh = 5.0
+        mgr.set_charge_limits({"c1": {"wh": 30.0, "mode": "once"}})
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.send_miot_command = AsyncMock(return_value={"value": 0x01})
+
+        await mgr._handle_port_command(("c1", "off"), None)
+
+        assert mgr._energy_states[1].is_charging is False, "幽灵会话未闭合"
+        assert mgr._charge_limits[1] == 0.0, "once 限额未被消费"
+
+    @pytest.mark.asyncio
+    async def test_port_off_all_closes_session_without_sid(self):
+        """port=all 路径同样要闭合无 sid 的会话。"""
+        mgr = make_manager()
+        mgr._mqtt_publish = MagicMock()
+        for piid in (1, 2, 3, 4):
+            mgr._energy_states[piid].is_charging = True
+            mgr._energy_states[piid].session_wh = 5.0
+        mgr.set_charge_limits({"c1": {"wh": 30.0, "mode": "once"}})
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.send_miot_command = AsyncMock(return_value={"value": 0x0F})
+
+        await mgr._handle_port_command(("all", "off"), None)
+
+        for piid in (1, 2, 3, 4):
+            assert mgr._energy_states[piid].is_charging is False
+        assert mgr._charge_limits[1] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_verify_port_unplug_closes_session_without_sid(self):
+        """verify_port 探测到拔出（V=0,I=0）且尚无 sid：会话闭合、限额消费。"""
+        mgr = make_manager()
+        mgr._mqtt_publish = MagicMock()
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_wh = 5.0
+        mgr.set_charge_limits({"c1": {"wh": 30.0, "mode": "once"}})
+        mgr.state.ports[1].voltage = 20.0
+        mgr.state.ports[1].current = 2.0
+        mgr.ctrl = MagicMock()
+        # 真实 GET Result 帧 (opcode 0x03)，value 在 [13:17] = 0 → V=0,I=0
+        mgr.ctrl.send_miot_command = AsyncMock(return_value={
+            "value": 0,
+            "raw": bytes([0x11, 0x20, 0x01, 0x00, 0x03, 0x01, 0x02, 0x01,
+                          0x00, 0x00, 0x00, 0x04, 0x05, 0x00, 0x00, 0x00, 0x00])})
+
+        await mgr._handle_verify_port(1, None)
+
+        assert es.is_charging is False
+        assert mgr._charge_limits[1] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_limit_fired_off_closes_session_without_sid(self):
+        """端到端：限额触发关断，即便 start_session 失败（无 sid）也要消费并闭合。
+
+        start_session 返回 0（DB 未连接/写失败）时 _active_sessions 永远为空，
+        修复前限额无法消费、is_charging 永远为 True。
+        """
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._history.start_session.return_value = 0   # DB 失败
+        mgr._mqtt_publish = MagicMock()
+        mgr.set_charge_limits({"c1": {"wh": 1.0, "mode": "once"}})
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+        mgr.ctrl.send_miot_command = AsyncMock(return_value={"value": 0x0F})
+        # push 建会话（sid 永不写入）
+        mgr.ctrl.decrypt = MagicMock(return_value=bytes(
+            [0, 0, 0, 0, 0x04, 0, 0, 1, 0, 0x0a, 25, 201]))
+        await mgr._handle_inline_data(bytes([0, 0, 0x02, 4]) + b'\x00' * 10)
+        assert mgr._energy_states[1].is_charging is True
+        assert mgr._active_sessions == {}
+
+        # 能量越过阈值 → 入队关断 → 命令循环执行
+        mgr._energy_states[1].session_wh = 5.0
+        mgr._enforce_charge_limit(1, time.time())
+        await mgr._process_commands()
+
+        assert mgr._energy_states[1].is_charging is False, "幽灵会话未闭合"
+        assert mgr._charge_limits[1] == 0.0, "once 限额未被消费"
+        # 不再是活的实时会话（修复前 get_live_session_data 会持续上报）
+        assert mgr.get_live_session_data() == {}
+
+
+class TestChargeLimitArming:
+    """会话起点重新武装 + always 可重复触发。"""
+
+    def test_session_start_rearms_fired_flag(self):
+        mgr = make_manager()
+        mgr._limit_fired[1] = True
+        mgr._limit_fired[1] = False   # 会话起点写入的那一行
+        assert mgr._limit_fired[1] is False
+
+    def test_set_charge_limits_normalizes_and_returns_state(self):
+        mgr = make_manager()
+        state = mgr.set_charge_limits({"c1": {"wh": 30, "mode": "always"},
+                                       "c2": {"wh": float("nan"), "mode": "once"},
+                                       "c9": {"wh": 99, "mode": "always"}})
+        assert state["c1"]["wh"] == 30.0
+        assert state["c1"]["mode"] == "always"
+        assert state["c1"]["fired"] is False
+        assert state["c2"]["wh"] == 0.0
+        assert set(state) == {"c1", "c2", "c3", "a"}   # c9 被忽略
+
+    def test_get_charge_limits_state_includes_session_progress(self):
+        """状态里带本会话已充能量与充电中标志，供前端显示进度。"""
+        mgr = make_manager()
+        mgr.set_charge_limits({"c1": {"wh": 30.0, "mode": "once"}})
+        mgr._energy_states[1].is_charging = True
+        mgr._energy_states[1].session_wh = 12.34567
+        st = mgr.get_charge_limits_state()["c1"]
+        assert st["session_wh"] == 12.346      # 3 位小数
+        assert st["is_charging"] is True
+        assert st["wh"] == 30.0
+
+    def test_set_charge_limits_bare_number_form(self):
+        mgr = make_manager()
+        state = mgr.set_charge_limits({"a": 12.5})
+        assert state["a"]["wh"] == 12.5
+        assert state["a"]["mode"] == "once"
+
+    def test_always_mode_can_fire_again_after_rearm(self):
+        """always：命中→关断（保留）→下个会话重新武装→再次命中。"""
+        mgr = make_manager()
+        mgr.set_charge_limits({"c1": {"wh": 10.0, "mode": "always"}})
+        es = mgr._energy_states[1]
+        es.is_charging, es.session_wh = True, 10.0
+        mgr._enforce_charge_limit(1, 2000.0)
+        assert mgr.cmd_queue.qsize() == 1
+        # 关断 → 会话终止（保留限额）
+        es.is_charging = False
+        mgr._release_limit(1, END_REASON_USER_OFF)
+        assert mgr._charge_limits[1] == 10.0
+        # 新会话：重新武装
+        es.is_charging, es.session_wh = True, 0.0
+        mgr._limit_fired[1] = False
+        mgr._enforce_charge_limit(1, 3000.0)
+        assert mgr.cmd_queue.qsize() == 1, "re-armed limit must not fire below threshold"
+        es.session_wh = 10.5
+        mgr._enforce_charge_limit(1, 3001.0)
+        assert mgr.cmd_queue.qsize() == 2
+
+    def test_once_mode_does_not_fire_again_after_consume(self):
+        """once：消费后不再触发（即使用户再次开端口充电）。"""
+        mgr = make_manager()
+        mgr.set_charge_limits({"c1": {"wh": 10.0, "mode": "once"}})
+        es = mgr._energy_states[1]
+        es.is_charging, es.session_wh = True, 10.0
+        mgr._enforce_charge_limit(1, 2000.0)
+        es.is_charging = False
+        mgr._release_limit(1, END_REASON_USER_OFF)
+        assert mgr._charge_limits[1] == 0.0
+        mgr.cmd_queue.get_nowait()
+        es.is_charging, es.session_wh = True, 50.0
+        mgr._limit_fired[1] = False
+        mgr._enforce_charge_limit(1, 3000.0)
+        assert mgr.cmd_queue.empty()
 
 
 class TestAuthBackoff:
