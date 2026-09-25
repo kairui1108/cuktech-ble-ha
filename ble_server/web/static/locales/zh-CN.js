@@ -31,7 +31,6 @@
             setFailed: '设置失败: {{msg}}',
             firmware: '固件版本：{{version}}',
             theme: '主题',
-            logs: '日志',
             minutes: '{{count}}分钟'
         },
 
@@ -46,26 +45,15 @@
 
         // ── Index page ──
         index: {
-            powerShare: '端口功率占比',
-            shareTotal: '合计',
             settingsOpen: '设置',
-            settingsHint: '点击右上角"设置"修改息屏时间、端口协议等选项',
-            firmware: '固件',
             connectionStatus: '连接状态',
             bleControl: 'BLE 控制',
-            zoneControl: '控制中心',
-            zoneData: '数据与记录',
-            activePorts: '活跃端口',
             powerChart: '功率曲线',
             portMonitor: '端口监控',
-            clickForDetail: '(点击查看详情)',
             chargeHistory: '充电记录',
             deviceSettings: '设备设置',
             config: '配置',
             themeDark: '深色',
-            themeDeepBlue: '深蓝',
-            themeOcean: '海洋',
-            themeGray: '灰色',
             themeLight: '浅色',
             themeSystem: '跟随系统',
             range30: '30分',

@@ -252,7 +252,7 @@ function renderSessionChart(points) {
 // Pagination state
 let _chPage = 1;
 // 每页条数：默认 2（手机端）。桌面端历史卡更高，可以在 startChargeHistoryAutoRefresh
-// 的第 5 个参数里传入更大的值（本页传 6）。
+// 的第 5 个参数里传入更大的值（index 页两处都传 8）。
 //
 // 注意这个数字是"列表里总共显示多少行"：正在充电的会话会插队排在最前面
 // （is_active=true），行数不固定——活跃会话一多仍按固定条数取数，卡片就会变高。

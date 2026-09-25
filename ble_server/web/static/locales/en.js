@@ -31,7 +31,6 @@
             setFailed: 'Failed to set: {{msg}}',
             firmware: 'Firmware: {{version}}',
             theme: 'Theme',
-            logs: 'Logs',
             minutes: { one: '1 min', other: '{{count}} min' }
         },
 
@@ -46,26 +45,15 @@
 
         // ── Index page ──
         index: {
-            powerShare: 'Port Power Share',
-            shareTotal: 'Total',
             settingsOpen: 'Options',
-            settingsHint: 'Tap Options to change screen timeout, port protocol and more',
-            firmware: 'FW',
             connectionStatus: 'Connection Status',
             bleControl: 'BLE Control',
-            zoneControl: 'Controls',
-            zoneData: 'Data & Records',
-            activePorts: 'Active Ports',
             powerChart: 'Power Chart',
             portMonitor: 'Port Monitor',
-            clickForDetail: '(click for details)',
             chargeHistory: 'Charge History',
             deviceSettings: 'Device Settings',
             config: 'Config',
             themeDark: 'Dark',
-            themeDeepBlue: 'Deep Blue',
-            themeOcean: 'Ocean',
-            themeGray: 'Gray',
             themeLight: 'Light',
             themeSystem: 'System',
             range30: '30m',

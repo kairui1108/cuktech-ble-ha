@@ -30,10 +30,12 @@ body.light {
     --text: #1a1a1a; --text-dim: #888; --text-sub: #666;
     --pval-color: #000;
     /* 端口色本身不覆盖（和暗色主题完全是同一批亮色）。
-       进度槽压深到近黑：亮填充对浅灰槽只有 1.3～1.6:1，等于看不出填了多少；
-       压到 rgba(0,0,0,0.75) 后四种端口色对槽底都 >=3:1（最差 c1 橙 3.97:1）。
+       进度槽必须压深到近黑：亮填充对浅灰槽只有 1.3～2.1:1（最差 a 黄 1.15:1），
+       WCAG 2.1 图形件要 3:1——数学校验：最差 c1 橙 L=0.352 要求槽底 L<=0.084，
+       即 rgba(0,0,0,0.68) 起步。0.75（最差橙 3.97:1）是此前验证过的值，
+       浅槽方案已由 charge_limit_contrast_test.js 判死，别再改回去。
        顺带和暗色主题一致了——那边槽底 #28282a 也是深的，都是"深槽 + 亮填充"。 */
-    --limit-track: rgba(0, 0, 0, 0.10);
+    --limit-track: rgba(0, 0, 0, 0.75);
 }
 
 .phone {
@@ -273,7 +275,6 @@ body.light .port-protos { background: rgba(0,0,0,0.03); }
 
 /* Full line chart placeholder */
 .full-chart-title { font-size: 16px; font-weight: 500; color: var(--text); margin-top: 18px; margin-bottom: 8px; }
-}
 
 /* X axis */
 
@@ -372,52 +373,6 @@ html[lang="en"] .config-hint {
 }
 html[lang="en"] .navbar .nav-title { font-size: 15px; }
 html[lang="en"] .scene-btn .scene-label { font-size: 12px; }
-
-/* ── 下拉选择框：现代化外观（去原生箭头 + 自绘箭头 + hover/focus）──
-   深浅两套都由 --card-* 变量派生；config.html / phone.html 共用本文件。 */
-select, .charge-select {
-    appearance: none;
-    -webkit-appearance: none;
-    height: 32px;
-    padding: 0 26px 0 10px;
-    border: 1px solid var(--card-border);
-    border-radius: 8px;
-    background-color: var(--card-bg);
-    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
-                      linear-gradient(135deg, currentColor 50%, transparent 50%);
-    background-position: right 12px center, right 7px center;
-    background-size: 5px 5px, 5px 5px;
-    background-repeat: no-repeat;
-    color: var(--text-dim);
-    font-size: 12.5px;
-    cursor: pointer;
-    transition: border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
-}
-select:hover, .charge-select:hover { color: var(--text); }
-select:focus, .charge-select:focus {
-    outline: none;
-    border-color: var(--accent, #46B4FF);
-    box-shadow: 0 0 0 3px rgba(var(--limit-c2-rgb, 70, 180, 255), 0.18);
-}
-select option, .charge-select option { background: var(--card-bg); color: var(--text); }
-body.light select, body.light .charge-select { border-color: rgba(0, 0, 0, 0.14); }
-body.light select option { background: #fff; color: #1a1a1a; }
-.mini-stat {
-    text-align: center;
-    padding: 8px 4px;
-    background: var(--card-bg, rgba(255,255,255,0.03));
-    border-radius: 8px;
-}
-.mini-stat-value {
-    font-size: 18px;
-    font-weight: 700;
-    color: var(--text);
-}
-.mini-stat-label {
-    font-size: 11px;
-    color: var(--text-dim);
-    margin-top: 2px;
-}
 
 /* ── Charge Limit card（端口色/墨色变量见文件顶部 :root / body.light）──
    手机端 4 个端口改成"堆叠卡组"：4 张卡落在同一格 grid 里，只有栈顶那张完整

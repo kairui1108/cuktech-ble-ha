@@ -1020,19 +1020,6 @@
             finally { btn.disabled = false; }
         }
 
-        async function bleRestart() {
-            const btn = document.getElementById('bleToggle');
-            if (btn.disabled) return;
-            btn.disabled = true;
-            try {
-                await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
-                await new Promise(r => setTimeout(r, 2000));
-                await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
-                // SSE status event will update UI when connection state changes
-            } catch (e) { console.error('BLE restart error:', e); }
-            finally { btn.disabled = false; }
-        }
-
         async function fetchBemfaStatus() {
             try {
                 const resp = await fetch(`${API_BASE}/api/bemfa`);
