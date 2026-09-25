@@ -10,7 +10,7 @@
 <script src="/static/i18n.js?v=3"></script>
 <script defer src="/static/chart.umd.min.js"></script>
 <script defer src="/static/charge_history.js?v=3"></script>
-<link rel="stylesheet" href="/static/phone.css?v=3">
+<link rel="stylesheet" href="/static/phone.css?v=4">
 </head>
 <body>
 
@@ -272,8 +272,10 @@
         <!-- Charge Limit Card -->
         <div class="card" style="margin-top:12px;">
             <div style="font-size:17px;color:var(--text-dim);margin-bottom:6px;" data-i18n="chargeLimit.title">充电量限额</div>
-            <div style="font-size:11px;color:var(--text-dim);margin-bottom:16px;" data-i18n="chargeLimit.hint">电量指充电器输出能量（Wh），非设备实际充入电量（有线损/转换损耗）</div>
-            <div id="chargeLimitGrid"></div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:14px;" data-i18n="chargeLimit.hint">电量指充电器输出能量（Wh），非设备实际充入电量（有线损/转换损耗）</div>
+            <div class="charge-limit-deck no-anim" id="chargeLimitDeck"></div>
+            <div class="charge-limit-dots" id="chargeLimitDots" role="group"
+                 data-i18n-aria-label="chargeLimit.title" aria-label="充电量限额"></div>
         </div>
 
         <!-- Delay Off Card -->
@@ -286,8 +288,8 @@
     <!-- No sim controls - using real data -->
 </div>
 
-<script defer src="/static/charge_limit.js?v=3"></script>
-<script defer src="/static/phone.js?v=3"></script>
+<script defer src="/static/charge_limit.js?v=4"></script>
+<script defer src="/static/phone.js?v=4"></script>
 
 </body>
 </html>

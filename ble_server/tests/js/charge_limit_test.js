@@ -76,6 +76,33 @@ CL.state.limits.c1 = { wh: 30, mode: 'always', session_wh: 30, is_charging: true
 eq(CL.statusText('c1'), 'chargeLimit.always · chargeLimit.fired', '状态：长期有效 + 已触发');
 eq(CL.progressPct('c1'), 100, '进度封顶 100');
 
+console.log('\n-- 堆叠卡组翻页判定（swipeDecision） --');
+// 阈值 = max(46px, 宽度的 22%)；330px 宽的卡片 -> 72.6px
+eq(CL.swipeDecision(-90, 330), 1, '左滑过阈值 -> 向后翻');
+eq(CL.swipeDecision(90, 330), -1, '右滑过阈值 -> 向前翻');
+eq(CL.swipeDecision(-40, 330), 0, '左滑不足 -> 回弹');
+eq(CL.swipeDecision(40, 330), 0, '右滑不足 -> 回弹');
+eq(CL.swipeDecision(0, 330), 0, '没有位移 -> 回弹');
+eq(CL.swipeDecision(-60, 200), 1, '窄卡回落到 46px 下限（46>44）');
+eq(CL.swipeDecision(-45, 200), 0, '窄卡 45px 仍未达 46px 下限');
+eq(CL.swipeDecision(-200, 0), 0, '宽度为 0（未布局）不翻页');
+eq(CL.swipeDecision(NaN, 330), 0, 'NaN 位移不翻页');
+eq(CL.swipeDecision(-90, Infinity), 0, '非有限宽度不翻页');
+eq(CL.swipeDecision(-73, 330), 1, '恰好越过阈值即翻（>= 而非 >）');
+
+console.log('\n-- 栈序轮转（flipOrder） --');
+const ORDER = ['c1', 'c2', 'c3', 'a'];
+eq(CL.flipOrder(ORDER, 1), ['c2', 'c3', 'a', 'c1'], '向后翻一格');
+eq(CL.flipOrder(ORDER, -1), ['a', 'c1', 'c2', 'c3'], '向前翻一格');
+eq(CL.flipOrder(ORDER, 2), ['c3', 'a', 'c1', 'c2'], '向后翻两格');
+eq(CL.flipOrder(ORDER, 4), ORDER, '翻满一圈回到原序');
+eq(CL.flipOrder(ORDER, 5), ['c2', 'c3', 'a', 'c1'], '越界按长度取模');
+eq(CL.flipOrder(ORDER, -5), ['a', 'c1', 'c2', 'c3'], '负向越界同样回绕');
+eq(CL.flipOrder(ORDER, 0), ORDER, '0 步不动');
+eq(CL.flipOrder(ORDER, 1), ['c2', 'c3', 'a', 'c1'], '0 步之后入参仍未被改动（动画期间要读旧序）');
+eq(CL.flipOrder(['c1'], 1), ['c1'], '单元素卡组安全');
+eq(CL.flipOrder([], 1), [], '空卡组安全');
+
 console.log('\n-- 边界 --');
 CL.state.limits.c1 = { wh: 10, mode: 'once', session_wh: 50, is_charging: true, fired: true };
 eq(CL.progressPct('c1'), 100, '超冲量进度不超 100');

@@ -100,6 +100,33 @@
         return v;
     }
 
+    // ── 堆叠卡组的翻页判定（手机端） ──
+    // 抽成纯函数放这里，是因为"划多远算翻页""转多少格"是这套交互里唯一有分支的
+    // 计算；DOM 手势那部分没法在 node 里测，这两个可以。
+
+    var SWIPE_MIN_PX = 46;    // 位移下限：阈值太低会在输入框上误翻页
+    var SWIPE_RATIO = 0.22;   // 或卡片宽度的这个比例，取两者中较大的
+
+    // dx: 手指水平位移（向左为负）；width: 栈顶卡宽度。
+    // 返回 +1 向后翻 / -1 向前翻 / 0 回弹。左右对称，共用同一套阈值。
+    function swipeDecision(dx, width) {
+        if (!isFinite(dx) || !isFinite(width) || width <= 0) return 0;
+        var need = Math.max(SWIPE_MIN_PX, width * SWIPE_RATIO);
+        if (dx <= -need) return 1;
+        if (dx >= need) return -1;
+        return 0;
+    }
+
+    // 把栈序轮转 steps 格（正数向后翻）。返回新数组、不改入参——翻页动画期间
+    // 调用方仍要读旧序。steps 为任意整数，按长度取模，越界自动回绕。
+    function flipOrder(order, steps) {
+        var n = order.length;
+        if (n < 2) return order.slice();
+        var k = ((steps % n) + n) % n;
+        if (!k) return order.slice();
+        return order.slice(k).concat(order.slice(0, k));
+    }
+
     // ── 状态描述（两页共用文案，样式各自处理） ──
 
     function entryFor(port) {
@@ -130,7 +157,13 @@
     }
 
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { fetchLimits: fetchLimits, saveLimit: saveLimit, parseWhInput: parseWhInput };
+        module.exports = {
+            fetchLimits: fetchLimits,
+            saveLimit: saveLimit,
+            parseWhInput: parseWhInput,
+            swipeDecision: swipeDecision,
+            flipOrder: flipOrder
+        };
     }
 
     global.ChargeLimit = {
@@ -138,12 +171,16 @@
         QUICK_WH: QUICK_WH,
         MODE_ONCE: MODE_ONCE,
         MODE_ALWAYS: MODE_ALWAYS,
+        SWIPE_MIN_PX: SWIPE_MIN_PX,
+        SWIPE_RATIO: SWIPE_RATIO,
         state: state,
         setNotifier: setNotifier,
         notify: notify,
         fetchLimits: fetchLimits,
         saveLimit: saveLimit,
         parseWhInput: parseWhInput,
+        swipeDecision: swipeDecision,
+        flipOrder: flipOrder,
         entryFor: entryFor,
         progressText: progressText,
         statusText: statusText,

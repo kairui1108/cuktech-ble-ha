@@ -29,10 +29,24 @@ function makeNoop() {
     });
 }
 
+// 真实的 CSSStyleDeclaration 至少要有 setProperty/removeProperty——phone.js 用它
+// 往卡片上写 --depth 这类自定义属性。只给 {} 的话这些赋值会被静默跳过，
+// 冒烟测试就测不到那条路径了。按元素缓存一份，便于"写后读"。
+function makeStyle() {
+    const props = {};
+    return {
+        setProperty(k, v) { props[k] = String(v); },
+        getPropertyValue(k) { return props[k] || ''; },
+        removeProperty(k) { delete props[k]; },
+    };
+}
+
 function makeEl() {
+    const style = makeStyle();
     return new Proxy(function el() {}, {
         get(t, p) {
-            if (p === 'style' || p === 'dataset') return {};
+            if (p === 'style') return style;
+            if (p === 'dataset') return {};
             if (p === 'classList') {
                 return { add() {}, remove() {}, toggle() {}, contains() { return false; } };
             }
