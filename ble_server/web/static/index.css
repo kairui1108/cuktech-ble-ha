@@ -36,18 +36,66 @@
     --port-c3: #89D8F3;
     --port-a: #FFD24B;
 
+    /* 协议色（用电统计卡的堆叠条与圆点）。只作图形用：亮端口色当小字在白底
+       只有 1.4–2.6:1，所以文字一律走中性墨色，颜色只在条/点上出现。
+       PD 曾用品牌青（薄荷），在"快充协议"这个 tab 里整屏都是同一个品牌色，
+       分不清是"品牌"还是"数据"，故改为绿（与 --success 同族，语义=标准快充）；
+       PPS 蓝 / UFCS 橙 / SCP 金 保持"快充阶梯"的顺序。 */
+    --proto-pd: #34C759;
+    --proto-pps: #46B4FF;
+    --proto-ufcs: #FF7A00;
+    --proto-scp: #FFD24B;
+    --proto-other: rgba(255, 255, 255, 0.5);
+
     --bg: #121215;
     --card-bg: #000;
     --card-border: rgba(137, 246, 243, 0.5);
 
     --text: rgba(255, 255, 255, 0.9);
     --text-sub: rgba(255, 255, 255, 0.6);
-    --text-dim: rgba(255, 255, 255, 0.4);
+    /* 0.48 而不是 0.4：这一档承载的是 11–12px 的小字（坐标轴刻度、单位、标签），
+       0.4 在黑底上只有 3.66:1，低于小字 AA 要求的 4.5:1；0.48 ≈ 4.9:1，
+       与 --text-sub(≈7.4:1) 之间仍留得住层级差。 */
+    --text-dim: rgba(255, 255, 255, 0.48);
 
     /* 薄荷是米家的"品牌墨色"（卡面描边就是它的 50% 透明版），
        此处取实色，供小字/图标/聚焦环使用：黑底上 12:1 以上。 */
     --accent: #89F6F3;
     --accent-rgb: 137, 246, 243;
+    /* 品牌色的"文字墨"：--accent 负责淡染底/描边/图形，--accent-ink 只负责文字。
+       深色主题两者同值；浅色主题必须分开——淡染底上的 #00838f 只有 3.5:1，
+       而 #006c77 有 4.7:1（见 tests/js/index_light_contrast_test.js）。 */
+    --accent-ink: var(--accent);
+    /* 主操作色（连接设备 / 设置 这类"点了就生效"的按钮）：用端口蓝 --port-c2，
+       与侧栏"当前总功率"的迷你柱状图同一个蓝，整页只有一套"数据蓝 + 蓝按钮"。
+       --action-ink 是它上面的文字墨：深色主题直接用亮蓝（黑底 7.6:1），
+       浅色主题必须压深（淡蓝底上 #46B4FF 只有 1.94:1）。 */
+    --action-rgb: 70, 180, 255;
+    --action-ink: #46B4FF;
+    /* 淡染底强度：白底上 16% 的青几乎看不出染色，整排按钮看着像灰的。
+       浅色主题统一调浓一档，只改这一处即可。 */
+    --wash-soft: 0.10;
+    --wash: 0.16;
+    --wash-hover: 0.26;
+    --edge: 0.36;
+    --edge-strong: 0.45;
+    /* 每小时用电柱：与右侧"当前总功率"卡的迷你柱状图同色（--port-c2 实色），
+       两处"用电量"图形一眼是同一套语言；不要用品牌青（那是描边/强调色） */
+    --chart-bar: var(--port-c2);
+    /* 「总」指标模式下的总功率曲线：紫（四口端口色是橙/蓝/浅青/黄，协议色是绿/蓝/橙/金，
+       紫色两处都没用过，色相上不会跟任何一条数据线混）。填充是同色淡染。 */
+    --total-line: #C084FC;
+    --total-fill: rgba(192, 132, 252, 0.16);
+    /* 分段控件（tab list）：轨道 = 凹槽，滑块 = 浮起的那一块。
+       深色主题靠"比卡面亮一点 + 投影"浮起来；浅色主题靠白块 + 浅投影（iOS 分段控件同款）。 */
+    --seg-track: rgba(128, 128, 128, 0.16);
+    --seg-border: rgba(137, 246, 243, 0.16);
+    --seg-thumb: rgba(255, 255, 255, 0.16);
+    --seg-thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --seg-hover: rgba(255, 255, 255, 0.06);
+    /* 状态圆点：图形（3:1 即可），与"文字墨"分开取色才有生气 */
+    --dot-on: var(--success);
+    --dot-warn: var(--warning);
     --success: #34C759;
     --success-rgb: 52, 199, 89;
     --warning: #FFD24B;
@@ -66,13 +114,17 @@
     --chart-grid: rgba(255, 255, 255, 0.05);
     --dot-off: #666;
     --pval-color: #FFF;
-    --total-line: rgba(255, 255, 255, 0.55);
     /* 淡染底上的文字：暗色主题用白；浅色主题的淡染底几乎是白，必须换深墨 */
-    --on-accent: #fff;
     --on-danger: #fff;
     --deck-dot-edge: rgba(137, 246, 243, 0.5);
     --deck-dot-fill: rgba(137, 246, 243, 0.45);
     --shadow-card: none;
+    /* 悬停浮起：深色主题不加投影（层次由色差 + 描边建立），只上浮 + 描边提亮；
+       浅色主题多给一层轻投影，把卡片从白底上托起来 */
+    --card-lift: -2px;
+    --shadow-lift: none;
+    /* 深色主题没有投影，hover 就少一个"浮起来"的线索：补一层极淡的提亮 */
+    --card-hover-bg: rgba(255, 255, 255, 0.05);
     --shadow-pop: 0 12px 40px rgba(0, 0, 0, 0.6);
 
     --r-card: 14px;
@@ -100,15 +152,44 @@ html[data-appearance="light"] {
     --card-bg: #fff;
     --card-border: rgba(0, 0, 0, 0.1);
 
+    /* 文字三档与 phone.css 的 body.light 逐值对齐（#1a1a1a / #666 / #888）：
+       桌面与手机同一个配色。注意 --text-dim #888 白底只有 3.54:1，低于小字 AA——
+       这是跟手机页保持一致的有意取舍（见 index_light_contrast_test.js 的"记录现状"）。 */
     --text: #1a1a1a;
     --text-sub: #666;
     --text-dim: #888;
 
-    --accent: #0d7c8a;
-    --accent-rgb: 13, 124, 138;
+    /* 协议色（浅色版）：深一档才够 3:1 的图形对比度（绿 #17a848 白底 3.12:1） */
+    --proto-pd: #17a848;
+    --proto-pps: #1478ad;
+    --proto-ufcs: #a94f06;
+    --proto-scp: #8f6600;
+    --proto-other: #8a8a90;
+
+    /* 品牌青：取满饱和度又刚好过 AA 的那一档（#00838f 白底 4.52:1），
+       原来的 #0d7c8a 偏灰，整页看上去没颜色。 */
+    --accent: #00838f;
+    --accent-rgb: 0, 131, 143;
+    --accent-ink: #006c77;   /* 文字用：白底 5.25:1，20% 淡染底 4.71:1 */
+    --action-ink: #0f6ba8;   /* 淡蓝(20%)底上 4.85:1、白底 5.69:1 */
+    --wash-soft: 0.14;
+    --wash: 0.20;
+    --wash-hover: 0.32;
+    --edge: 0.60;
+    --edge-strong: 0.70;
+    --chart-bar: var(--port-c2);   /* 见深色块说明：与侧栏迷你柱状图同色 */
+    --total-line: #7C3AED;   /* 白底 5.7:1 */
+    --total-fill: rgba(124, 58, 237, 0.12);
+    --seg-track: rgba(0, 0, 0, 0.05);
+    --seg-border: rgba(0, 0, 0, 0.06);
+    --seg-thumb: #fff;
+    --seg-thumb-shadow: 0 1px 2px rgba(16, 24, 40, 0.16), 0 0 0 1px rgba(16, 24, 40, 0.05);
+    --seg-hover: rgba(0, 0, 0, 0.04);
+    --dot-on: #17a848;       /* 白底 3.12:1，比 #12883c 亮一档 */
+    --dot-warn: #c87f00;     /* 白底 3.23:1，别用 #b26a00（发褐） */
     --success: #12883c;
     --success-rgb: 18, 136, 60;
-    --warning: #b26a00;
+    --warning: #a85f00;      /* 原 #b26a00 白底只有 4.24:1，压深一档到 4.88:1 */
     --warning-rgb: 178, 106, 0;
     --danger: #d02b1e;
     --danger-rgb: 208, 43, 30;
@@ -122,12 +203,16 @@ html[data-appearance="light"] {
     --chart-grid: rgba(0, 0, 0, 0.06);
     --dot-off: #b0b0b6;
     --pval-color: #000;
-    --total-line: #6b7280;
-    --on-accent: var(--accent);
-    --on-danger: var(--danger);
+    /* 淡染底上的文字：深色主题沿用品牌色；浅色主题的淡染底几乎是白，
+       必须换更深的墨（20% 淡染底上 #b21f14 5.1:1）。 */
+    --on-danger: #b21f14;
     --deck-dot-edge: #7A7A7A;
     --deck-dot-fill: rgba(0, 0, 0, 0.32);
     --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 16px rgba(16, 24, 40, 0.05);
+    --card-lift: -3px;
+    --shadow-lift: 0 6px 16px rgba(16, 24, 40, 0.12), 0 2px 4px rgba(16, 24, 40, 0.06);
+    --card-hover-bg: transparent;   /* 浅色主题靠投影，底色不动 */
+
     --shadow-pop: 0 12px 40px rgba(16, 24, 40, 0.18);
 
     color-scheme: light;
@@ -172,7 +257,7 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* 实时数值用等宽数位，刷新时不左右跳 */
-.metric-value, .port-stat-value, .power-value, .mini-stat-value, .sd-value,
+.metric-value, .port-power-value, .port-va, .power-value, .mini-stat-value, .sd-value,
 .usb-pval, .charge-limit-progress, .countdown-current, .charge-limit-status {
     font-variant-numeric: tabular-nums;
 }
@@ -231,10 +316,10 @@ html[data-appearance="light"] .brand-logo { filter: invert(1); }
     border-radius: var(--r-pill);          /* 胶囊：与状态圆点视觉成组 */
 }
 /* 两种状态共用同一描边强度：切换时只有底色在变，位置和大小完全稳定 */
-.topbar-status .btn-primary { background: rgba(var(--accent-rgb), 0.10); border-color: rgba(var(--accent-rgb), 0.45); color: var(--accent); }
-.topbar-status .btn-primary:hover { background: rgba(var(--accent-rgb), 0.20); }
-.topbar-status .btn-danger { background: rgba(var(--danger-rgb), 0.10); border-color: rgba(var(--danger-rgb), 0.45); color: var(--danger); }
-.topbar-status .btn-danger:hover { background: rgba(var(--danger-rgb), 0.20); }
+.topbar-status .btn-primary { background: rgba(var(--action-rgb), var(--wash-soft)); border-color: rgba(var(--action-rgb), var(--edge-strong)); color: var(--action-ink); }
+.topbar-status .btn-primary:hover { background: rgba(var(--action-rgb), var(--wash)); }
+.topbar-status .btn-danger { background: rgba(var(--danger-rgb), var(--wash-soft)); border-color: rgba(var(--danger-rgb), var(--edge-strong)); color: var(--on-danger); }
+.topbar-status .btn-danger:hover { background: rgba(var(--danger-rgb), var(--wash)); }
 
 /* 固件：米家导航栏是"裸文字"，不做胶囊底 */
 .fw-chip {
@@ -302,7 +387,7 @@ a.tool-btn:hover { color: var(--text); }
     transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .theme-option:hover { background: var(--hover-bg); color: var(--text); }
-.theme-option.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.theme-option.active { color: var(--accent-ink); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .theme-dot { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 1px solid var(--divider); }
 
 .page { padding-top: 16px; padding-bottom: 8px; }
@@ -407,18 +492,18 @@ a.tool-btn:hover { color: var(--text); }
 .btn-group .btn { flex: 0 1 auto; }
 
 .btn-primary {
-    color: var(--on-accent);
-    background: rgba(var(--accent-rgb), 0.16);
-    border-color: rgba(var(--accent-rgb), 0.36);
+    color: var(--action-ink);
+    background: rgba(var(--action-rgb), var(--wash));
+    border-color: rgba(var(--action-rgb), var(--edge));
 }
-.btn-primary:hover { background: rgba(var(--accent-rgb), 0.26); }
+.btn-primary:hover { background: rgba(var(--action-rgb), var(--wash-hover)); }
 
 .btn-danger {
     color: var(--on-danger);
-    background: rgba(var(--danger-rgb), 0.16);
-    border-color: rgba(var(--danger-rgb), 0.36);
+    background: rgba(var(--danger-rgb), var(--wash));
+    border-color: rgba(var(--danger-rgb), var(--edge));
 }
-.btn-danger:hover { background: rgba(var(--danger-rgb), 0.26); }
+.btn-danger:hover { background: rgba(var(--danger-rgb), var(--wash-hover)); }
 
 .btn-secondary {
     color: var(--text);
@@ -437,17 +522,44 @@ a.tool-btn:hover { color: var(--text); }
 }
 .btn-quiet:hover { color: var(--text); }
 
-/* ── 分段控件 ── */
+/* ── 分段控件（tab list）──
+   结构：.segmented > .seg-thumb（JS 按实际位置量出来的滑块）+ 若干 .time-btn。
+   选中态不再画在按钮自己身上（那样是"跳一下"），而是让滑块滑过去——
+   按钮宽度不等（30分 / 24小时、W / V / A、中英文切换后还会变），
+   所以位置由 JS 量，纯 CSS 的 nth-child 方案撑不住。 */
 .segmented {
+    position: relative;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
     padding: 3px;
     border-radius: var(--r-ctl);
-    background: var(--chip-bg);
-    border: 1px solid var(--card-border);
+    background: var(--seg-track);
+    border: 1px solid var(--seg-border);
 }
+.seg-thumb {
+    position: absolute;
+    left: 0;
+    top: 0;
+    border-radius: 7px;
+    background: var(--seg-thumb);
+    box-shadow: var(--seg-thumb-shadow);
+    opacity: 0;                 /* 首帧量好位置后由 JS 打开，避免从左上角滑进来 */
+    pointer-events: none;       /* 别挡住按钮的点击 */
+    will-change: transform, width;
+}
+/* 首帧不加过渡：否则初始化时滑块会从 0 宽/原点动画过来 */
+.segmented.is-ready .seg-thumb {
+    transition: transform var(--dur) var(--ease), width var(--dur) var(--ease),
+                opacity var(--dur-fast) var(--ease);
+}
+/* 紧凑变体：W/V/A 指标切换这种"一格一个字"的控件用它，省下来的宽度留给时间范围
+   （标题行一旦折行，卡片就白高 32px） */
+.segmented.compact { gap: 2px; padding: 2px; }
+.segmented.compact .time-btn { min-width: 26px; padding: 0 6px; }
 .time-btn {
+    position: relative;
+    z-index: 1;                 /* 压在滑块上面（滑块在 DOM 里是第一个子节点） */
     height: 26px;
     padding: 0 10px;
     border: none;
@@ -458,10 +570,13 @@ a.tool-btn:hover { color: var(--text); }
     white-space: nowrap;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
-    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    transition: color var(--dur) var(--ease), background var(--dur-fast) var(--ease),
+                transform var(--dur-fast) var(--ease);
 }
-.time-btn:hover { color: var(--text); }
-.time-btn.active { background: rgba(128, 128, 128, 0.3); color: var(--text); }
+.time-btn:not(.active):hover { color: var(--text-sub); background: var(--seg-hover); }
+.time-btn:not(.active):active { transform: scale(0.96); }
+/* 选中态只留文字（底色由 .seg-thumb 滑过来）+ 字重加一档，位置和宽度都不跳 */
+.time-btn.active { background: transparent; color: var(--text); font-weight: 600; }
 .modal-toolbar { display: flex; justify-content: flex-end; margin: 12px 0; }
 .modal-toolbar .time-btn {
     height: 30px;
@@ -471,8 +586,8 @@ a.tool-btn:hover { color: var(--text); }
     border: 1px solid var(--card-border);
 }
 .modal-toolbar .time-btn.active {
-    background: rgba(var(--accent-rgb), 0.18);
-    border-color: rgba(var(--accent-rgb), 0.4);
+    background: rgba(var(--accent-rgb), var(--wash));
+    border-color: rgba(var(--accent-rgb), var(--edge-strong));
     color: var(--text);
 }
 
@@ -522,9 +637,10 @@ select option { background: var(--bg); color: var(--text); }
     transition: background var(--dur) var(--ease);
 }
 .status-badge.disconnected { color: var(--text-sub); }
-.status-badge.connected .status-dot { background: var(--success); animation: dotPulse 2.4s ease-in-out infinite; }
-.status-badge.connecting .status-dot { background: var(--warning); animation: dotPulse 1.2s ease-in-out infinite; }
-@keyframes dotPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+.status-badge.connected .status-dot { background: var(--dot-on); animation: dotPulse 2.4s ease-in-out infinite; }
+.status-badge.connecting .status-dot { background: var(--dot-warn); animation: dotPulse 1.2s ease-in-out infinite; }
+/* 呼吸幅度收到 0.55：0.4 那档在浅色下会让已连接的绿点看着像没连上 */
+@keyframes dotPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 /* 悬浮质量详情（JS 用 fixed + left/top 定位，样式必须保持 fixed） */
 .quality-tooltip {
@@ -612,7 +728,12 @@ select option { background: var(--bg); color: var(--text); }
     width: 360px;
     height: 307px;
     object-fit: contain;
-    margin: 0 auto;
+    /* 未充电用的是另一张素材（3/4 视角的银色机身），它的画面内容比"充电中"那张
+       矮一截，而 .device-box 的顶边比图片可见区低 51.5px —— 于是不做补偿的话整张图
+       会贴在下方、上方空一大块。这里把它的**可见内容中心**抬到与充电中那张素材
+       同一个位置（按两张图的实心像素包围盒算：充电中 -10..238，未充电 31..272，
+       差 37px），换图时画面也不会跳。数值在缩放盒内，随 --device-scale 等比缩放。 */
+    margin: -37px auto 0;
     display: none;
     z-index: 2;
     position: relative;
@@ -734,6 +855,17 @@ html[data-appearance="light"] #powerDist { background: rgba(0, 0, 0, 0.06); }
     font-variant-numeric: tabular-nums;
 }
 #powerDistText span { transition: opacity 0.3s ease; }
+/* 标签文字走中性墨色，端口身份由圆点承载：亮端口色当小字在白底只有 1.4–2.6:1
+   （空载再乘 30% 会掉到 ~1.1:1），文字一律不用端口色。 */
+.share-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.share-item.is-active { color: var(--text-sub); }
+.share-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+/* 卡片标题行右侧的工具组：多个下拉/分段控件包一层，避免各自吃 margin-left:auto
+   把标题行撑散（.card-title .mini-select 是全局面板级规则，这里显式复位）。 */
+.card-tools { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.card-title .card-tools .mini-select { margin-left: 0; }
+.card-title .card-tools .segmented { margin-left: 0; }
 
 .chart-legend { display: flex; align-items: center; gap: 14px; margin-left: auto; }
 .chart-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-dim); }
@@ -749,14 +881,31 @@ html[data-appearance="light"] #powerDist { background: rgba(0, 0, 0, 0.06); }
     min-width: 0;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
-    transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+    transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease),
+                transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.port-card:hover { border-color: var(--card-border); }
-.port-card:active { background: rgba(128, 128, 128, 0.14); }
-/* 端口开启 = 描边提到卡面级薄荷亮线；关断 = 保持柔描边 + 文字压暗 */
-.port-card.active { border-color: var(--card-border); }
+/* 悬停：整张卡上浮一点 + 描边提到卡面级（浅色主题再叠一层投影）；
+   按下回落到原位，给一点"按到了"的反馈。 */
+.port-card:hover { border-color: var(--card-border); transform: translateY(var(--card-lift)); box-shadow: var(--shadow-lift); background: var(--card-hover-bg); }
+.port-card:active { transform: translateY(0); background: rgba(128, 128, 128, 0.14); box-shadow: none; }
+/* 描边只表达"这个口正在输出"：idle（含已启用但空载）= 中性灰描边（.port-card 的基础
+   内层描边），只有 .is-charging 才上端口色。
+   "已启用 / 未启用"由开关、接口图标和文字明暗表达，不需要再占用描边——
+   四个口都开着时整片卡片边缘全是彩色（浅色下是 rgba(0,131,143,.6) 的青色边），
+   看上去像四张卡都在工作。 */
+.port-card.active { border-color: var(--card-inset-border); }
+/* 正在输出：描边取端口色与前景墨的混色 —— 深色主题自动偏亮、浅色主题自动偏深，
+   一套写法两边都够对比度（纯端口色在白底上只有 2.6:1，撑不出轮廓）。 */
+.port-card.is-charging { border-color: color-mix(in srgb, var(--port-color, var(--accent)) 70%, var(--text)); }
 
-.port-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+/* 端口身份色落在卡面上：负载条填充与充电态描边共用 --port-color。
+   :has() 与 .charge-limit-item 的写法同源，不支持的浏览器退化为强调色，功能不受影响。 */
+.port-card:has(.port-name.c1) { --port-color: var(--port-c1); }
+.port-card:has(.port-name.c2) { --port-color: var(--port-c2); }
+.port-card:has(.port-name.c3) { --port-color: var(--port-c3); }
+.port-card:has(.port-name.a)  { --port-color: var(--port-a); }
+
+.port-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 /* 端口身份 = 接口图标 + 白字，图标用的是 phone.html 同一批文件
    （main_card_port_{c1,c2,c3,a}_{on,off}.png；白色线稿，浅色主题反相） */
 .port-name { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; color: var(--text); }
@@ -765,14 +914,60 @@ html[data-appearance="light"] #powerDist { background: rgba(0, 0, 0, 0.06); }
 html[data-appearance="light"] .port-icon img { filter: invert(1); }
 .port-card:not(.active) .port-name { color: var(--text-sub); }
 
-.port-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
-.port-stat { text-align: center; min-width: 0; }
-.port-stat-value { font-size: 18px; font-weight: 500; color: var(--text); line-height: 1.25; }
-.port-stat-label { font-size: 11px; color: var(--text-dim); }
-.port-card:not(.active) .port-stat-value { color: var(--text-sub); }
+/* ── 端口小卡片：大功率读数为核 → 负载条 → V/A + 协议行 ── */
+.port-power { display: flex; align-items: baseline; gap: 3px; margin-bottom: 6px; }
+.port-power-value {
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--text);
+    line-height: 1;
+}
+.port-power-unit { font-size: 12px; font-weight: 600; color: var(--text-sub); }
+.port-card:not(.active) .port-power-value,
+.port-card:not(.active) .port-power-unit { color: var(--text-sub); }
 
-/* 由 app.js 渲染，内联样式只剩 color，排版交给这里 */
-.port-protocol { margin-top: 12px; font-size: 12px; text-align: center; }
+/* 负载条：底色用 --track，填充色取卡面上的 --port-color（:has() 按端口写入）。
+   分母是本口上限（见 app.js PORT_MAX_W），不是实时功率的比例——上限写在 .port-power
+   的 title 里，否则"18W 只填了 15%"看起来像 bug。 */
+.port-load {
+    height: 5px;
+    border-radius: 3px;
+    background: var(--track);
+    overflow: hidden;
+    margin-bottom: 7px;
+}
+/* 空载：连轨道一起淡掉。留着一条满宽灰槽，三张 0.0W 的卡看起来像"进度卡在 0%"，
+   与"这个口没插东西"不是一个意思。 */
+.port-load.is-idle { background: var(--divider); }
+.port-load-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--port-color, var(--accent));
+    transition: width var(--dur-slow) var(--ease);
+}
+
+/* 次要行：V/A 小字在左，协议在右（两端对齐、同一行） */
+.port-sub { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.port-va { font-size: 11.5px; color: var(--text-sub); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.port-card:not(.active) .port-va { color: var(--text-dim); }
+
+/* 协议 = 柔和胶囊徽标；idle 时不亮，激活时薄荷色（内联 color 已移除） */
+.port-protocol {
+    font-size: 10.5px;
+    line-height: 1;
+    padding: 4px 7px;
+    border-radius: 999px;
+    background: rgba(var(--accent-rgb), var(--wash-soft));
+    color: var(--accent-ink);
+    white-space: nowrap;
+    flex: none;
+    max-width: 62%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
+}
+.port-protocol:not(.is-active) { background: rgba(128, 128, 128, 0.14); color: var(--text-dim); }
 
 /* ── 开关：与 phone.css .toggle 同规格（51×31 / 绿 #34C759） ── */
 .port-toggle { position: relative; display: inline-block; width: 51px; height: 31px; flex: none; }
@@ -979,16 +1174,20 @@ html[data-appearance="light"] .charge-limit-bar-fill { box-shadow: inset 0 0 0 1
 .countdown-toggle-btn:disabled { opacity: 0.45; cursor: wait; }
 /* 「设置」走品牌墨色而非端口色：4 张内层卡同屏时，4 种低透明端口色叠在近黑底上
    会变成棕/橄榄这类脏色（phone 端一次只显示一张卡，所以那边没有这个问题）。 */
+/* 「设置」= 淡蓝主操作色，与标题栏"连接设备"同一套 action 令牌（限额卡与倒计时卡
+   共用这个类，两处必须一样）。不再跟端口色走：端口色只负责标识端口，
+   "点了就生效"的动作色全站统一一个蓝。 */
 .countdown-toggle-btn.set {
-    color: var(--on-accent);
-    background: rgba(var(--accent-rgb), 0.16);
-    border: 1px solid rgba(var(--accent-rgb), 0.36);
+    color: var(--action-ink);
+    background: rgba(var(--action-rgb), var(--wash));
+    border: 1px solid rgba(var(--action-rgb), var(--edge));
 }
-.countdown-toggle-btn.set:hover { background: rgba(var(--accent-rgb), 0.26); }
+.countdown-toggle-btn.set:hover { background: rgba(var(--action-rgb), var(--wash-hover)); }
+/* 关断：同样对齐 phone.css 的 .charge-limit-clear（0.15 底 / 0.3 描边 / 文字 --text） */
 .countdown-toggle-btn.clear {
-    color: var(--on-danger);
-    background: rgba(var(--danger-rgb), 0.16);
-    border: 1px solid rgba(var(--danger-rgb), 0.36);
+    color: var(--text);
+    background: rgba(var(--danger-rgb), 0.15);
+    border: 1px solid rgba(var(--danger-rgb), 0.3);
 }
 .countdown-toggle-btn.clear:hover { background: rgba(var(--danger-rgb), 0.26); }
 
@@ -1038,8 +1237,14 @@ html[data-appearance="light"] .charge-limit-bar-fill { box-shadow: inset 0 0 0 1
    8. 图表 / 充电记录 / 会话详情
    ══════════════════════════════════════════════════════════════ */
 
-.chart-container { position: relative; height: 300px; }
+/* 功率曲线画布：300 → 220。左栏三张卡原来是"图很高、内容很空"（300px 画布上就一条线），
+   腾出来的高度给了下面的用电统计卡，两栏底边因此仍然齐平。 */
+.chart-container { position: relative; height: 200px; }
 .modal-chart-container { position: relative; height: 240px; }
+
+/* 会话列表里"正在充电"那一行的呼吸点：关键帧原来只在 phone.css 里定义，
+   index 页引用了却没有对应 @keyframes，等于不闪。 */
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 /* 充电记录卡改为纵向 flex：统计条与分页条固定，
    记录列表吃满剩余高度（超出部分列表内滚动）——
@@ -1063,10 +1268,16 @@ html[data-appearance="light"] .charge-limit-bar-fill { box-shadow: inset 0 0 0 1
 .session-list {
     display: flex;
     flex-direction: column;
+    /* 保底 = 4 行记录(≈4×44) + 分页条(≈37)：记录为空或不足四行时卡片不许变矮，
+       否则左栏跟着缩、与右栏的底边就错开了（空态那行文字撑不起这个高度）。 */
+    min-height: 215px;
     max-height: 460px;             /* 安全上限：记录特别多时列表内滚动 */
     overflow-y: auto;
     overscroll-behavior: contain;
 }
+/* 空态在保底高度里垂直居中：auto 外边距只在有剩余空间时吃掉它，
+   列表超长时也不会像 justify-content:center 那样把首行顶出可视区 */
+.session-list > .session-empty { margin: auto 0; }
 /* 分页条与记录之间留一条发丝线 */
 .session-list > div:last-child:not(.session-item) {
     margin-top: 6px;
@@ -1090,6 +1301,105 @@ html[data-appearance="light"] .charge-limit-bar-fill { box-shadow: inset 0 0 0 1
     font-size: 13px;
     color: var(--text-dim);
 }
+
+/* ══════════════════════════════════════════════════════════════
+   8b. 用电统计卡（按端口构成 / 每小时用电 / 快充协议分布）
+   ══════════════════════════════════════════════════════════════ */
+
+/* 三个 tab 共用**同一个固定高度**：切 tab 不能让卡片长高/变矮，否则左栏底边会跟着跳，
+   与右栏的等高关系就没了（协议 3 个、端口固定 4 个，行数天然不等）。
+   高度 = 条(8) + 条下间距(10) + 四行(~149)。 */
+.energy-pane { display: none; }
+.energy-pane.is-active {
+    display: flex;
+    flex-direction: column;
+    height: var(--energy-pane-h, 159px);
+    animation: paneIn var(--dur) var(--ease) both;
+}
+/* 切 tab 时面板淡入上浮一点，与滑块滑动同一条时间线 */
+@keyframes paneIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: none; }
+}
+
+.energy-bar {
+    flex: none;
+    display: flex;
+    height: 8px;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 10px;
+    background: var(--track);
+    transition: opacity var(--dur) var(--ease);
+}
+.energy-bar.is-empty { opacity: 0; }
+.energy-bar > div { height: 100%; transition: width var(--dur-slow) var(--ease); }
+/* 相邻分段之间留一条发丝缝：5V / 未识别这类同色段否则会连成一段，看起来少了一项 */
+.energy-bar > div + div { box-shadow: inset 1px 0 0 var(--card-bg); }
+
+/* 行数不足时顶部对齐、多余空间留在下方；万一超出四行仍可滚，但不显示滚动条
+   （卡片里出现一条系统滚动条比"内容略挤"更难看） */
+.energy-rows {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;          /* Firefox */
+}
+.energy-rows::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* 一行五列：端口 / 行内占比条（吃掉中间的空白）/ Wh / 次数 / 占比。
+   之前是四列，名称与数字之间留出一大片空地，等于白扔半张卡宽。 */
+.energy-row {
+    display: grid;
+    grid-template-columns: minmax(64px, auto) minmax(0, 1fr) auto 46px 40px;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--divider);
+    font-variant-numeric: tabular-nums;
+}
+/* 行内条：槽与端口卡负载条同款（浅色下就是一道浅灰，不要深色长条） */
+.energy-track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--track);
+    overflow: hidden;
+    min-width: 0;
+}
+.energy-fill {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--port-c2);
+    transition: width var(--dur-slow) var(--ease);
+}
+.energy-row:last-child { border-bottom: none; padding-bottom: 0; }
+/* 该口/该协议本周期没用电：整行压暗，槽也换成浅色——
+   深槽是给"亮填充"垫底的，0% 的行留着一条深色长条只是噪音 */
+.energy-row.is-zero .energy-name,
+.energy-row.is-zero .energy-val { color: var(--text-sub); }
+.energy-row.is-zero .energy-pct { color: var(--text-dim); }
+.energy-name { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; color: var(--text); }
+.energy-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+/* 浅色主题下亮端口色圆点只有 1.4–1.6:1，靠一圈内描边把轮廓撑出来
+   （与 .countdown-port::before 的浅色处理同一套办法） */
+html[data-appearance="light"] .energy-dot,
+html[data-appearance="light"] .share-dot,
+html[data-appearance="light"] #modalTitle::before { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.32); }
+/* 正在充电的那一行：呼吸点（图形，不依赖颜色也能看出"进行中"） */
+.energy-live {
+    width: 6px; height: 6px; flex: none;
+    border-radius: 50%;
+    background: var(--dot-on);
+    animation: dotPulse 1.8s ease-in-out infinite;
+}
+.energy-val { font-size: 15px; font-weight: 600; color: var(--text); }
+.energy-val i { margin-left: 2px; font-size: 11px; font-weight: 500; font-style: normal; color: var(--text-dim); }
+.energy-count { font-size: 11.5px; color: var(--text-dim); text-align: right; }
+.energy-pct { font-size: 12px; color: var(--text-sub); text-align: right; }
+.energy-chart { position: relative; flex: 1 1 auto; min-height: 0; }
 
 /* ── 会话详情：以浮层展开 ──
    charge_history.js 只切 #sessionDetail 的 style.display，.is-open 由 index.html
@@ -1126,6 +1436,8 @@ html[data-appearance="light"] .session-detail.is-open { background: rgba(28, 36,
 .sd-title { font-size: 14.5px; color: var(--text); }
 .sd-duration { font-size: 13px; color: var(--text-dim); }
 .sd-accuracy { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12px; color: var(--text-dim); }
+/* 会话详情里的"导出 CSV"：与 .sd-head 的控件同高，紧跟在精度下拉右侧 */
+.sd-head .sd-export { height: 32px; margin-left: 8px; padding: 0 14px; font-size: 12.5px; flex: none; }
 .sd-chart { position: relative; height: 150px; margin-bottom: 16px; }
 .sd-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
 .sd-metric { text-align: center; min-width: 0; }
@@ -1189,6 +1501,17 @@ html[data-appearance="light"] .modal-overlay { background: rgba(28, 36, 52, 0.34
 }
 .modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 .modal-title { font-size: 19px; font-weight: 500; color: var(--text); }
+/* 端口详情标题：端口身份用圆点（--port-color 由 app.js 按端口写入），
+   文字保持中性色。端口色直接当 19px 标题的文字色，浅色下只有 1.4–2.6:1。 */
+#modalTitle::before {
+    content: "";
+    display: inline-block;
+    width: 9px; height: 9px;
+    margin-right: 8px;
+    border-radius: 50%;
+    background: var(--port-color, var(--accent));
+    vertical-align: 1px;
+}
 .modal-close {
     display: flex;
     align-items: center;
@@ -1231,8 +1554,8 @@ html[data-appearance="light"] .modal-overlay { background: rgba(28, 36, 52, 0.34
 }
 .proto-btn:hover { color: var(--text); }
 .proto-btn.on {
-    background: rgba(var(--accent-rgb), 0.18);
-    border-color: rgba(var(--accent-rgb), 0.42);
+    background: rgba(var(--accent-rgb), var(--wash));
+    border-color: rgba(var(--accent-rgb), var(--edge-strong));
     color: var(--text);
     font-weight: 600;
 }
@@ -1315,14 +1638,22 @@ html[data-appearance="light"] .modal-overlay { background: rgba(28, 36, 52, 0.34
 
     .port-grid { gap: 10px; }
     .port-card { padding: 12px 10px; }
-    .port-stat-value { font-size: 16px; }
+    .port-power-value { font-size: 22px; }
+    .port-power-unit { font-size: 12px; }
 
 
     .card-title .segmented { margin-left: 0; width: 100%; justify-content: space-between; }
     .time-btn { flex: 1; padding: 0 4px; }
+    /* 标题行右侧成组落到第二行；组内控件各自按内容分宽，不跟着 100% 拉满
+       （功率曲线卡里有两个分段控件，各自拉满会直接撑出卡片） */
+    .card-tools { width: 100%; flex-wrap: wrap; }
+    .card-title .card-tools .segmented { width: auto; flex: 1 1 auto; }
+    .card-tools .mini-select { flex: 1 1 auto; max-width: none; }
 
     .charge-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .chart-container { height: 220px; }
+    /* 用电统计：窄屏先舍掉"次数"列（名称 / 行内条 / Wh / 占比），面板高度与桌面一致 */
+    .energy-row { grid-template-columns: minmax(56px, auto) minmax(0, 1fr) auto 40px; }
+    .energy-count { display: none; }
     .sd-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .sd-action { grid-column: 1 / -1; }
 
@@ -1338,7 +1669,8 @@ html[data-appearance="light"] .modal-overlay { background: rgba(28, 36, 52, 0.34
 }
 
 @media (hover: none) {
-    .port-card:hover { border-color: var(--card-inset-border); }
+    .port-card:hover { border-color: var(--card-inset-border); transform: none; box-shadow: var(--card-inset-shadow); }
+    .port-card:active { transform: none; }
 }
 
 /* 无障碍：尊重系统"减弱动态效果" */
@@ -1353,7 +1685,7 @@ html[data-appearance="light"] .modal-overlay { background: rgba(28, 36, 52, 0.34
 /* 英文排版守卫：拉丁字母不需要 CJK 的断行策略 */
 html[lang="en"] .card-title,
 html[lang="en"] .metric-label,
-html[lang="en"] .port-stat-label,
+html[lang="en"] .port-va,
 html[lang="en"] .mini-stat-label,
 html[lang="en"] .sd-label,
 html[lang="en"] .power-label,

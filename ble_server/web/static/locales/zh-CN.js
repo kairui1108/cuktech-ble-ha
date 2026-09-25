@@ -60,7 +60,14 @@
             range60: '60分',
             range90: '90分',
             range120: '120分',
-            range1440: '24小时'
+            range1440: '24小时',
+            metricPower: '功率',
+            metricVoltage: '电压',
+            metricCurrent: '电流',
+            metricTotal: '总功率',
+            chartAria: '功率曲线图：各端口功率随时间的变化',
+            chartAriaMetric: '{{metric}}曲线图：各端口随时间的变化',
+            loadBasis: '负载条基准：本口上限 {{max}} W'
         },
 
         // ── Scene modes (device) ──
@@ -157,9 +164,12 @@
         charge: {
             today: '今日',
             yesterday: '昨日',
-            week: '本周',
-            month: '本月',
+            // week / month 在后端是**滚动** 7 / 30 天窗口（history._period_window），
+            // 不是自然周/自然月，文案必须跟着这么写，否则"本周"会包含上周的数据。
+            week: '近 7 天',
+            month: '近 30 天',
             all: '全部',
+            export: '导出 CSV',
             totalWh: '总充电 Wh',
             sessionCount: '充电次数',
             avgPower: '平均功率 W',
@@ -182,6 +192,19 @@
             avgVoltageUnit: '均电压 V',
             avgCurrentUnit: '均电流 A',
             yesterdayTime: '昨天 {{time}}'
+        },
+
+        // ── Energy overview card (用电统计) ──
+        energy: {
+            title: '用电统计',
+            tabPorts: '按端口',
+            tabHourly: '每小时',
+            tabProtocols: '快充协议',
+            total: '{{period}} · 合计 {{wh}} Wh',
+            count: '{{count}} 次',
+            unknown: '未识别',
+            noData: '该周期暂无数据',
+            hourlyAria: '近 24 小时每小时用电量柱状图'
         },
 
         // ── Phone page ──

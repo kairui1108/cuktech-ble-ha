@@ -60,7 +60,14 @@
             range60: '60m',
             range90: '90m',
             range120: '120m',
-            range1440: '24h'
+            range1440: '24h',
+            metricPower: 'Power',
+            metricVoltage: 'Voltage',
+            metricCurrent: 'Current',
+            metricTotal: 'Total power',
+            chartAria: 'Power chart: per-port power over time',
+            chartAriaMetric: '{{metric}} chart: per-port values over time',
+            loadBasis: 'Load bar is relative to this port\'s {{max}} W limit'
         },
 
         // ── Scene modes (device) ──
@@ -157,9 +164,12 @@
         charge: {
             today: 'Today',
             yesterday: 'Yesterday',
-            week: 'This Week',
-            month: 'This Month',
+            // Backend treats week/month as rolling 7/30-day windows (history._period_window),
+            // not calendar week/month — the label has to say so.
+            week: 'Last 7 days',
+            month: 'Last 30 days',
             all: 'All',
+            export: 'Export CSV',
             totalWh: 'Total Energy (Wh)',
             sessionCount: 'Sessions',
             avgPower: 'Avg Power (W)',
@@ -182,6 +192,19 @@
             avgVoltageUnit: 'Avg Voltage (V)',
             avgCurrentUnit: 'Avg Current (A)',
             yesterdayTime: 'Yesterday {{time}}'
+        },
+
+        // ── Energy overview card ──
+        energy: {
+            title: 'Energy Overview',
+            tabPorts: 'By port',
+            tabHourly: 'Hourly',
+            tabProtocols: 'Protocols',
+            total: '{{period}} · {{wh}} Wh total',
+            count: '{{count}}×',
+            unknown: 'Unknown',
+            noData: 'No data for this period',
+            hourlyAria: 'Hourly energy consumption over the last 24 hours'
         },
 
         // ── Phone page ──

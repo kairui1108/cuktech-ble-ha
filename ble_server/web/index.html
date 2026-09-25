@@ -36,15 +36,15 @@
     })();
     </script>
 
-    <script src="/static/locales/zh-CN.js?v=6"></script>
-    <script src="/static/locales/en.js?v=6"></script>
+    <script src="/static/locales/zh-CN.js?v=7"></script>
+    <script src="/static/locales/en.js?v=7"></script>
     <script src="/static/i18n.js?v=5"></script>
     <script defer src="/static/chart.umd.min.js"></script>
-    <script defer src="/static/charge_history.js?v=7"></script>
+    <script defer src="/static/charge_history.js?v=8"></script>
     <script defer src="/static/charge_limit.js?v=7"></script>
     <script src="/static/chart-loader.js"></script>
     <script src="/static/chart-config.js"></script>
-    <link rel="stylesheet" href="static/index.css?v=11">
+    <link rel="stylesheet" href="static/index.css?v=12">
 </head>
 <body>
 
@@ -187,28 +187,47 @@
                     <div class="card-title">
                         <span data-i18n="index.powerChart">功率曲线</span>
                         <div class="chart-legend" id="chartLegend"></div>
-                        <div class="segmented" role="group">
-                            <button class="time-btn" data-minutes="30" onclick="setTimeRange(30)" data-i18n="index.range30">30分</button>
-                            <button class="time-btn active" data-minutes="60" onclick="setTimeRange(60)" data-i18n="index.range60">60分</button>
-                            <button class="time-btn" data-minutes="90" onclick="setTimeRange(90)" data-i18n="index.range90">90分</button>
-                            <button class="time-btn" data-minutes="120" onclick="setTimeRange(120)" data-i18n="index.range120">120分</button>
-                            <button class="time-btn" data-minutes="1440" onclick="setTimeRange(1440)" data-i18n="index.range1440">24小时</button>
+                        <!-- 指标切换：只换同一份 /api/chart 数据里的序列，不额外请求。
+                             标签用 W/V/A 而不是"功率/电压/电流"：三个中文标签会把标题行挤到换行
+                             （1024–1199px 本来就已经要折行），完整名称放进 title 提示。 -->
+                        <div class="card-tools">
+                            <div class="segmented compact" role="group" id="chartMetricGroup">
+                                <button class="time-btn active" data-metric="power" onclick="setChartMetric('power')"
+                                        data-i18n-title="index.metricPower" title="功率">W</button>
+                                <button class="time-btn" data-metric="voltage" onclick="setChartMetric('voltage')"
+                                        data-i18n-title="index.metricVoltage" title="电压">V</button>
+                                <button class="time-btn" data-metric="current" onclick="setChartMetric('current')"
+                                        data-i18n-title="index.metricCurrent" title="电流">A</button>
+                                <!-- 「总」= 只看总功率曲线：堆叠模式下总功率就是栈顶（顶边由最上面那个
+                                     端口画），想单独看这条线的走势就切到这里，不与任何端口线重合 -->
+                                <button class="time-btn" data-metric="total" onclick="setChartMetric('total')"
+                                        data-i18n-title="index.metricTotal" title="总功率">&Sigma;</button>
+                            </div>
+                            <div class="segmented" role="group">
+                                <button class="time-btn" data-minutes="30" onclick="setTimeRange(30)" data-i18n="index.range30">30分</button>
+                                <button class="time-btn active" data-minutes="60" onclick="setTimeRange(60)" data-i18n="index.range60">60分</button>
+                                <button class="time-btn" data-minutes="120" onclick="setTimeRange(120)" data-i18n="index.range120">120分</button>
+                                <button class="time-btn" data-minutes="1440" onclick="setTimeRange(1440)" data-i18n="index.range1440">24小时</button>
+                            </div>
                         </div>
                     </div>
-                    <div class="chart-container"><canvas id="powerChart"></canvas></div>
+                    <div class="chart-container"><canvas id="powerChart" role="img"
+                         data-i18n-aria-label="index.chartAria" aria-label="功率曲线图"></canvas></div>
                 </section>
 
                 <!-- 充电记录 -->
                 <section class="card" id="cardHistory">
                     <div class="card-title">
                         <span data-i18n="index.chargeHistory">充电记录</span>
-                        <select class="mini-select" id="chargePeriod" onchange="startChargeHistoryAutoRefresh('chargeSessionList','chargeStats',this.value,30000,8)">
-                            <option value="today" data-i18n="charge.today">今日</option>
-                            <option value="yesterday" data-i18n="charge.yesterday">昨日</option>
-                            <option value="week" data-i18n="charge.week">本周</option>
-                            <option value="month" data-i18n="charge.month">本月</option>
-                            <option value="all" data-i18n="charge.all">全部</option>
-                        </select>
+                        <div class="card-tools">
+                            <select class="mini-select" id="chargePeriod" onchange="startChargeHistoryAutoRefresh('chargeSessionList','chargeStats',this.value,15000,4); refreshEnergyCard(this.value)">
+                                <option value="today" data-i18n="charge.today">今日</option>
+                                <option value="yesterday" data-i18n="charge.yesterday">昨日</option>
+                                <option value="week" data-i18n="charge.week">本周</option>
+                                <option value="month" data-i18n="charge.month">本月</option>
+                                <option value="all" data-i18n="charge.all">全部</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="charge-stats" id="chargeStats"></div>
                     <div class="session-list" id="chargeSessionList">
@@ -231,6 +250,9 @@
                                     <option value="600" data-i18n="charge.points600">600点</option>
                                 </select>
                             </div>
+                            <!-- 导出的是"这一次会话"的采样点（/api/sessions/{id}/export），
+                                 不是按端口导时间窗——那样的 CSV 里混着会话之间的空载片段 -->
+                            <button class="btn btn-quiet sd-export" type="button" onclick="exportSessionCsv()" data-i18n="charge.export">导出 CSV</button>
                         </div>
                         <div class="sd-chart"><canvas id="sessionChart"></canvas></div>
                         <div class="sd-metrics">
@@ -244,6 +266,40 @@
                             </div>
                         </div>
                       </div>
+                    </div>
+                </section>
+
+                <!-- 用电统计：同一份"周期"口径下的三个视图。
+                     为什么合成一张卡而不是三张：① 三者共用周期与合计值，拆开会出现三个
+                     各自为政的周期下拉；② 左栏需要一张"内容够密"的卡把高度补到与右栏齐平，
+                     三个 tab 共用一个卡框，高度只算一次。 -->
+                <section class="card" id="cardEnergy">
+                    <div class="card-title">
+                        <span data-i18n="energy.title">用电统计</span>
+                        <span class="card-hint" id="energyTotal"></span>
+                        <div class="segmented" role="group" id="energyTabs">
+                            <button class="time-btn active" data-energy-tab="ports" onclick="setEnergyTab('ports')"
+                                    data-i18n="energy.tabPorts">按端口</button>
+                            <button class="time-btn" data-energy-tab="hourly" onclick="setEnergyTab('hourly')"
+                                    data-i18n="energy.tabHourly">每小时</button>
+                            <button class="time-btn" data-energy-tab="protocols" onclick="setEnergyTab('protocols')"
+                                    data-i18n="energy.tabProtocols">快充协议</button>
+                        </div>
+                    </div>
+
+                    <div class="energy-pane is-active" data-energy-pane="ports">
+                        <div class="energy-bar" id="energyPortBar"></div>
+                        <div class="energy-rows" id="energyPortRows"></div>
+                    </div>
+
+                    <div class="energy-pane" data-energy-pane="hourly">
+                        <div class="energy-chart"><canvas id="hourlyChart" role="img"
+                             data-i18n-aria-label="energy.hourlyAria" aria-label="近 24 小时每小时用电量"></canvas></div>
+                    </div>
+
+                    <div class="energy-pane" data-energy-pane="protocols">
+                        <div class="energy-bar" id="energyProtoBar"></div>
+                        <div class="energy-rows" id="energyProtoRows"></div>
                     </div>
                 </section>
 

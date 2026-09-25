@@ -192,7 +192,10 @@ docker compose up -d
 | `/api/bemfa` | GET | 巴法云状态查询 |
 | `/api/chart` | GET | 图表数据 |
 | `/api/sessions` | GET | 充电记录 |
-| `/api/energy/stats` | GET | 能量统计 |
+| `/api/sessions/{id}/export` | GET | 导出**单个会话**的采样点 CSV（会话详情浮层的“导出 CSV”） |
+| `/api/export/{port}` | GET | 导出某端口 + 时间窗的原始采样 CSV（含会话之间的空载片段；供脚本/第三方使用，Web 界面已改为上面的会话级导出） |
+| `/api/energy/stats` | GET | 能量统计（按周期汇总，含 `by_port` 分端口明细） |
+| `/api/energy/protocols` | GET | 按充电协议聚合的电量与次数（Web"用电统计 → 快充协议"视图；服务端 GROUP BY，避免前端翻页拼不全） |
 | `/api/charge-limits` | GET/POST | 充电量限额（充到指定 Wh 自动关断端口） |
 
 ### 充电量限额

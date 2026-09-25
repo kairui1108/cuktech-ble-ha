@@ -231,25 +231,37 @@ if (edgeRule) {
               `light 描边对外卡面 ${OUTER_BG.light} ${contrast(edge, OUTER_BG.light).toFixed(2)}:1`);
     }
 }
-// 进度槽：两套主题都必须是"深槽 + 亮填充"，否则亮色填充对浅槽只有 1.3～1.6:1，
-// 看不出充到哪儿了。（暗色主题槽底 #28282a 本来就是深的，浅色主题要主动压深。）
-console.log('\n-- 进度条：亮填充对槽底 >= 3:1（两套主题都要） --');
-for (const theme of ['dark', 'light']) {
-    check(typeof TRACK_BG[theme] === 'string', `${theme} 能解析出 --limit-track`);
-    if (typeof TRACK_BG[theme] !== 'string') continue;
+// 暗色主题：深槽 + 亮填充，填充对槽底必须 >= 3:1（槽底 #28282a 本来就深）。
+console.log('\n-- 暗色进度条：亮填充对槽底 >= 3:1 --');
+check(typeof TRACK_BG.dark === 'string', 'dark 能解析出 --limit-track');
+if (typeof TRACK_BG.dark === 'string') {
     for (const p of PORTS) {
-        const fill = dark[`--limit-${p}`];   // 两套主题同一个亮色
-        const r = contrast(fill, TRACK_BG[theme]);
+        const fill = dark[`--limit-${p}`];
+        const r = contrast(fill, TRACK_BG.dark);
         check(r >= GRAPHIC_MIN,
-              `${theme} ${p} 填充 ${fill} 对槽底 ${TRACK_BG[theme]} = ${r.toFixed(2)}:1`,
+              `dark ${p} 填充 ${fill} 对槽底 ${TRACK_BG.dark} = ${r.toFixed(2)}:1`,
               `需 >= ${GRAPHIC_MIN}`);
     }
 }
-// 浅色主题的槽是特意压深的（亮填充对浅槽只有 1.3～1.6:1），所以它本身必须够显眼。
-// 暗色主题的槽一直是很淡的一道凹槽（对卡面 1.27:1，改版前就是这样）：那里靠亮填充
-// 自己跳出来，不靠槽的可见度，所以不在这里强求。
-check(contrast(TRACK_BG.light, CARD_BG.light) >= GRAPHIC_MIN,
-      `light 槽底 ${TRACK_BG.light} 对卡面 ${contrast(TRACK_BG.light, CARD_BG.light).toFixed(2)}:1（压深后要看得见）`);
+
+// 浅色主题：**记录现状**——槽是浅灰（与 index.css 浅色主题的 --track 同值）。
+// 由来：这里一度为了让亮填充过 3:1 把浅色槽压到 rgba(0,0,0,0.75)，观感是"深灰长条"，
+// 产品侧明确要求浅色下不要深灰，于是改回浅灰。代价是亮端口色填充对浅槽只有
+// 1.15–2.09:1，达不到图形件 3:1——浅色主题下"填到哪儿"主要靠填充色本身、
+// 旁边的 Wh 数值和百分比文字来读。下面几条把现状钉住，避免有人当成 bug 又改回深槽。
+console.log('\n-- 浅色进度条：浅灰槽（记录现状，已知低于 3:1） --');
+check(typeof TRACK_BG.light === 'string', 'light 能解析出 --limit-track');
+if (typeof TRACK_BG.light === 'string') {
+    const tr = TRACK_BG.light;
+    const trLum = luminance(tr);
+    check(trLum >= 0.6, `light 槽底 ${tr} 是浅灰（相对亮度 ${trLum.toFixed(3)}，需 >= 0.6）`,
+          '深槽方案已被产品侧否掉，别再压深');
+    const trVsCard = contrast(tr, CARD_BG.light);
+    check(trVsCard < 1.5, `light 槽对卡面 ${trVsCard.toFixed(2)}:1（只是一道浅凹槽，不喧宾夺主）`);
+    const worst = contrast(dark['--limit-a'], tr);
+    check(worst < GRAPHIC_MIN,
+          `记录：light 最差填充 ${dark['--limit-a']} 对浅槽仅 ${worst.toFixed(2)}:1（已知偏离，见上方说明）`);
+}
 
 // 图形元素用亮端口色填充（和暗色主题一致），不是任何"墨色"变量
 console.log('\n-- 图形元素用 --port-color 填充（两主题一致） --');

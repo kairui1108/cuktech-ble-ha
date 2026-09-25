@@ -187,3 +187,143 @@ class TestChargeSessions:
         history.delete_session(1)
         points = history.get_session_points(1)
         assert points == []
+
+
+class TestProtocolStats:
+    """充电协议聚合（/api/energy/protocols 的数据源）。"""
+
+    def test_groups_by_protocol_sorted_by_wh(self, history):
+        s1 = history.start_session(1, protocol="PD")
+        s2 = history.start_session(2, protocol="PPS")
+        s3 = history.start_session(1, protocol="PD")
+        history.end_session(s1, 10.0, 50.0, 20.0, 2.0, 1800)
+        history.end_session(s2, 5.0, 30.0, 10.0, 1.0, 900)
+        history.end_session(s3, 2.0, 20.0, 5.0, 0.5, 600)
+
+        stats = history.get_protocol_stats(period="all")
+        assert [p["protocol"] for p in stats["protocols"]] == ["PD", "PPS"]
+        pd = stats["protocols"][0]
+        assert pd["wh"] == 12.0
+        assert pd["count"] == 2
+        assert pd["peak_w"] == 50.0
+        assert stats["total_wh"] == 17.0
+        assert stats["session_count"] == 3
+
+    def test_blank_protocol_falls_back_to_unknown(self, history):
+        """protocol 为空的历史行归到 unknown，否则各协议之和与总量对不上。"""
+        sid = history.start_session(1, protocol="")
+        history.end_session(sid, 4.0, 20.0, 5.0, 0.5, 600)
+        stats = history.get_protocol_stats(period="all")
+        assert [p["protocol"] for p in stats["protocols"]] == ["unknown"]
+        assert stats["total_wh"] == 4.0
+
+    def test_zero_wh_sessions_excluded_like_energy_stats(self, history):
+        """与 get_energy_stats 同口径：total_wh=0 的行不算（崩溃遗留/空会话）。"""
+        sid = history.start_session(1, protocol="PD")
+        history.end_session(sid, 0.0, 0.0, 0.0, 0.0, 60)
+        stats = history.get_protocol_stats(period="all")
+        assert stats["protocols"] == []
+        assert stats["session_count"] == 0
+        assert stats["total_wh"] == 0
+
+    def test_totals_match_energy_stats(self, history):
+        """同一周期下，协议分布与按端口分布的合计必须一致。"""
+        for port, proto, wh in ((1, "PD", 3.0), (2, "PD", 7.0), (3, "UFCS", 1.5)):
+            sid = history.start_session(port, protocol=proto)
+            history.end_session(sid, wh, 20.0, 5.0, 0.5, 600)
+        assert (history.get_protocol_stats("all")["total_wh"]
+                == history.get_energy_stats("all")["total_wh"])
+
+    def test_connection_closed_safe(self, history):
+        history.close()
+        assert history.get_protocol_stats(period="today")["protocols"] == []
+
+
+class TestPeriodWindow:
+    """周期窗口口径（前端下拉的 today/yesterday/week/month/all）。"""
+
+    def test_today_starts_at_midnight_with_open_end(self, history):
+        start, end = history._period_window("today")
+        assert end is None
+        assert 0 < time.time() - start < 86400
+
+    def test_yesterday_is_exactly_one_day_wide(self, history):
+        start, end = history._period_window("yesterday")
+        assert end is not None
+        assert end - start == pytest.approx(86400)
+        assert start < end <= time.time()
+
+    def test_week_and_month_are_rolling_windows(self, history):
+        """week/month 是滚动 7/30 天（不是自然周月），前端文案必须跟着这么写。"""
+        now = time.time()
+        assert now - history._period_window("week")[0] == pytest.approx(7 * 86400, abs=5)
+        assert now - history._period_window("month")[0] == pytest.approx(30 * 86400, abs=5)
+
+    def test_unknown_period_starts_at_zero(self, history):
+        assert history._period_window("bogus") == (0.0, None)
+
+
+class TestStatisticsZeroHandling:
+    """0 是合法读数，不能当成"没有数据"返回 null。"""
+
+    def test_zero_voltage_is_reported_as_zero_not_null(self, history):
+        history.record_port_data(1, {
+            "voltage": 0.0, "current": 0.0, "power": 0.0,
+            "active": False, "protocol": "idle",
+        })
+        stats = history.get_statistics(1, hours=24)
+        assert stats["samples"] == 1
+        assert stats["voltage"]["min"] == 0.0
+        assert stats["voltage"]["avg"] == 0.0
+        assert stats["current"]["avg"] == 0.0
+        assert stats["power"]["avg"] == 0.0
+
+    def test_no_samples_returns_empty_dict(self, history):
+        assert history.get_statistics(3, hours=1) == {"port": 3, "hours": 1, "samples": 0}
+
+
+class TestSessionCsvExport:
+    """单个会话的 CSV 导出（会话详情浮层的"导出 CSV"）。"""
+
+    def test_exports_only_that_session_points(self, history):
+        s1 = history.start_session(1, protocol="PD")
+        history.record_charge_point(s1, 20.0, 1.5, 30.0, "PD")
+        history.record_charge_point(s1, 20.1, 1.6, 32.2, "PD")
+        history.end_session(s1, 1.2, 32.2, 20.0, 1.5, 300)
+        s2 = history.start_session(2, protocol="PPS")
+        history.record_charge_point(s2, 10.0, 0.5, 5.0, "PPS")
+        history.end_session(s2, 0.1, 5.0, 10.0, 0.5, 60)
+
+        csv_text = history.export_session_csv(s1)
+        assert "session 1" in csv_text
+        assert "port c1" in csv_text          # 端口名走 PORT_NAMES（c1/c2/c3/a）
+        assert "port c2" not in csv_text      # 另一次会话不能混进来
+        assert "PPS" not in csv_text
+        assert csv_text.count(",20.0,1.5,30.0,") == 1   # 本次会话的那一行
+        # 表头统一
+        assert "timestamp,datetime,voltage,current,power,protocol" in csv_text
+
+    def test_reports_session_summary_in_comment_rows(self, history):
+        sid = history.start_session(3, protocol="UFCS")
+        history.record_charge_point(sid, 5.0, 0.4, 2.0, "UFCS")
+        history.end_session(sid, 0.5, 2.0, 5.0, 0.4, 120)
+        csv_text = history.export_session_csv(sid)
+        assert "energy_wh 0.5" in csv_text
+        assert "peak_power_w 2.0" in csv_text
+        assert "duration_s 120" in csv_text
+
+    def test_unknown_session_returns_empty(self, history):
+        assert history.export_session_csv(99999) == ""
+        assert history.export_session_csv(0) == ""
+
+    def test_connection_closed_safe(self, history):
+        history.close()
+        assert history.export_session_csv(1) == ""
+
+    def test_export_route_serves_csv(self):
+        """路由层：/api/sessions/{id}/export 返回 text/csv 且带下载文件名。"""
+        import inspect
+        import ha_server
+        src = inspect.getsource(ha_server)
+        assert 'add_get("/api/sessions/{id}/export"' in src
+        assert "handle_session_export" in src

@@ -1026,6 +1026,26 @@ class Server:
                 None, lttb_downsample, points, target)
         return web.json_response({"points": points})
 
+    async def handle_session_export(self, request):
+        """GET /api/sessions/{id}/export — 单个会话的采样点 CSV（会话详情浮层的"导出"）。
+
+        与 /api/export/{port} 的区别：那个是"某端口 + 时间窗"的原始采样（含会话之间的
+        空载片段），这个只导这一次会话。
+        """
+        try:
+            sid = int(request.match_info["id"])
+        except (KeyError, ValueError):
+            return web.json_response({"ok": False, "error": "invalid session id"}, status=400)
+        loop = asyncio.get_running_loop()
+        csv_data = await loop.run_in_executor(None, self.history.export_session_csv, sid)
+        if not csv_data:
+            return web.json_response({"ok": False, "error": "session not found"}, status=404)
+        return web.Response(
+            body=csv_data,
+            content_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=session_{sid}.csv"},
+        )
+
     async def handle_energy_stats(self, request):
         """GET /api/energy/stats?period=today"""
         period = request.query.get("period", "today")
@@ -1059,6 +1079,41 @@ class Server:
         total_dur = stats.get("total_duration_sec", 0)
         total_wh = stats.get("total_wh", 0)
         stats["avg_power_w"] = round(total_wh / (total_dur / 3600), 1) if total_dur > 0 else 0
+
+        return web.json_response(stats)
+
+    async def handle_energy_protocols(self, request):
+        """GET /api/energy/protocols?period=today
+
+        按协议聚合电量/会话数（前端的"快充协议分布"视图）。走 SQL 聚合而不是让前端
+        拉 /api/sessions 自己算：后者单页最多 50 条，今日就有 120+ 条会话，前端算出来的
+        分布是错的（只有最近 50 条）。
+        """
+        period = request.query.get("period", "today")
+        loop = asyncio.get_running_loop()
+        stats = await loop.run_in_executor(
+            None, self.history.get_protocol_stats, period)
+
+        # 进行中的会话在 DB 里 total_wh=0（不会进聚合），用实时积分补上，
+        # 口径与 handle_energy_stats 的 by_port 一致（两边合计值能对上）。
+        live = self.ble.get_live_session_data()
+        by_proto = {p["protocol"]: p for p in stats["protocols"]}
+        for port, ld in live.items():
+            port_state = self.ble.state.ports.get(port)
+            proto = (port_state.protocol if port_state else "") or "unknown"
+            entry = by_proto.get(proto)
+            if entry is None:
+                entry = {"protocol": proto, "wh": 0.0, "count": 0, "peak_w": 0.0, "is_active": True}
+                stats["protocols"].append(entry)
+                by_proto[proto] = entry
+            entry["wh"] = round(entry["wh"] + ld["session_wh"], 2)
+            entry["count"] += 1
+            entry["peak_w"] = round(max(entry["peak_w"], ld["max_power"]), 1)
+            entry["is_active"] = True
+        if live:
+            stats["protocols"].sort(key=lambda p: p["wh"], reverse=True)
+            stats["total_wh"] = round(sum(p["wh"] for p in stats["protocols"]), 2)
+            stats["session_count"] = sum(p["count"] for p in stats["protocols"])
 
         return web.json_response(stats)
 
@@ -1628,7 +1683,9 @@ app.router.add_get("/api/export/{port}", lambda r: get_server().handle_export(r)
 app.router.add_get("/api/bemfa", lambda r: get_server().handle_bemfa(r))
 app.router.add_get("/api/sessions", lambda r: get_server().handle_sessions(r))
 app.router.add_get("/api/sessions/{id}/points", lambda r: get_server().handle_session_points(r))
+app.router.add_get("/api/sessions/{id}/export", lambda r: get_server().handle_session_export(r))
 app.router.add_get("/api/energy/stats", lambda r: get_server().handle_energy_stats(r))
+app.router.add_get("/api/energy/protocols", lambda r: get_server().handle_energy_protocols(r))
 app.router.add_get("/api/events", lambda r: get_server().handle_sse(r))
 app.router.add_get("/api/config", lambda r: get_server().handle_config_get(r))
 app.router.add_post("/api/config", lambda r: get_server().handle_config_save(r))

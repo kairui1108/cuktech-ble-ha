@@ -59,6 +59,16 @@
         const API_BASE = window.location.origin;
         const PORT_MAP = { 1: 'C1', 2: 'C2', 3: 'C3', 4: 'A' };
         const PORT_KEY_MAP = { 1: 'c1', 2: 'c2', 3: 'c3', 4: 'a' };
+        // 各端口满载功率（W）：C1/C2 120W，C3 44W，USB-A 33W。端口小卡片的负载条按它算百分比。
+        const PORT_MAX_W = { 1: 120, 2: 120, 3: 44, 4: 33 };
+
+        // 负载百分比：空载（power<=0）给 0 = 空条；有输出时钳制在 2-99%，
+        // 满载也留 1% 空隙，条形圆角不会被裁成直角。
+        function loadPct(power, portId) {
+            if (!(power > 0)) return 0;
+            const max = PORT_MAX_W[portId] || 100;
+            return Math.min(99, Math.max(2, Math.round((power / max) * 100)));
+        }
 
         // 场景模式（piid 5）不在这个列表里：它有自己的卡片（图标按钮那一排），
         // 见 renderScene()。放两处会出现两个能改同一个值的入口。
@@ -262,7 +272,7 @@
                 const statusEl = document.getElementById(`limit-status-${key}`);
                 if (statusEl) {
                     statusEl.textContent = CL.statusText(key);
-                    statusEl.style.color = e.wh > 0 ? 'var(--accent)' : 'var(--text-dim)';
+                    statusEl.style.color = e.wh > 0 ? 'var(--accent-ink)' : 'var(--text-dim)';
                 }
 
                 const progressEl = document.getElementById(`limit-progress-${key}`);
@@ -334,6 +344,52 @@
             updateChargeLimitUI();
         }
 
+        // ══════════════════════════════════════════════════════════
+        //  分段控件（tab list）的滑动指示块
+        //
+        //  为什么量位置而不是写死 nth-child：同一个组件里按钮宽度不等
+        //  （30分 / 24小时、W / V / A、"按端口 / 每小时 / 快充协议"），切语言后文字宽度
+        //  还会再变一次，而 ≤640px 时按钮又是 flex:1 均分。两个观察器兜住所有变化：
+        //  class 变了（选中项切换）、盒子尺寸变了（换语言 / 换行 / 缩放）。
+        // ══════════════════════════════════════════════════════════
+        function initSegmentedControl(seg) {
+            if (!seg || seg.dataset.segReady) return;
+            seg.dataset.segReady = '1';
+            const thumb = document.createElement('span');
+            thumb.className = 'seg-thumb';
+            thumb.setAttribute('aria-hidden', 'true');
+            seg.insertBefore(thumb, seg.firstChild);
+
+            function sync() {
+                const active = seg.querySelector('.time-btn.active');
+                // 没有任何选中项（比如时间档位还没初始化）或按钮不可见：收起滑块
+                if (!active || !active.offsetWidth) { thumb.style.opacity = '0'; return; }
+                const sr = seg.getBoundingClientRect();
+                const ar = active.getBoundingClientRect();
+                const cs = getComputedStyle(seg);
+                // 绝对定位的基准是 padding box，所以要减掉容器自己的边框
+                const bx = parseFloat(cs.borderLeftWidth) || 0;
+                const by = parseFloat(cs.borderTopWidth) || 0;
+                thumb.style.width = ar.width + 'px';
+                thumb.style.height = ar.height + 'px';
+                thumb.style.transform = `translate(${ar.left - sr.left - bx}px, ${ar.top - sr.top - by}px)`;
+                thumb.style.opacity = '1';
+            }
+
+            sync();
+            // 首帧之后再打开过渡，否则初始化时滑块会从原点滑过来
+            window.requestAnimationFrame(() => seg.classList.add('is-ready'));
+            new MutationObserver(sync).observe(seg, {
+                subtree: true, attributes: true, attributeFilter: ['class'],
+            });
+            if (typeof ResizeObserver !== 'undefined') new ResizeObserver(sync).observe(seg);
+            window.addEventListener('resize', sync);
+        }
+
+        function initSegmentedControls() {
+            document.querySelectorAll('.segmented').forEach(initSegmentedControl);
+        }
+
         // canvas 上的图表无法直接消费 CSS 变量，这里把当前外观的令牌读成具体色值
         // （米家暗色是黑底、浅色是白底，网格线/刻度的墨色必须跟着换）。
         function chartTheme() {
@@ -349,27 +405,53 @@
         // 换肤后重刷已存在的图表（颜色写死在 options 里，不会跟着 CSS 变）
         function refreshChartTheme() {
             const th = chartTheme();
-            [powerChart, modalChart].forEach(ch => {
+            [powerChart, modalChart, hourlyChart].forEach(ch => {
                 if (!ch || !ch.options) return;
                 const legend = ch.options.plugins && ch.options.plugins.legend;
                 if (legend && legend.display !== false && legend.labels) legend.labels.color = th.text;
-                // 总功率曲线的颜色跟主题走
                 const ds = ch.data && ch.data.datasets;
-                if (ds && ds[4] && ds[4].label === 'Total') {
-                    const cs2 = getComputedStyle(document.documentElement);
-                    ds[4].borderColor = cs2.getPropertyValue('--total-line').trim() || '#FFFFFF';
+                // 总功率曲线的线色/填充色来自 CSS 令牌，换肤后要重算
+                if (ds && ds[4]) {
+                    const cs3 = getComputedStyle(document.documentElement);
+                    ds[4].borderColor = cs3.getPropertyValue('--total-line').trim() || '#C084FC';
+                    ds[4].backgroundColor = cs3.getPropertyValue('--total-fill').trim() || 'rgba(192,132,252,0.16)';
                 }
                 const scales = ch.options.scales || {};
                 Object.keys(scales).forEach(k => {
                     const sc = scales[k];
                     if (!sc.display) return;                      // 隐藏的轴不用刷
                     if (sc.grid && sc.grid.drawOnChartArea !== false) sc.grid.color = th.grid;
-                    // 只有标记过 __themed 的刻度跟随主题；弹窗里按端口着色的刻度必须保留
+                    // 只有标记过 __themed 的刻度跟随主题（主图与弹窗的刻度都是文字，
+                    // 统一走 --text-dim；端口身份交给曲线本身与图例）
                     if (sc.ticks && sc.ticks.__themed) sc.ticks.color = th.dim;
                     if (sc.title && sc.title.display) sc.title.color = th.dim;
                 });
                 ch.update('none');
             });
+        }
+
+        // ── 功率曲线：W / V / A 三个指标共用同一份 /api/chart 响应 ──
+        // 为什么不加两张图：后端本来就在同一个响应里返回 power/voltage/current 三组序列，
+        // app.js 也一直把它们存进 portHistory，只是从来没画过。切指标 = 换序列，零新请求。
+        let chartMetric = 'power';
+        let _lastChartPayload = null;
+
+        // CSS 变量给的是 #RRGGBB，canvas 的填充色需要带 alpha 的 rgba()
+        function withAlpha(color, alpha) {
+            const m = String(color || '').trim();
+            let r, g, b;
+            if (m.charAt(0) === '#') {
+                const h = m.length === 4 ? m.slice(1).split('').map(c => c + c).join('') : m.slice(1);
+                r = parseInt(h.slice(0, 2), 16);
+                g = parseInt(h.slice(2, 4), 16);
+                b = parseInt(h.slice(4, 6), 16);
+            } else {
+                const nums = m.match(/[\d.]+/g);
+                if (!nums || nums.length < 3) return m;
+                r = Number(nums[0]); g = Number(nums[1]); b = Number(nums[2]);
+            }
+            if (!isFinite(r) || !isFinite(g) || !isFinite(b)) return m;
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
         }
 
         function initChart() {
@@ -378,39 +460,118 @@
             const c2 = cs.getPropertyValue('--port-c2').trim() || '#46B4FF';
             const c3 = cs.getPropertyValue('--port-c3').trim() || '#89D8F3';
             const ca = cs.getPropertyValue('--port-a').trim() || '#FFD24B';
-            const textColor = cs.getPropertyValue('--text').trim() || 'rgba(255,255,255,0.9)';
-            // 总功率曲线：白色主题下用深灰实线（黑虚线太扎眼），深色主题用纯白
-            const totalLine = cs.getPropertyValue('--total-line').trim() || '#FFFFFF';
+            // 总功率曲线（只在「总」指标模式显示）用中性墨色，避免被误认成某个端口
+            const totalLine = cs.getPropertyValue('--total-line').trim() || 'rgba(255,255,255,0.6)';
+            const totalFill = cs.getPropertyValue('--total-fill').trim() || 'rgba(255,255,255,0.10)';
             const th = chartTheme();
             const ctx = document.getElementById('powerChart').getContext('2d');
+            // 端口四条线**不堆叠**：堆叠面积会把每条线画在"累计高度"上（只有下面那条
+            // 带的厚度才是它自己的功率），Y 轴就读不出"这个口现在多少 W"了 —— C1≈30W、
+            // C2≈30W 时 C2 的线会落在 60W 处，看着像错值。这里要的是"每口功率"读数，
+            // 所以四条线各自对 Y 轴；"总功率"另开 Σ 模式单独画一条（见 applyChartMetric），
+            // 构成占比交给"端口功率占比"条与用电统计卡的「按端口」tab。
+            const portSeries = [[c1, 'C1'], [c2, 'C2'], [c3, 'C3'], [ca, 'A']];
             powerChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: [],
-                    datasets: [
-                        { label: 'C1', data: [], borderColor: c1, borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: false },
-                        { label: 'C2', data: [], borderColor: c2, borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: false },
-                        { label: 'C3', data: [], borderColor: c3, borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: false },
-                        { label: 'A', data: [], borderColor: ca, borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: false },
-                        { label: 'Total', data: [], borderColor: totalLine, borderWidth: 2, tension: 0.4, pointRadius: 0, fill: false, borderDash: [6, 4] },
-                    ]
+                    // 总功率那条线只在 Σ 模式显示（那里只剩它一条，走势看得清）；
+                    // 功率模式下它的数值由悬浮提示的 footer 给出，见下。
+                    datasets: portSeries.map(([color, label]) => ({
+                        label, data: [], borderColor: color,
+                        borderWidth: 1.5, tension: 0.4, pointRadius: 0, fill: false
+                    })).concat([{
+                        label: 'Total', data: [], hidden: true,
+                        borderColor: totalLine, backgroundColor: totalFill,
+                        borderWidth: 2, tension: 0.4, pointRadius: 0, fill: true
+                    }])
                 },
                 options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, interaction: { intersect: false, mode: 'index' },
-                    // 图例用卡片标题行里的自定义圆点（.chart-legend），Y 轴整个隐藏——与 phone.html 一致
-                    plugins: { legend: { display: false } },
+                    // 图例用卡片标题行里的自定义圆点（.chart-legend），Chart.js 自带的关掉
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { callbacks: {
+                            // 总功率只在提示里给：同一份响应里的总计序列，端口的和也在里面
+                            footer: (items) => {
+                                if (!items.length || !_lastChartPayload) return '';
+                                if (chartMetric === 'total') return '';   // 这条线本身就是总功率
+                                const total = (_lastChartPayload.power[4] || {}).data;
+                                if (!total) return '';
+                                const v = total[items[0].dataIndex];
+                                return v == null ? '' : `${I18N.t('power.total')}: ${Number(v).toFixed(1)}`;
+                            },
+                        } },
+                    },
                     scales: {
-                        // 横竖网格线都不画（phone.html 同款），Y 轴显示，只留功率刻度文字
+                        // 横竖网格线都不画（phone.html 同款），Y 轴显示，只留刻度文字
                         x: { display: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, maxTicksLimit: 8, font: { size: 9 }, maxRotation: 0, __themed: true } },
-                        y: { display: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, font: { size: 9 }, __themed: true }, beginAtZero: true, grace: '8%' }
+                        y: { display: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, font: { size: 9 }, __themed: true },
+                             beginAtZero: true, grace: '8%',
+                             // 标题只在 V/A 模式显示（功率模式的单位已经在卡片标题里）
+                             title: { display: false, text: '', color: th.dim, font: { size: 9 } } }
                     }
                 }
             });
             renderChartLegend();
         }
 
+        // 切换指标：只换序列和 Y 轴语义，不重新请求
+        function setChartMetric(metric) {
+            if (['power', 'total', 'voltage', 'current'].indexOf(metric) < 0) return;
+            if (metric === chartMetric) return;
+            chartMetric = metric;
+            document.querySelectorAll('#chartMetricGroup .time-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.metric === metric);
+            });
+            // 切指标让曲线自己形变一次（250ms）：比"啪"地换一组数据更容易看懂
+            // 变的是哪条线。流式刷新仍然走 applyChartMetric() → update('none')。
+            applyChartMetric(true);
+        }
+
+        function applyChartMetric(animate) {
+            if (!powerChart || !_lastChartPayload) return;
+            const p = _lastChartPayload;
+            const ds = powerChart.data.datasets;
+            const isPower = chartMetric === 'power';
+            const isTotal = chartMetric === 'total';
+            // 「总」模式只看总功率一条线，端口的四条全部收起（stacked 也关掉，
+            // 否则总计会被当成又一摞叠上去）
+            const series = isPower ? p.power : (chartMetric === 'voltage' ? p.voltage : p.current);
+
+            powerChart.data.labels = p.labels;
+            for (let i = 0; i < 4; i++) {
+                ds[i].data = series[i].data;
+                ds[i].hidden = isTotal;
+            }
+            ds[4].data = p.power[4].data;
+            ds[4].hidden = !isTotal;
+            const yTitle = powerChart.options.scales.y.title;
+            yTitle.display = chartMetric === 'voltage' || chartMetric === 'current';
+            yTitle.text = chartMetric === 'voltage' ? 'V' : 'A';
+
+            // canvas 对读屏用户不可见：至少把"这是哪张图、什么指标"播报出去
+            const cv = document.getElementById('powerChart');
+            if (cv) {
+                cv.setAttribute('aria-label', isPower
+                    ? I18N.t('index.chartAria')
+                    : I18N.t('index.chartAriaMetric', { metric: I18N.t(metricKey(chartMetric)) }));
+            }
+            renderChartLegend();
+            if (powerChart.options.animation) powerChart.options.animation.duration = animate ? 250 : 0;
+            powerChart.update(animate ? undefined : 'none');
+        }
+
+        function metricKey(metric) {
+            return 'index.metric' + metric.charAt(0).toUpperCase() + metric.slice(1);
+        }
+
+
         // 端口功率占比：phone.js 的 renderPowerDist 同款逻辑
-        // 一条堆叠条（每段宽度 = 该口功率/总功率，端口色）+ 底下一行四色百分比标签；
-        // 无输出的端口段宽 0、标签变暗（opacity 0.3）。
+        // 一条堆叠条（每段宽度 = 该口功率/总功率，端口色）+ 底下一行标签。
+        //
+        // 标签**不再**用端口色当文字色：亮端口色在白底上只有 1.4–2.6:1（#89D8F3 1.59:1、
+        // #FFD24B 1.44:1），空载再乘 opacity .3 直接掉到 ~1.1:1，等于看不见。端口身份改由
+        // 圆点承载（图形，3:1 即可），文字统一走中性墨色——与 index.css 的令牌约定一致。
         const PORT_DIST_META = [
             { key: 'c1', label: 'C1', piid: 1 },
             { key: 'c2', label: 'C2', piid: 2 },
@@ -422,10 +583,11 @@
             const bar = document.getElementById('powerDist');
             const text = document.getElementById('powerDistText');
             if (!bar || !text) return;
+            const cs = getComputedStyle(document.documentElement);
             const segs = PORT_DIST_META.map(o => {
                 const p = (ports || {})[String(o.piid)] || {};
                 const w = (p.enabled !== false && p.power > 0) ? p.power : 0;
-                const color = getComputedStyle(document.documentElement).getPropertyValue('--port-' + o.key).trim() || '#888';
+                const color = cs.getPropertyValue('--port-' + o.key).trim() || '#888';
                 return { label: o.label, w, color };
             });
             const total = segs.reduce((a, x) => a + x.w, 0) || 1;
@@ -434,19 +596,22 @@
             ).join('');
             text.innerHTML = segs.map(x => {
                 const pct = (x.w / total * 100).toFixed(0);
-                return `<span style="color:${x.color};${x.w > 0 ? '' : 'opacity:0.3;'}">${x.label} ${pct}%</span>`;
+                // 空载只压暗文字（--text-dim），不压暗圆点：颜色本身已经是身份信息
+                return `<span class="share-item${x.w > 0 ? ' is-active' : ''}">`
+                     + `<i class="share-dot" style="background:${x.color}"></i>${x.label} ${pct}%</span>`;
             }).join('');
         }
 
-        // 自定义图例（圆点 + 端口名）：与 phone.html 的 .chart-legend 同款
+        // 自定义图例（圆点 + 端口名）：与 phone.html 的 .chart-legend 同款。
+        // 电压/电流模式下没有"总功率"这条线，图例必须跟着少一项，否则图例在说谎。
         function renderChartLegend() {
             const box = document.getElementById('chartLegend');
             if (!box) return;
-            const items = [
-                ['C1', 'var(--port-c1)'], ['C2', 'var(--port-c2)'],
-                ['C3', 'var(--port-c3)'], ['A', 'var(--port-a)'],
-                [I18N.t('power.total'), 'var(--text-dim)']
-            ];
+            // 「总」模式只剩一条总功率线，图例也只留它（其余端口都收起了）
+            const items = chartMetric === 'total'
+                ? [[I18N.t('power.total'), 'var(--total-line)']]
+                : [['C1', 'var(--port-c1)'], ['C2', 'var(--port-c2)'],
+                   ['C3', 'var(--port-c3)'], ['USB-A', 'var(--port-a)']];
             box.innerHTML = items.map(([name, color]) =>
                 `<span class="chart-legend-item"><span class="chart-legend-dot" style="background:${color}"></span>${name}</span>`
             ).join('');
@@ -487,17 +652,227 @@
                 for (const ds of data.datasets.voltage) ds.data = ds.data.slice(0, last);
                 for (const ds of data.datasets.current) ds.data = ds.data.slice(0, last);
             }
-            powerChart.data.labels = labels;
-            for (let i = 0; i < power.length; i++) {
-                powerChart.data.datasets[i].data = power[i].data;
-            }
+            // 三组序列都留着：切指标（W/V/A）时不再回头请求
+            _lastChartPayload = {
+                labels,
+                power,
+                voltage: data.datasets.voltage,
+                current: data.datasets.current,
+            };
             for (let port = 1; port <= 4; port++) {
                 portHistory[port].power = power[port - 1].data.slice();
                 portHistory[port].voltage = data.datasets.voltage[port - 1].data.slice();
                 portHistory[port].current = data.datasets.current[port - 1].data.slice();
                 portHistory[port].protocol = power[port - 1].data.map(() => 'idle');
             }
-            powerChart.update('none');
+            applyChartMetric();
+        }
+
+        // ══════════════════════════════════════════════════════════
+        //  用电统计卡（按端口构成 / 每小时用电 / 快充协议分布）
+        //
+        //  三个视图共用"周期"与合计值，所以塞进同一张卡用 tab 切换：拆成三张卡会变成
+        //  三个各自为政的周期下拉，左栏还要多算两套卡框高度。
+        //  数据来源（都不需要新增采样，只是把已经存在、前端一直没用的数据画出来）：
+        //    · /api/energy/stats      → 按端口 Wh / 次数 / 占比（by_port 之前被 renderStats 丢掉）
+        //    · /api/energy/protocols  → 按协议 Wh / 次数（服务端 GROUP BY；前端拉 /api/sessions
+        //                               单页只有 50 条，今日就有 120+ 条会话，自己算必然是错的）
+        //    · /api/chart?hours=24&interval=3600 → 近 24h 每小时平均功率（1h 桶里数值即 Wh）
+        // ══════════════════════════════════════════════════════════
+        const ENERGY_TABS = ['ports', 'hourly', 'protocols'];
+        const ENERGY_PORTS = [
+            { id: 1, key: 'c1', label: 'C1' },
+            { id: 2, key: 'c2', label: 'C2' },
+            { id: 3, key: 'c3', label: 'C3' },
+            { id: 4, key: 'a',  label: 'USB-A' },
+        ];
+        // 协议名 → 颜色令牌（--proto-*）。这组色只给堆叠条和圆点用（图形，3:1 即可），
+        // 文字一律中性墨色：亮端口色当小字在白底只有 1.4–2.6:1，两套主题各配一版。
+        const PROTO_TOKENS = { PD: 'pd', PPS: 'pps', UFCS: 'ufcs', SCP: 'scp' };
+
+        let energyTab = 'ports';
+        let energyPeriod = 'today';
+        let energyStats = null;
+        let energyProto = null;
+        let energyHourlyLoaded = false;
+        let hourlyChart = null;
+        let _energySeq = 0;   // 切周期时丢弃过期响应，避免慢响应把新数据覆盖回去
+
+        function energyProtoColor(name) {
+            const cs = getComputedStyle(document.documentElement);
+            const tok = PROTO_TOKENS[String(name || '').toUpperCase()];
+            const fallback = cs.getPropertyValue('--proto-other').trim()
+                || cs.getPropertyValue('--text-dim').trim() || '#888';
+            if (!tok) return fallback;
+            return cs.getPropertyValue('--proto-' + tok).trim() || fallback;
+        }
+
+        function setEnergyTab(tab) {
+            if (ENERGY_TABS.indexOf(tab) < 0) return;
+            energyTab = tab;
+            try { localStorage.setItem('cuktech-energy-tab', tab); } catch (e) {}
+            document.querySelectorAll('#energyTabs .time-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.energyTab === tab);
+            });
+            document.querySelectorAll('[data-energy-pane]').forEach(p => {
+                p.classList.toggle('is-active', p.dataset.energyPane === tab);
+            });
+            renderEnergy();
+            // 小时视图的 canvas 在隐藏时量到的尺寸是 0，所以首次可见时才建图
+            if (tab === 'hourly') fetchEnergyHourly();
+        }
+
+        async function refreshEnergyCard(period) {
+            if (period) energyPeriod = period;
+            const seq = ++_energySeq;
+            try {
+                const res = await fetch(`${API_BASE}/api/energy/stats?period=${energyPeriod}`);
+                const stats = await res.json();
+                if (seq !== _energySeq) return;
+                energyStats = stats;
+            } catch (e) { console.error('Energy stats error:', e); }
+            try {
+                const res = await fetch(`${API_BASE}/api/energy/protocols?period=${energyPeriod}`);
+                const proto = await res.json();
+                if (seq !== _energySeq) return;
+                energyProto = proto;
+            } catch (e) { console.error('Energy protocol error:', e); }
+            renderEnergy();
+            if (energyHourlyLoaded) fetchEnergyHourly();
+        }
+
+        // 一行 = 圆点 + 名称 + 行内占比条 + Wh + 次数 + 占比。
+        // 行内条是关键：四列版把名称和数字顶到两端，中间几百像素全是空的，
+        // 看着"密度不够"。条直接吃掉中间，占比还能和数字互相校验。
+        function energyRow(label, color, wh, count, share, isActive) {
+            const live = isActive ? '<i class="energy-live"></i>' : '';
+            const cls = wh > 0 ? 'energy-row' : 'energy-row is-zero';
+            const pct = Math.round(share * 100);
+            return `<div class="${cls}">
+                <span class="energy-name"><i class="energy-dot" style="background:${color}"></i>${label}${live}</span>
+                <span class="energy-track"><i class="energy-fill" style="width:${pct}%;background:${color}"></i></span>
+                <span class="energy-val">${wh.toFixed(1)}<i>Wh</i></span>
+                <span class="energy-count">${I18N.t('energy.count', { count: count || 0 })}</span>
+                <span class="energy-pct">${pct}%</span>
+            </div>`;
+        }
+
+        function renderEnergyBar(bar, items) {
+            if (!bar) return;
+            const total = items.reduce((a, x) => a + x.wh, 0);
+            const parts = items.filter(x => x.wh > 0);
+            bar.innerHTML = (total > 0 && parts.length)
+                ? parts.map(x => `<div style="width:${(x.wh / total * 100).toFixed(1)}%;background:${x.color}"></div>`).join('')
+                : '';
+        }
+
+        function renderEnergy() {
+            const label = document.getElementById('energyTotal');
+            const total = energyStats ? (energyStats.total_wh || 0) : null;
+            if (label) {
+                label.textContent = (total === null)
+                    ? I18N.t('charge.' + energyPeriod)
+                    : I18N.t('energy.total', {
+                        period: I18N.t('charge.' + energyPeriod),
+                        wh: total.toFixed(1),
+                    });
+            }
+
+            const byPort = (energyStats && energyStats.by_port) || {};
+            const portItems = ENERGY_PORTS.map(p => {
+                const e = byPort[String(p.id)] || {};
+                return { label: p.label, color: `var(--port-${p.key})`,
+                         wh: e.wh || 0, count: e.count || 0, active: !!e.is_active };
+            });
+            renderEnergyBar(document.getElementById('energyPortBar'), portItems);
+            const portRows = document.getElementById('energyPortRows');
+            if (portRows) {
+                const sum = portItems.reduce((a, x) => a + x.wh, 0);
+                portRows.innerHTML = sum > 0
+                    ? portItems.map(x => energyRow(x.label, x.color, x.wh, x.count, x.wh / sum, x.active)).join('')
+                    : `<div class="empty-state">${I18N.t('energy.noData')}</div>`;
+            }
+
+            const protoItems = ((energyProto && energyProto.protocols) || []).map(p => ({
+                label: String(p.protocol).toLowerCase() === 'unknown'
+                    ? I18N.t('energy.unknown')
+                    : String(p.protocol).toUpperCase(),
+                color: energyProtoColor(p.protocol),
+                wh: p.wh || 0, count: p.count || 0, active: !!p.is_active,
+            }));
+            renderEnergyBar(document.getElementById('energyProtoBar'), protoItems);
+            const protoRows = document.getElementById('energyProtoRows');
+            if (protoRows) {
+                const sum = protoItems.reduce((a, x) => a + x.wh, 0);
+                protoRows.innerHTML = sum > 0
+                    ? protoItems.map(x => energyRow(x.label, x.color, x.wh, x.count, x.wh / sum, x.active)).join('')
+                    : `<div class="empty-state">${I18N.t('energy.noData')}</div>`;
+            }
+        }
+
+        async function fetchEnergyHourly() {
+            try {
+                const res = await fetch(`${API_BASE}/api/chart?hours=24&interval=3600`);
+                const data = await res.json();
+                if (!data || !data.ok) return;
+                energyHourlyLoaded = true;
+                renderHourlyChart(data);
+            } catch (e) { console.error('Hourly energy error:', e); }
+        }
+
+        function renderHourlyChart(data) {
+            const cv = document.getElementById('hourlyChart');
+            if (!cv) return;
+            const th = chartTheme();
+            const cs = getComputedStyle(document.documentElement);
+            // 柱色取 --chart-bar：与右侧"当前总功率"卡的迷你柱状图同一个蓝（--port-c2），
+            // 两处用电图形用同一套颜色语言。
+            const barColor = cs.getPropertyValue('--chart-bar').trim() || '#46B4FF';
+            // 1 小时桶里接口给的是 AVG(power) → 数值即该小时的电量 Wh
+            const values = data.datasets.power[4].data.map(v => Math.round(v * 10) / 10);
+            const labels = data.labels.map(s => String(s).slice(-5, -3));
+            if (!hourlyChart) {
+                hourlyChart = new Chart(cv.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels, datasets: [{
+                        data: values, backgroundColor: barColor,
+                        borderRadius: 3, borderSkipped: false, maxBarThickness: 20,
+                    }] },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: { duration: 0 },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: { callbacks: {
+                                title: items => `${items[0].label}:00`,
+                                label: ctx => `${Number(ctx.parsed.y).toFixed(1)} Wh`,
+                            } },
+                        },
+                        scales: {
+                            x: { grid: { display: false }, ticks: { color: th.dim, font: { size: 9 }, maxRotation: 0, maxTicksLimit: 8, __themed: true } },
+                            y: { beginAtZero: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, font: { size: 9 }, maxTicksLimit: 4, __themed: true } },
+                        },
+                    },
+                });
+            } else {
+                hourlyChart.data.labels = labels;
+                hourlyChart.data.datasets[0].data = values;
+                hourlyChart.update('none');
+            }
+        }
+
+        // 导出当前打开的这次会话（/api/sessions/{id}/export）。
+        // 用隐藏 <a download> 而不是 location.href：万一服务端没带 Content-Disposition，
+        // href 会把整页导航走，而 a[download] 只下载。
+        function exportSessionCsv() {
+            const sid = (typeof _currentSessionId !== 'undefined') ? _currentSessionId : null;
+            if (!sid) return;
+            const a = document.createElement('a');
+            a.href = `${API_BASE}/api/sessions/${sid}/export`;
+            a.download = '';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
         }
 
         // ── Real-time modal chart ──
@@ -559,7 +934,7 @@
                 const protocolEl = document.getElementById('modalProtocol');
                 if (protocolEl) {
                     protocolEl.textContent = rt.protocol || 'idle';
-                    protocolEl.style.color = (rt.protocol && rt.protocol !== 'idle') ? 'var(--accent)' : 'var(--text-dim)';
+                    protocolEl.style.color = (rt.protocol && rt.protocol !== 'idle') ? 'var(--accent-ink)' : 'var(--text-dim)';
                 }
             }
             // ── 更新图表曲线 ──
@@ -591,8 +966,11 @@
                 options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, interaction: { intersect: false, mode: 'index' },
                     plugins: { legend: { display: true, position: 'top', labels: { color: colors.textDim, usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, font: { size: 11 }, padding: 12 } } },
                     scales: { x: { display: true, grid: { drawOnChartArea: false }, ticks: { color: th.dim, maxTicksLimit: 8, font: { size: 9 }, maxRotation: 0, __themed: true } },
-                        y: { type: 'linear', display: true, position: 'left', grid: { drawOnChartArea: false }, ticks: { color: colors.c1, font: { size: 10 } }, beginAtZero: true, title: { display: true, text: 'V / A', color: colors.textDim } },
-                        y1: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false }, ticks: { color: colors.a, font: { size: 10 } }, beginAtZero: true, title: { display: true, text: 'W', color: colors.textDim } }
+                        // 刻度数字是文字，走 --text-dim（跟随主题）；V/A 与 W 的归属由轴标题和
+                        // 曲线颜色表达。原来按端口色画刻度：浅色主题下 #FFD24B 在白底只有 1.44:1、
+                        // #FF7A00 2.61:1，右轴数字基本看不见。
+                        y: { type: 'linear', display: true, position: 'left', grid: { drawOnChartArea: false }, ticks: { color: th.dim, font: { size: 10 }, __themed: true }, beginAtZero: true, title: { display: true, text: 'V / A', color: colors.textDim } },
+                        y1: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false }, ticks: { color: th.dim, font: { size: 10 }, __themed: true }, beginAtZero: true, title: { display: true, text: 'W', color: colors.textDim } }
                     }
                 }
             });
@@ -606,7 +984,10 @@
             // with the actually open port instead of the static default.
             titleEl.setAttribute('data-i18n-params', JSON.stringify({ port: PORT_MAP[portId] }));
             titleEl.textContent = I18N.t('modal.portDetail', { port: PORT_MAP[portId] });
-            titleEl.style.color = `var(--port-${PORT_KEY_MAP[portId]})`;
+            // 端口身份交给标题前的一枚圆点（图形，浅色下靠内描边撑轮廓），
+            // 文字保持中性墨色：端口色当文字色在浅色下只有 1.4–2.6:1，根本读不出来。
+            titleEl.style.removeProperty('color');
+            titleEl.style.setProperty('--port-color', `var(--port-${PORT_KEY_MAP[portId]})`);
             initModalChart();
             updateModalChart();
             renderModalProtocols();
@@ -699,7 +1080,7 @@
                 const portData = latestPorts[currentModalPort];
                 const lastProtocol = portData ? portData.protocol : 'idle';
                 protocolEl.textContent = lastProtocol;
-                protocolEl.style.color = lastProtocol !== 'idle' ? 'var(--accent)' : 'var(--text-dim)';
+                protocolEl.style.color = lastProtocol !== 'idle' ? 'var(--accent-ink)' : 'var(--text-dim)';
             }
         }
 
@@ -772,16 +1153,23 @@
             const card = document.getElementById(`port-${portId}`);
             if (!card) return renderPorts(latestPorts);
             const merged = latestPorts[key];
-            // Update stats text directly
-            const vals = card.querySelectorAll('.port-stat-value');
-            if (vals[0]) vals[0].textContent = merged.voltage.toFixed(1);
-            if (vals[1]) vals[1].textContent = merged.current.toFixed(1);
-            if (vals[2]) vals[2].textContent = merged.power.toFixed(1);
-            // Update protocol label
+            // 大读数 + 负载条 + V/A 行直接改文本，不重建卡片
+            const pw = card.querySelector('.port-power-value');
+            if (pw) pw.textContent = merged.power.toFixed(1);
+            const charging = merged.power > 0;
+            const fill = card.querySelector('.port-load-fill');
+            if (fill) fill.style.width = loadPct(merged.power, Number(portId)) + '%';
+            // 空载时连轨道一起淡掉：留着一条满宽灰槽看着像"进度卡在 0%"，与"这个口没插东西"不符
+            const track = card.querySelector('.port-load');
+            if (track) track.classList.toggle('is-idle', !charging);
+            card.classList.toggle('is-charging', charging);
+            const va = card.querySelector('.port-va');
+            if (va) va.textContent = `${merged.voltage.toFixed(1)}V · ${merged.current.toFixed(1)}A`;
+            // 协议徽标文字 + 选中态
             const protoEl = card.querySelector('.port-protocol');
             if (protoEl) {
                 protoEl.textContent = merged.protocol;
-                protoEl.style.color = merged.protocol !== 'idle' ? 'var(--accent)' : 'var(--text-dim)';
+                protoEl.classList.toggle('is-active', merged.protocol !== 'idle');
             }
             // Update active class (enabled comes from PIID 16, not BLE data)
             card.classList.toggle('active', merged.enabled !== false);
@@ -836,10 +1224,13 @@
             for (const [id, name] of Object.entries(PORT_MAP)) {
                 const port = ports[id] || { voltage: 0, current: 0, power: 0, enabled: false, protocol: 'idle' };
                 const key = PORT_KEY_MAP[id];
-                const protocolColor = port.protocol !== 'idle' ? 'var(--accent)' : 'var(--text-dim)';
                 const checked = (isRecent() && savedChecks.hasOwnProperty(key)) ? savedChecks[key] : port.enabled;
+                const pct = loadPct(port.power, id);
+                // 负载条的分母是本口上限（见 PORT_MAX_W），不是实时功率的比例——
+                // 必须写在提示里，否则"22W 只填了 18%"看起来像 bug。
+                const basis = I18N.t('index.loadBasis', { max: PORT_MAX_W[id] || 100 });
                 html += `
-                    <div class="port-card ${checked ? 'active' : ''}" id="port-${id}" onclick="handlePortClick(event, ${id})">
+                    <div class="port-card ${checked ? 'active' : ''}${port.power > 0 ? ' is-charging' : ''}" id="port-${id}" onclick="handlePortClick(event, ${id})">
                         <div class="port-header">
                             <span class="port-name ${key}">
                                 <span class="port-icon"><img id="portIcon${key.toUpperCase()}" src="/static/plugin_imgs/main_card_port_${key}_${checked ? 'on' : 'off'}.png" alt=""></span>
@@ -850,12 +1241,14 @@
                                 <span class="toggle-slider"></span>
                             </label>
                         </div>
-                        <div class="port-stats">
-                            <div class="port-stat"><div class="port-stat-value">${port.voltage.toFixed(1)}</div><div class="port-stat-label">${I18N.t('power.voltage')}</div></div>
-                            <div class="port-stat"><div class="port-stat-value">${port.current.toFixed(1)}</div><div class="port-stat-label">${I18N.t('power.current')}</div></div>
-                            <div class="port-stat"><div class="port-stat-value">${port.power.toFixed(1)}</div><div class="port-stat-label">${I18N.t('power.power')}</div></div>
+                        <div class="port-power" title="${basis}">
+                            <span class="port-power-value">${port.power.toFixed(1)}</span><span class="port-power-unit">W</span>
                         </div>
-                        <div class="port-protocol" style="color:${protocolColor}">${port.protocol}</div>
+                        <div class="port-load${pct ? '' : ' is-idle'}" title="${basis}"><div class="port-load-fill" data-port="${id}" style="width:${pct}%"></div></div>
+                        <div class="port-sub">
+                            <span class="port-va">${port.voltage.toFixed(1)}V · ${port.current.toFixed(1)}A</span>
+                            <span class="port-protocol">${port.protocol}</span>
+                        </div>
                     </div>`;
             }
             grid.innerHTML = html;
@@ -1037,10 +1430,21 @@
         }
 
         // Set initial active button
-        document.querySelectorAll('.time-btn').forEach(btn => {
-            const btnMinutes = parseInt(btn.dataset.minutes, 10);
-            if (!isNaN(btnMinutes)) btn.classList.toggle('active', btnMinutes === parseInt(localStorage.getItem('cuktech-chart-hours') || '60'));
-        });
+        // 存的分钟数可能在本页没有对应按钮（power_chart.html 那个嵌入页还有 90 分档，
+        // localStorage 是同源的）：落不到任何按钮上就退回 60 分，否则会出现
+        // "图表按 90 分取数、但没有任何按钮是选中态"的怪状态。
+        (function initTimeRangeButtons() {
+            const savedMinutes = parseInt(localStorage.getItem('cuktech-chart-hours') || '60', 10);
+            const buttons = [...document.querySelectorAll('.time-btn')]
+                .map(btn => parseInt(btn.dataset.minutes, 10)).filter(n => !isNaN(n));
+            const minutes = buttons.indexOf(savedMinutes) >= 0 ? savedMinutes : 60;
+            if (minutes !== savedMinutes) localStorage.setItem('cuktech-chart-hours', String(minutes));
+            setCurrentHours(minutes / 60);
+            document.querySelectorAll('.time-btn').forEach(btn => {
+                const btnMinutes = parseInt(btn.dataset.minutes, 10);
+                if (!isNaN(btnMinutes)) btn.classList.toggle('active', btnMinutes === minutes);
+            });
+        })();
 
         function initApp() {
             try {
@@ -1050,6 +1454,8 @@
                 fetchBemfaStatus();
                 renderChargeLimit();
                 refreshChargeLimit();
+                initSegmentedControls();
+                initEnergyCard();
                 // 限额进度（本会话已充 Wh）不在 /api/status 里，独立轮询刷新
                 setInterval(refreshChargeLimit, 5000);
                 // 安全兜底：每 30s 轮询 /api/status 校正因 SSE 队列丢事件导致的连接状态偏差
@@ -1068,6 +1474,17 @@
                 // Fallback to polling if SSE fails
                 pollStatus();
             }
+        }
+
+        // 用电统计卡：恢复上次看的 tab，先拉一次数据，之后按分钟级慢轮询
+        // （会话结束由 SSE 立即触发，见下面的 sse-session-end 监听）
+        function initEnergyCard() {
+            let saved = 'ports';
+            try { saved = localStorage.getItem('cuktech-energy-tab') || 'ports'; } catch (e) {}
+            setEnergyTab(ENERGY_TABS.indexOf(saved) >= 0 ? saved : 'ports');
+            refreshEnergyCard(energyPeriod);
+            setInterval(() => refreshEnergyCard(), 60000);
+            window.addEventListener('sse-session-end', () => refreshEnergyCard());
         }
 
         // ── SSE (Server-Sent Events) — replaces 2s polling ──
@@ -1304,8 +1721,11 @@
         }
 
         // Charge History auto-refresh
+        // 15s（原来是 2s）：2s 一轮实测每 10 秒发 5 次 /api/energy/stats + 5 次 /api/sessions，
+        // 也就是 ≈7200 请求/小时/标签页，而且每轮整段重建 innerHTML —— 列表里的 hover、
+        // 键盘焦点、滚动位置都活不过 2 秒。会话结束有 SSE 会立即刷新，够用。
         if (typeof startChargeHistoryAutoRefresh === 'function') {
-            startChargeHistoryAutoRefresh('chargeSessionList', 'chargeStats', 'today', 2000, 8);
+            startChargeHistoryAutoRefresh('chargeSessionList', 'chargeStats', 'today', 15000, 4);
         }
 
         // ── Locale change: re-render JS-built (dynamic) content ──
@@ -1313,6 +1733,11 @@
         function rerenderDynamic() {
             updateBleButton();
             renderPorts(latestPorts);
+            // 图例与用电统计都是 JS 拼出来的文案，语言切换后必须重画
+            // （图例原来漏了这一步：整页中文、只有图例一直是 "Total Power (W)"）
+            renderChartLegend();
+            renderEnergy();
+            initSegmentedControls();
             if (settingsRendered) {
                 const sg = document.getElementById('settingsGrid');
                 if (sg) sg.innerHTML = buildSettingsHtml(lastSettings);
