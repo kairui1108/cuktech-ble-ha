@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.1.1] - 2026-09-25
+
+### Fixed
+- **Charge-limit entities showed 0 and never reflected the BLE server.** Metering was gated on the backend together with enforcement, so under a Python server (delegated mode) no port sample ever reached the local engine and session energy stayed 0 forever. `_async_ingest_port` no longer returns early — only *enforcement* is backend-specific
+- **Invalid `(device_class, state_class)` pair on the session-energy sensor**: HA rejects `measurement` together with `device_class=energy` and logged a warning per port at startup. Switched to `TOTAL`, which is the documented class for a resettable total (the value drops to 0 each session, so `TOTAL_INCREASING` would also be wrong)
+- **Legacy config entries ignored their stored address.** Entries created by older versions keep the URL under `host` (alongside `mac`/`token`/`ble_key`), not `server_url`; reading only the new key silently fell back to `http://localhost:8199`, so a server on any other address degraded to local mode and stopped syncing. Resolution is now `server_url` → `host` → default
+- **A fired `once` limit resurrected after an HA restart.** Limits were only persisted from `async_set_charge_limit`, but a one-shot limit is consumed *inside* the engine (`end_session`), with no user action — so disk kept the pre-firing value and the next restart silently re-armed a limit that had already fired. Limits are now saved whenever the snapshot changes (compared per sample; writes only on an actual change). `ble_server` already persisted consumption via `_persist_limits_async`, so this also restores parity between the two backends
+- Delegated mode adopted only `wh`/`mode` from `GET /api/charge-limits`, discarding the live fields. It now mirrors the full server snapshot (`session_wh` / `is_charging` / `fired`), so entities match the Web UI and progress survives HA restarts
+- The server snapshot is kept separate from the local engine instead of being written into it: otherwise a local session end would consume a mirrored `once` limit and blank the entity while the server still reported it
+- The delegated poll now notifies port callbacks too (not just settings): the session-energy sensor is `CB_TYPE_PORT` and previously stayed stale until the next MQTT frame
+- Poll interval 15s → 5s so a mirrored `session_wh` doesn't visibly tick in steps (`GET` reads in-memory state, no I/O)
+- Backend choice is now diagnosable: the probe reports at INFO (was DEBUG, invisible at the default log level) and logs *why* it fell back to local; the active backend is also exposed as a `backend` entity attribute
+- **The limit entities didn't refresh when a `once` limit was consumed in local mode.** Consumption happens on the port-callback path while number/select listen on settings callbacks, so the UI kept showing the old limit until the next `settings` frame (20-90s on ESP32). The change-detection hook now also notifies the settings listeners
+- A failed REST write now hands ownership to HA explicitly (`_adopt_server_limits_locally`), preserving the other ports' limits and stopping the poll, instead of leaving the display split between two sources
+- **A BLE blip consumed a `once` limit.** The local engine could never produce `END_REASON_LINK_LOSS` (only the tests did), so after a reconnect the port reading inactive was attributed `USER_OFF` and the freshly armed one-shot was eaten — while the Python side preserves it (`ble_manager.py:900` closes sessions as `link_loss` on disconnect). The BLE-disconnect transition now closes sessions with that reason
+- **Editing the threshold silently reset the mode.** In local mode `set_limit(port, wh)` without a mode normalised to the default `once`, turning a user's `always` back into `once`; the number entity supplies only a threshold, so this happened on every threshold edit. An omitted mode now keeps the port's current one, matching the server's merge semantics (`ha_server.py:766`)
+
+### Added
+- **Charge limits** (充电量限额): auto power-off at a configured Wh per port — 12 new entities across three platforms:
+  - `number._{port}_charge_limit` — threshold in Wh, `0` disables (range 0-1000, step 0.5)
+  - `select._{port}_charge_limit_mode` — `once` (clears after firing) / `always` (re-arms every session)
+  - `sensor._{port}_session_energy` — energy delivered in the current session, with `remaining_wh` / `limit_wh` / `limit_mode` / `is_charging` / `total_wh` attributes
+- New `energy_engine` module: pure-python port of the server's `AdaptiveEnergyIntegrator` (trapezoidal V×I integration), `ChargeEndDetector` and `ChargeLimitTracker`, following the same extraction pattern as `protocol_codec` — core logic unit-tested without a HA runtime
+- **Backend auto-detection** so limits work under both firmwares with no firmware change:
+  - Python BLE server answers `GET /api/charge-limits` with 200 → `server` mode: configuration is delegated via REST and stays two-way synced with the Web UI
+  - ESP32 has no such endpoint (see `esp32_ble/main/http_server.c` URI table) and returns 404 → `local` mode: HA meters the same 1Hz MQTT port samples itself. The ESP32 does no energy accounting at all, so this is its only viable path
+  - Probe failures are non-fatal; local mode is fully functional on its own
+- Local mode persistence via HA `Store` (`limits` + long-run `totals`), restoring across restarts
+
+### Changed
+- Session energy uses `SensorStateClass.TOTAL`: the value legitimately drops to 0 at each session start, so `TOTAL_INCREASING` would be wrong, and `MEASUREMENT` is rejected outright by HA for `device_class=energy`
+
+### Notes
+- Cutoff reuses the existing MQTT port-control topic (`{"port":..,"action":"off"}`), which **both** the Python server and the ESP32 firmware already subscribe to — hence no firmware change is required
+- `once` limits survive BLE hiccups and HA restarts (`END_REASONS_PRESERVING_LIMIT`); only a real session termination consumes them
+- Overshoot is ~0.05 Wh at a 100 W load; a failed off command is retried after `LIMIT_RETRY_SEC` (15s) rather than silencing the user's limit
+- Documented that the two configurations should be managed in one place: with the Python server prefer delegated mode, otherwise Web UI and HA enforce independently
+
+### Tests
+- 123 new cases: 58 for the energy engine (integration math, `MAX_GAP_SEC` retained-frame guard, session boundaries, once/always semantics, junk-input handling) and 65 for coordinator wiring (backend probe incl. ESP32 404 fallback, link-loss limit preservation, cutoff idempotence and retry, mode preservation, Store roundtrip/corruption, once-consumption persistence, entity refresh + unique-id stability, delegated-mode snapshot mirroring and take-over)
+
 ## [1.1.0] - 2026-09-22
 
 ### Fixed

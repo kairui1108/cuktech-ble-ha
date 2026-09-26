@@ -52,6 +52,7 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 - **设备信息同步**：型号、固件版本从 BLE 服务器实时同步
 - **充电事件**：充电完成时自动触发 `charge_end` 事件实体，可用于通知自动化和场景联动到 HA
 - **实体可用性**：MQTT 状态 + HTTP 健康检查双重检测
+- **充电量限额**：为端口设置"充到指定 Wh 自动断电"，支持一次性 / 长期有效两种模式，并显示本会话已充电量与剩余量（详见下文）
 
 ## 实体列表
 
@@ -123,6 +124,75 @@ cp -r custom_components/cuktech_charger /config/custom_components/
 | `number.cuktech_charger_c2_countdown` | C2 倒计时设置 | 0-1440 分钟 |
 | `number.cuktech_charger_c3_countdown` | C3 倒计时设置 | 0-1440 分钟 |
 | `number.cuktech_a_countdown` | A 倒计时设置 | 0-1440 分钟 |
+| `number.cuktech_charger_c1_charge_limit` | C1 充电量限额（0=关闭） | 0-1000 Wh |
+| `number.cuktech_charger_c2_charge_limit` | C2 充电量限额（0=关闭） | 0-1000 Wh |
+| `number.cuktech_charger_c3_charge_limit` | C3 充电量限额（0=关闭） | 0-1000 Wh |
+| `number.cuktech_a_charge_limit` | A 充电量限额（0=关闭） | 0-1000 Wh |
+
+### 充电量限额实体
+
+每端口三个实体，共 12 个：
+
+| 平台 | 实体后缀 | 说明 |
+|------|----------|------|
+| `number` | `_{port}_charge_limit` | 限额阈值（Wh），**0 = 关闭该端口限额** |
+| `select` | `_{port}_charge_limit_mode` | `once`（达标后自动失效）/ `always`（长期有效） |
+| `sensor` | `_{port}_session_energy` | 本会话已输出能量（Wh），附 `remaining_wh` / `limit_wh` / `limit_mode` / `is_charging` 等属性 |
+
+> 上表的 `entity_id` 前缀由**设备名**决定（本集成默认设备名是中文产品名，因此
+> 实际 id 形如 `sensor.ku_tai_ke_10hao_..._c1_session_energy`）。若想要简短 id，
+> 在 HA 里把设备名改成英文即可。本页其余表格用的是同一套示意约定。
+
+## 充电量限额
+
+达到阈值后集成通过 MQTT 端口控制通道关断该端口——该通道 Python BLE 服务器与
+ESP32 固件均已实现，因此**两种后端下限额功能都可用，无需修改固件**。
+
+限额单位 (Wh) 的语义是「充电器输出能量」（V×I 梯形积分），不是被充设备实际
+充入的电量——线损与转换损耗使后者偏小（典型 5~15%）。与 Web UI / REST API
+的 `/api/charge-limits` 完全一致。
+
+### 两种工作模式
+
+集成启动时探测后端是否支持 `GET /api/charge-limits`，据此选择后端：
+
+| 后端 | 触发条件 | 配置存储 | 显示数据来源 | 适用 |
+|------|----------|----------|--------------|------|
+| `server`（委派） | HTTP 返回 200 | Python 服务器（与 Web UI 双向同步） | 服务端快照（含 `session_wh` / `is_charging`） | Python BLE 服务器 |
+| `local`（本地计量） | 返回 404 / 无法连接 | HA `Store` 本地持久化 | HA 本地积分（1Hz MQTT 采样） | ESP32 固件、或服务器离线时 |
+
+**计量与执行是两件事**：无论哪种后端，HA 都会用 MQTT 上的 1Hz 端口数据本地积分
+（这样读数才有实时性，也保证 REST 掉线时功能不中断）；后端只决定*谁拥有配置、
+谁负责断电*。委派模式下实体显示服务端快照，因此与 Web UI 完全一致。
+
+ESP32 固件不做电量统计（只推送瞬时 V/I/P），因此**必然**走 `local`：积分由 HA
+完成——这份 1Hz 数据在两种后端下完全相同，所以精度与 Python 端一致。本地模式的
+实质是"执行通道是共用的，只有计量与判定搬到了 HA 侧"。
+
+判断当前处于哪种后端：任一限额实体的 `backend` 属性，或 HA 日志中启动时的那行
+`Charge limits delegated to BLE server (...)` / `Charge limits metered locally (no BLE
+server API at ...: ...)`（后者会带上回退原因）。
+
+`mode` 语义（与 Python 端同名表格一致）：
+
+| mode | 达到阈值 | 会话未达标即结束（拔插/手动关端口/充满） | BLE 抖动重连 / HA 重启 |
+|---|---|---|---|
+| `once` | 关断并清零 | 清零 | 保留 |
+| `always` | 关断，保留待下次充电 | 保留 | 保留 |
+
+### 使用建议
+
+- **只在其中一处设置限额**：若同时在 Web UI 和 HA 设置了不同阈值，两边会各自
+  独立判定，谁先达标谁先关断（无害，但剩余量显示会不一致）。用 Python 服务器
+  时推荐用集成的委派模式，即只在一处维护。
+- **超冲量**：约 0.05 Wh（100W 负载），取决于 1Hz 采样与命令往返。
+- **HA 重启**：正在进行的会话其累计电量无法恢复（重启期间没采样），会从 0
+  重新累计——**方向是"宁可多充一点，也不会误提前关断"**。长期累计值保留。
+- 本集成的 `session_energy` 是**按会话**归零的量，不适合直接接入 HA 能源面板
+  （那需要一个单调递增的 kWh 传感器）；两者是独立的议题。
+- **归零时机**：会话结束（拔插 / 关断 / 充满）时**不清零**，要等**下一次会话开始**
+  才归零。所以端口空闲时该传感器读到的是"上一次充了多少"——写自动化时别把它当成
+  "当前正在充多少"，配合 `is_charging` 属性判断更稳。这与 Python 端语义一致。
 
 ## 协议说明
 

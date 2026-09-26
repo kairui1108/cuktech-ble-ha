@@ -49,6 +49,7 @@ Re-authentication supported when server URL changes.
 - **Device info sync**: Model and firmware version synced from BLE server
 - **Charge event**: `charge_end` event entity fires on charge completion, enabling notification automations
 - **Dual availability**: MQTT status + HTTP health check
+- **Charge limit**: auto power-off at a configured Wh per port, with once/always modes and live session progress (see below)
 
 ## Entities
 
@@ -110,6 +111,81 @@ Re-authentication supported when server URL changes.
 | `number.cuktech_charger_c2_countdown` | C2 countdown | 0-1440 min |
 | `number.cuktech_charger_c3_countdown` | C3 countdown | 0-1440 min |
 | `number.cuktech_a_countdown` | A countdown | 0-1440 min |
+| `number.cuktech_charger_c1_charge_limit` | C1 charge limit (0 = off) | 0-1000 Wh |
+| `number.cuktech_charger_c2_charge_limit` | C2 charge limit (0 = off) | 0-1000 Wh |
+| `number.cuktech_charger_c3_charge_limit` | C3 charge limit (0 = off) | 0-1000 Wh |
+| `number.cuktech_a_charge_limit` | A charge limit (0 = off) | 0-1000 Wh |
+
+### Charge limit entities
+
+Three entities per port, 12 in total:
+
+| Platform | Suffix | Description |
+|----------|--------|-------------|
+| `number` | `_{port}_charge_limit` | Threshold in Wh; **0 disables** the limit |
+| `select` | `_{port}_charge_limit_mode` | `once` (clears after firing) / `always` (re-arms each session) |
+| `sensor` | `_{port}_session_energy` | Energy delivered this session (Wh), with `remaining_wh` / `limit_wh` / `limit_mode` / `is_charging` attributes |
+
+> The `entity_id` prefix comes from the **device name** (this integration defaults
+> to the Chinese product name, so real ids look like
+> `sensor.ku_tai_ke_10hao_..._c1_session_energy`). Rename the device in HA for
+> shorter ids. Other tables on this page use the same illustrative convention.
+
+## Charge limit
+
+When the threshold is reached the integration switches the port off over MQTT
+port control — a channel **both** the Python BLE server and the ESP32 firmware
+already implement, so limits work under either backend with **no firmware
+change**.
+
+The unit is *charger output energy* (V×I trapezoidal integration), not the
+energy actually stored in the charged device: cable and conversion losses make
+the latter 5~15% smaller. This matches the Web UI / `/api/charge-limits` exactly.
+
+### Two modes of operation
+
+On startup the integration probes `GET /api/charge-limits` to pick a backend:
+
+| Backend | Trigger | Config storage | Displayed figures | Applies to |
+|---------|---------|----------------|-------------------|------------|
+| `server` (delegated) | HTTP 200 | Python server (two-way sync with the Web UI) | Server snapshot (incl. `session_wh` / `is_charging`) | Python BLE server |
+| `local` (own metering) | HTTP 404 / unreachable | HA `Store` (local persistence) | HA's own integration of the 1Hz MQTT samples | ESP32 firmware, or when the server is offline |
+
+**Metering and enforcement are separate concerns**: under either backend HA always
+integrates the 1Hz MQTT port samples locally, so the readout stays live and the
+feature survives the REST API going away. The backend only decides *who owns the
+config and who cuts the power*. In delegated mode the entities mirror the server
+snapshot, so they match the Web UI exactly.
+
+The ESP32 firmware does no energy accounting (it only pushes instantaneous
+V/I/P), so it **always** lands in `local`: HA does the integration. Since those
+samples are identical under both firmwares, accuracy matches the Python side. In
+short — the actuation channel is shared; only metering and decision moved to HA.
+
+To tell which backend is active, check the `backend` attribute on any charge-limit
+entity, or the startup log line `Charge limits delegated to BLE server (...)`
+versus `Charge limits metered locally (no BLE server API at ...: ...)` (the latter
+includes the reason for falling back).
+
+`mode` semantics (identical to the Python table):
+
+| mode | Threshold reached | Session ends early (unplug/manual off/full) | BLE reconnect / HA restart |
+|---|---|---|---|
+| `once` | cut off, then cleared | cleared | preserved |
+| `always` | cut off, kept for next session | kept | kept |
+
+### Notes
+
+- **Configure the limit in one place only.** If the Web UI and HA hold
+  different thresholds each enforces independently — harmless, but the
+  remaining-energy readouts will disagree. With the Python server, prefer the
+  delegated mode so there is a single source of truth.
+- **Overshoot**: about 0.05 Wh at a 100 W load (1 Hz sampling + command round trip).
+- **HA restart**: energy already accumulated in an ongoing session cannot be
+  recovered (no sampling while down) and restarts from 0. This errs toward
+  over-charging rather than risking a premature cut-off. Long-run totals persist.
+- `session_energy` resets per session, so it is **not** suitable for HA's Energy
+  dashboard (that needs a monotonic kWh sensor); these are separate concerns.
 
 ## 效果预览
 

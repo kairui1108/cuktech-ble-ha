@@ -10,7 +10,15 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import CuktechMQTTCoordinator
 from .base_entity import CuktechBaseEntity, CB_TYPE_SETTINGS
-from .const import DOMAIN, PIID_DISPLAY, SELECT_PIIDS, SELECT_OPTION_MAP
+from .const import (
+    DOMAIN,
+    PIID_DISPLAY,
+    SELECT_PIIDS,
+    SELECT_OPTION_MAP,
+    CHARGE_LIMIT_PORTS,
+    CHARGE_LIMIT_ICON,
+    LIMIT_MODES,
+)
 
 
 async def async_setup_entry(
@@ -22,6 +30,10 @@ async def async_setup_entry(
         CuktechSelect(coord, entry, piid, cfg["name"], cfg["icon"], cfg["options"])
         for piid, cfg in SELECT_PIIDS.items()
     ]
+    entities.extend(
+        CuktechChargeLimitMode(coord, entry, port, label)
+        for port, label in CHARGE_LIMIT_PORTS.items()
+    )
     async_add_entities(entities)
 
 
@@ -64,3 +76,42 @@ class CuktechSelect(CuktechBaseEntity, SelectEntity):
         value = option_map.get(option)
         if value is not None:
             await self.coordinator.async_set_value(self._piid, value)
+
+
+class CuktechChargeLimitMode(CuktechBaseEntity, SelectEntity):
+    """Per-port charge-limit mode: once (consume after firing) / always (re-arm).
+
+    Options are the raw modes used by ble_server's REST API (`once`/`always`),
+    not display translations, so templates and automations can pass them
+    through unchanged.
+    """
+
+    _attr_options = list(LIMIT_MODES)
+    _attr_icon = CHARGE_LIMIT_ICON
+
+    def __init__(
+        self,
+        coord: CuktechMQTTCoordinator,
+        entry: ConfigEntry,
+        port: str,
+        label: str,
+    ) -> None:
+        """Initialize the mode select."""
+        self._port = port
+        self._attr_unique_id = f"{entry.entry_id}_charge_limit_mode_{port}"
+        self._attr_name = f"{label} charge limit mode"
+        super().__init__(coord, entry, CB_TYPE_SETTINGS)
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the active mode."""
+        mode = self.coordinator.charge_limit_mode(self._port)
+        return mode if mode in self._attr_options else None
+
+    async def async_select_option(self, option: str) -> None:
+        """Select the mode, keeping the configured Wh untouched."""
+        if option not in self._attr_options:
+            return
+        await self.coordinator.async_set_charge_limit(
+            self._port, self.coordinator.charge_limit_wh(self._port), option
+        )

@@ -3,6 +3,10 @@ from datetime import timedelta
 
 DOMAIN = "cuktech_charger"
 CONF_SERVER_URL = "server_url"
+# 旧版 config entry 把地址存在 "host" 键下（与 "mac"/"token"/"ble_key" 同批）。
+# 不读它的话，这类既有条目会静默回落 DEFAULT_SERVER_URL——服务端不在 localhost
+# 的用户就会莫名其妙退化成 local 模式（限额不再与服务端同步）。
+CONF_HOST = "host"
 DEFAULT_SERVER_URL = "http://localhost:8199"
 
 # MQTT Topics
@@ -15,6 +19,9 @@ TOPIC_CHARGE_EVENT = f"{TOPIC_PREFIX}/charge_event"
 
 # Port mapping
 PORT_MAP = {"c1": 1, "c2": 2, "c3": 3, "a": 4}
+# piid -> 小写端口名（PORT_MAP 的反向表）。MQTT topic 用端口名、实体层用 piid，
+# 反向查表比每次在 _on_port_message 里遍历 PORT_MAP（~1Hz）更直接。
+PIID_TO_PORT = {piid: port for port, piid in PORT_MAP.items()}
 PORT_NAMES = {1: "C1", 2: "C2", 3: "C3", 4: "A"}
 
 # PIID names from the MIOT spec
@@ -128,6 +135,39 @@ DEVICE_INFO = {
     "model": "njcuk.fitting.ad1204",
     "sw_version": "",
 }
+
+# ── 充电量限额 (charge limits) ──
+# 阈值单位是充电器输出能量（Wh，由 V×I 梯形积分得出），不是被充设备的实际充入
+# 电量——线损与设备内转换损耗使后者偏小（典型 5~15%）。wh=0 表示禁用该端口限额。
+#
+# 算法与常数源自 ble_server/energy.py：同一台充电器、同一份 1Hz V/I 推送，
+# 换后端时用户不该感到差异。energy_engine.py 从这里取常数（单一真源），
+# 判定与断电执行也在那里。
+MAX_LIMIT_WH = 1000.0
+LIMIT_MODE_ONCE = "once"      # 达到阈值即关断并消费清零（一次性）
+LIMIT_MODE_ALWAYS = "always"  # 长期有效，每次充电会话重新武装
+# select 实体的 options 顺序即此顺序；mode 语义见 docs/integration-readme.md
+LIMIT_MODES = (LIMIT_MODE_ONCE, LIMIT_MODE_ALWAYS)
+DEFAULT_LIMIT_MODE = LIMIT_MODE_ONCE
+
+LIMIT_STORE_VERSION = 1       # Store schema version (bump on layout change)
+# 限额后端：local=HA 本地积分并判定（任意后端通用）；
+#           server=委派给 Python BLE server 的 /api/charge-limits。
+LIMIT_BACKEND_LOCAL = "local"
+LIMIT_BACKEND_SERVER = "server"
+# 委派模式下轮询服务端限额快照的周期。GET 只读内存态、无 IO，所以可以取得比较
+# 密：这个快照同时承载 session_wh（实体显示与 Web UI 一致），间隔太大会看到跳变。
+# 请求超时复用 HTTP_TIMEOUT —— 打的是同一个 server_url，没有理由两套。
+LIMIT_POLL_INTERVAL = timedelta(seconds=5)
+
+# ── 限额实体 (per-port number/select/sensor 三件套 × 4 端口) ──
+# port -> 显示标签，复用 PORT_NAMES（与同设备的 C1/A 电压电流功率传感器同风格）。
+# 各平台自行拼后缀（charge limit / charge limit mode / session energy），避免出现
+# "C1 charge limit session energy" 这类叠词名。
+CHARGE_LIMIT_PORTS = {
+    port: PORT_NAMES[piid] for port, piid in PORT_MAP.items()
+}
+CHARGE_LIMIT_ICON = "mdi:battery-charging-60"
 
 # ── 运行时常量 (coordinator 使用，避免魔法值散落) ──
 HEALTH_CHECK_INTERVAL = timedelta(seconds=30)   # HTTP 健康检查周期
