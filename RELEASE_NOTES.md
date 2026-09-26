@@ -1,5 +1,30 @@
 # Release Notes
 
+## v1.1.1
+
+### BLE Server — 充电量限额、Web UI 米家风格重构与 BLE 连接修复
+
+#### 新增功能
+- **充电量限额 ([#10](https://github.com/kairui1108/cuktech-ble-ha/pull/10))**：每端口可设充电量上限，到额自动断电；支持`once`（仅一次，触发后失效）/ `always`（每次充电重新生效）两种模式；`GET/POST /api/charge-limits`，配置存 `history.db` meta，即时生效无需重启；`index.html` / `phone.html` 新增控制卡片
+- **Web UI 重构 ([#12](https://github.com/kairui1108/cuktech-ble-ha/pull/12))**：前端页面统一米家风格重设计——设备图 + 端口网格合并主卡、场景模式卡、限额/倒计时侧栏卡片组、设置改弹窗、功率图表重绘、日志级别移入配置页；
+
+#### 修复
+- **C3/USB-A 端口状态不更新**（[@chid](https://github.com/chid)）：固件仅对 C1/C2 主动推送，piid 3/4 无推送帧导致状态一直停在空闲；改为 3s 定时主动 GET 并走统一 `decode_port()` 解析（含协议识别与 PDO 能力）
+- **macOS BLE 无法连接**（[@chid](https://github.com/chid)）：CoreBluetooth 不暴露真实 MAC，改为按 MiBeacon 广播数据（内含真实 MAC）匹配设备连接，真实 MAC 仍用于 MiOT 认证
+- **BLE 自愈重连**（[@chid](https://github.com/chid)）：`verify_port` 连续 5 次失败强制重连，劣化链路不再无限滞留
+- **僵尸通道修复**（[@merfu](https://github.com/merfu)）：全 PIID 读取连续失败（通道存活但 GATT 已死）强制重连；防止单端口定时任务静默死亡拖垮整个 timer
+- **会话闭合修正 ([#10](https://github.com/kairui1108/cuktech-ble-ha/pull/10))**：修 3 处只查 `_active_sessions` 的会话判断，消除「端口已断电仍上报幽灵会话」的窗口
+
+### HA Integration — 充电量限额：两种网关后端均可用 ([#13](https://github.com/kairui1108/cuktech-ble-ha/pull/13))
+
+- **充电量限额**：新增 12 个实体——每端口限额 number（0~1000 Wh，0 关闭）、模式 select（once/always）、会话电量 sensor（含剩余额度、限额模式、backend 属性）
+- **后端自动探测**：兼容esp32端，Python 服务端 `GET /api/charge-limits` 返回 200 → 委托模式（配置经 REST 双向同步 Web UI）；ESP32 返回 404 → 本地模式（HA 以相同的梯形积分算法 1Hz 计量并执行断电，`Store` 持久化）
+
+### 测试
+
+- **总计 603 个测试**：BLE Server 364 + HA Integration 239，全部通过
+- **新增 123 个**（HA 集成）：能量引擎 58 + 协调器接线 65；BLE Server 限额与重连回归同批通过
+
 ## v1.1.0
 
 ### BLE Server — Web UI 国际化、增强稳定性与优化协议检查

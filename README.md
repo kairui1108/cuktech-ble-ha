@@ -26,6 +26,7 @@
 - **MQTT LWT**：崩溃时自动通知 HA 设备离线
 - **巴法云 (Bemfa) 接入**：支持小爱同学/小度音箱语音控制充电器端口
 - **充电记录**：自动记录充电会话（电量、时长、峰值功率），支持 Web UI 历史查看
+- **限额充电**：支持每端口设置电量上限，到额自动断电；
 - **SQLite 历史数据**：端口数据持久化存储，支持统计和导出
 
 ### ESP32 固件
@@ -45,7 +46,7 @@
 - **端口传感器**：电压、电流、功率、协议类型
 - **端口控制**：开关控制 C1/C2/C3/A 端口
 - **协议开关控制**：10 个开关实体，独立控制各端口 PD/PPS/UFCS/SCP 协议
-- **设置管理**：场景模式、息屏时间、语言等选择器
+- **限额充电**：支持每端口设置电量上限，到额自动断电，兼容esp32端
 - **倒计时设置**：数字实体控制各端口充电倒计时
 - **设备信息同步**：型号、固件版本从 BLE 服务器实时同步
 - **充电事件**：充电完成时自动触发事件实体，支持通知自动化
@@ -111,19 +112,20 @@ cuktech-ble-ha/
 │   │   ├── phone.html             # 移动端 Web 界面
 │   │   └── static/                # 前端资源 (JS/CSS/图片)
 │   ├── docker/                    # Docker 部署文件
-│   ├── tests/                     # 单元测试 (240+ tests)
+│   ├── tests/                     # 单元测试 (364 tests)
 │   └── systemd/                   # systemd 服务配置
 │
 ├── ha_integration/                # HA 自定义集成
 │   └── custom_components/cuktech_charger/
-│       ├── __init__.py            # Coordinator
+│       ├── __init__.py            # Coordinator（含限额后端探测/委托/本地执行）
 │       ├── binary_sensor.py       # 端口状态 + BLE 连接状态
 │       ├── config_flow.py         # 配置流程（支持 reauth）
 │       ├── const.py               # 常量定义
+│       ├── energy_engine.py       # 充电量限额引擎（计量/会话检测/限额追踪，纯函数）
 │       ├── manifest.json
-│       ├── number.py              # 倒计时数字实体
-│       ├── select.py              # 选择器实体
-│       ├── sensor.py              # 传感器实体
+│       ├── number.py              # 倒计时 + 充电量限额数字实体
+│       ├── select.py              # 选择器实体（含限额模式）
+│       ├── sensor.py              # 传感器实体（含会话电量）
 │       ├── switch.py              # 开关实体 + BLE 连接控制
 │       ├── strings.json           # 英文翻译
 │       ├── translations/          # 多语言翻译
@@ -204,7 +206,7 @@ docker run -d \
 
 ```bash
 git clone https://github.com/kairui1108/cuktech-ble-ha.git
-cd cucuktech-ble-ha/ble_server
+cd cuktech-ble-ha/ble_server
 
 # 快速启动（配置通过 config.html 在线修改）
 docker compose -f docker/docker-compose.pull.yml up -d
@@ -313,6 +315,9 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 | sensor | 总功率 | 所有端口功率之和 |
 | switch | 端口控制 | 开关 C1/C2/C3/A |
 | switch | 协议开关 (×10) | 独立控制各端口 PD/PPS/UFCS/SCP |
+| number | 充电量限额 (×4) | 每端口 Wh 上限，0 关闭，到额自动断电 |
+| select | 限额模式 (×4) | once（单次）/ always（每次会话） |
+| sensor | 会话电量 (×4) | 本次充电电量，带剩余额度、限额模式等属性 |
 | select | 场景模式 | AI/数码/单口/均衡 |
 | select | 息屏时间 | 5分钟/1分钟/10分钟等 |
 | number | 倒计时 | 各端口充电倒计时 |
@@ -331,6 +336,7 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 | `/api/history/{port}` | GET | 查询历史数据 |
 | `/api/statistics/{port}` | GET | 统计分析 |
 | `/api/export/{port}` | GET | CSV 导出 |
+| `/api/charge-limits` | GET/POST | 充电量限额读写（HA 集成委托模式对接端点） |
 | `/api/log-level` | GET/POST | 日志级别管理 |
 
 ## MQTT 主题
@@ -341,7 +347,7 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 | `cuktech/charger/settings` | 设置数据（retain） |
 | `cuktech/charger/status` | 连接状态（retain + LWT） |
 | `cuktech/charger/set` | 设置命令（订阅） |
-| `cuktech/charger/port` | 端口控制命令（订阅） |
+| `cuktech/charger/port` | 端口控制命令（订阅）；Python 服务端与 ESP32 固件均订阅，充电量限额断电亦复用此主题 |
 
 ## 依赖
 
@@ -361,10 +367,10 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 ## 测试
 
 ```bash
-# BLE Server (240+ tests)
+# BLE Server (364 tests)
 cd ble_server && .venv/bin/python -m pytest tests/
 
-# HA Integration (87 tests)
+# HA Integration (239 tests)
 cd ha_integration && python -m pytest tests/
 ```
 
