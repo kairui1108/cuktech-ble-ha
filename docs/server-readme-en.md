@@ -251,6 +251,13 @@ Configuration persists in the `history.db` meta table and applies immediately wi
 no restart. Over-shoot depends on the sampling period (~1 s push + command loop),
 about 0.05 Wh at 100 W.
 
+**Validation**: `wh` must be a finite number in `0 ~ 1000` (`MAX_LIMIT_WH`) and `mode`
+must be `once`/`always`. **Any invalid entry rejects the whole request (HTTP 400)**
+rather than silently normalising to "disabled" — the latter would be a dangerous
+silent degradation where the user believes a limit is set while it is actually off.
+`wh=0` disables the limit for that port. (The HA integration's number entity uses the
+same `0 ~ 1000` bound.)
+
 ## Tests
 
 ```bash

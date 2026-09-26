@@ -48,6 +48,30 @@ ha_helpers.aiohttp_client = MagicMock()
 ha_helpers.entity_platform = MagicMock()
 ha_helpers.event = MagicMock()
 ha_helpers.entity = MagicMock()
+ha_helpers.storage = types.ModuleType("homeassistant.helpers.storage")
+
+
+class _FakeStore:
+    """Minimal Store replacement: dict-backed, no hass loop and no disk.
+
+    Only the methods the integration actually calls need to exist. Keeping it
+    here means the suite still runs without a real HA install — same reasoning
+    as the rest of these stubs.
+    """
+
+    def __init__(self, hass, version, key, **kwargs):
+        self.version = version
+        self.key = key
+        self._data = None
+
+    async def async_load(self):
+        return self._data
+
+    async def async_save(self, data):
+        self._data = data
+
+
+ha_helpers.storage.Store = _FakeStore
 
 ha_components = types.ModuleType("homeassistant.components")
 ha_components.mqtt = types.ModuleType("homeassistant.components.mqtt")
@@ -57,9 +81,16 @@ ha_components.mqtt.async_wait_for_mqtt_client = AsyncMock(return_value=True)
 ha_components.sensor = types.ModuleType("homeassistant.components.sensor")
 ha_components.sensor.SensorEntity = _FakeSensorEntity
 ha_components.sensor.SensorEntityDescription = MagicMock
-ha_components.sensor.SensorDeviceClass = MagicMock()
-ha_components.sensor.SensorStateClass = MagicMock()
-ha_components.sensor.UnitOfPower = MagicMock()
+# 这些枚举/单位用真实字符串值而非 MagicMock：HA 对 (device_class, state_class)
+# 组合有硬校验（例如 device_class=energy 不允许 state_class=measurement），
+# 只有拿到真值才能在测试里钉住这类"合法组合"，否则断言只是在比 MagicMock。
+ha_components.sensor.SensorDeviceClass = types.SimpleNamespace(
+    ENERGY="energy", ENUM="enum", POWER="power", CONNECTIVITY="connectivity",
+)
+ha_components.sensor.SensorStateClass = types.SimpleNamespace(
+    MEASUREMENT="measurement", TOTAL="total", TOTAL_INCREASING="total_increasing",
+)
+ha_components.sensor.UnitOfPower = "W"
 ha_components.binary_sensor = types.ModuleType("homeassistant.components.binary_sensor")
 ha_components.binary_sensor.BinarySensorEntity = _FakeBinarySensorEntity
 ha_components.binary_sensor.BinarySensorDeviceClass = MagicMock()
@@ -95,9 +126,12 @@ ha_config.ConfigFlow = _FakeConfigFlow
 ha_const = types.ModuleType("homeassistant.const")
 ha_const.Platform = MagicMock()
 ha_const.EntityCategory = MagicMock()
-ha_const.UnitOfElectricCurrent = MagicMock()
-ha_const.UnitOfElectricPotential = MagicMock()
-ha_const.UnitOfPower = MagicMock()
+ha_const.UnitOfElectricCurrent = types.SimpleNamespace(AMPERE="A")
+ha_const.UnitOfElectricPotential = types.SimpleNamespace(VOLT="V")
+ha_const.UnitOfPower = types.SimpleNamespace(WATT="W")
+ha_const.UnitOfEnergy = types.SimpleNamespace(
+    WATT_HOUR="Wh", KILO_WATT_HOUR="kWh",
+)
 ha_const.CONF_NAME = "name"
 
 _vol = types.ModuleType("voluptuous")
@@ -118,6 +152,7 @@ sys.modules['homeassistant.helpers.aiohttp_client'] = ha_helpers.aiohttp_client
 sys.modules['homeassistant.helpers.entity_platform'] = ha_helpers.entity_platform
 sys.modules['homeassistant.helpers.event'] = ha_helpers.event
 sys.modules['homeassistant.helpers.entity'] = ha_helpers.entity
+sys.modules['homeassistant.helpers.storage'] = ha_helpers.storage
 sys.modules['homeassistant.components'] = ha_components
 sys.modules['homeassistant.components.mqtt'] = ha_components.mqtt
 sys.modules['homeassistant.components.sensor'] = ha_components.sensor
