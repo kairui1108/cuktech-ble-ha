@@ -66,6 +66,26 @@ class CuktechBLEController:
         self._miot_seq = 1
         self._session_keys = None
         self.init_push_frames = []  # 认证后初始推送的 inline 帧
+        # 端口推送回调：GET/SET 等待响应期间到达的端口推送帧交给它立即处理。
+        # 为什么不用"放回队列让主循环回放"：回放后本循环会立刻再把同一帧取回来,
+        # 解密→回放→再取回, 自循环空转(fork 实测踩过)。因此改为直接回调处理。
+        # 签名: async def on_port_push(plaintext: bytes) -> None
+        self.on_port_push = None
+
+    async def _forward_push(self, pt):
+        """把 GET/SET 窗口内收到的推送(明文)就地交给回调处理（两个窗口共用）。
+
+        回调异常按 warning 记录（原先只在 debug 级、排障时看不见）；但
+        ConnectionError 继续上抛——它意味着会话失效需要重连, 不能吞掉。
+        """
+        if self.on_port_push is None:
+            return
+        try:
+            await self.on_port_push(pt)
+        except ConnectionError:
+            raise
+        except Exception as e:
+            _LOGGER.warning("on_port_push failed: %s", e)
 
     def _make_notify_handler(self, name):
         """创建通知回调函数 (基于队列，避免竞态条件)。"""
@@ -916,9 +936,16 @@ class CuktechBLEController:
                 deadline = asyncio.get_running_loop().time() + 1.0
                 continue
             elif b4 == 0x04 and pt_siid == (siid & 0xFF) and pt_piid == (piid & 0xFF):
+                # 注意：这里**不做** pt[9]/pt[10] 错误码判定（GET 路径才有，且已验证）。
+                # 真机实测（2026-10-01, fw 2.1.2_0073）：PIID16 的 SET 响应稳定返回
+                # idx9=0x01 / idx10=0x10，但设备**每次都已实际执行**（掩码确实变了）。
+                # 该字段对 SET 不是可靠的拒绝标志，照搬 GET 的判定会把每一次成功的
+                # 端口开关都误报成失败。真正要区分的是"有没有响应"：
+                #   - 无响应/超时 → None → 调用方视为失败，不落地
+                #   - 收到 Result → 视为已接受；回显值可用则采用，不可用则用意图值
+                # 若设备确实没执行，状态会在下一个 settings 轮询周期被校正回来。
                 val = None
-                # Result 帧布局: [.., pt9=err_hi, pt10=err_lo, pt11=len, pt12=type,
-                #                 pt13..=value] — 与 GET Result 同构
+                # Result 帧布局: [.., pt11=len, pt12=type, pt13..=value]
                 if len(pt) >= 14:
                     vlen = pt[11] if len(pt) > 11 else 1
                     if vlen >= 4 and len(pt) >= 17:
@@ -927,20 +954,22 @@ class CuktechBLEController:
                         val = pt[13] if len(pt) > 13 else None
                 return {'piid': piid, 'value': val, 'raw': pt}
 
-            # Don't swallow live port pushes received while awaiting SET ACK/
-            # Result — replay them so the main loop processes them normally.
-            if (b4 == 0x02 and pt_siid == 2 and 1 <= pt_piid <= 4):
-                q = self._notify_queues.get("cmd_recv")
-                if q and data and len(data) >= 3 and data[2] == 0x02:
-                    try:
-                        q.put_nowait(data)
-                        continue
-                    except asyncio.QueueFull:
-                        pass
+            # 等待 SET ACK/Result 期间的推送: 与 GET 路径同样处理（b4 实测 0x04,
+            # 旧条件 b4 == 0x02 永假会把推送吞掉）。就地交给回调, 不放回队列
+            # （回放会被本循环立刻取回 → 自循环空转）。
+            # 注意不只端口推送(piid 1..4)是 0x04 —— PIID17/18 的协议号推送同样是
+            # 0x04, 若只放行 siid==2 && piid 1..4, 协议推送仍会被吞掉。
+            if b4 == 0x04:
+                await self._forward_push(pt)
+                continue
 
         if got_ack:
+            # 只收到 ACK 没收到 Result: 设备已接受该 SET, 但没有回显值。
+            # 实测本机所有 SET 都是 ACK-only（回 Result 的情况极少）, 因此这里
+            # 必须算成功 —— 只是不带 value, 调用方应写入"自己意图写入的值",
+            # 而不是把这个 None 写进缓存。
             _LOGGER.debug("SET acknowledged (ACK only)")
-            return {'piid': piid, 'value': None, 'raw': None}
+            return {'piid': piid, 'value': None, 'raw': None, 'ack_only': True}
         _LOGGER.debug("SET no response")
         return None
 
@@ -977,19 +1006,15 @@ class CuktechBLEController:
                         result_value = pt[13] if len(pt) > 13 else None
                 return {'piid': piid, 'value': result_value, 'raw': pt}
 
-            # Not our GET response. If it's a live port push (b4==0x02, siid==2,
-            # piid 1..4), don't swallow it — put the raw frame back so the main
-            # loop processes it as normal port data. ACK was already sent in
-            # _try_decode_inline, so the device won't re-push.
-            if (b4 == 0x02 and pt_siid == 2 and 1 <= pt_piid <= 4):
-                q = self._notify_queues.get("cmd_recv")
-                if q and data and len(data) >= 3 and data[2] == 0x02:
-                    try:
-                        q.put_nowait(data)
-                        continue
-                    except asyncio.QueueFull:
-                        pass
-                # fall through: drop if replay fails (rare)
+            # Not our GET response. If it's a live push, don't swallow it.
+            # 推送帧 b4 实测是 0x04（主链路 _process_decrypted_frame 即按此判定）,
+            # 旧代码这里写的是 b4 == 0x02, 条件永假 → 落在 GET 等待窗口内的推送被
+            # 静默丢弃（拔线归零推送丢失时端口会卡在旧功率, 直到 verify_port 补读）。
+            # ACK 已在 _try_decode_inline 发出, 设备不会重推, 所以必须就地处理。
+            # 覆盖端口推送(piid 1..4)与 PIID17/18 协议号推送（同为 0x04）。
+            if b4 == 0x04:
+                await self._forward_push(pt)
+                continue
 
         _LOGGER.debug("GET no response")
         return None
@@ -1003,14 +1028,28 @@ class CuktechBLEController:
             pt = self.decrypt(encrypted_payload)
             return (pt, None) if pt and len(pt) >= 8 else (None, None)
         elif data[2] == 0x00 and len(data) >= 6:
+            # 多帧响应（GET/SET 也可能走多帧格式）：拼接子帧的 frame[2:]（剥 2 字节
+            # 帧号）得到完整加密载荷后整体解密。此前只 ACK 并 drain 丢弃子帧,
+            # 多帧格式的 GET/SET 响应被直接扔掉, 调用方只能等到超时返回 no response。
             frame_count = min(data[4] + 0x100 * data[5], 100)
             await self.client.write_gatt_char(
                 CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
+            payload = b''
+            deadline = time.monotonic() + 30.0
             for _ in range(frame_count):
-                await self.wait_notify("cmd_recv", timeout=3.0)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                frame = await self.wait_notify("cmd_recv", timeout=min(remaining, 3.0))
+                if not frame:
+                    break
+                payload += frame[2:]
             await self.client.write_gatt_char(
                 CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
-            return None, True
+            if not payload:
+                return None, True
+            pt = self.decrypt(payload)
+            return (pt, None) if pt and len(pt) >= 8 else (None, True)
         return None, None
 
     async def get_properties(self, props):
@@ -1024,7 +1063,13 @@ class CuktechBLEController:
 
         results = {}
         failed = 0
-        for (siid, piid), value in results_list:
+        for item in results_list:
+            # return_exceptions=True 时失败项是 Exception 实例, 直接解包会抛
+            # TypeError 并把整个批量读取带崩（逐项容错）。
+            if not isinstance(item, tuple) or len(item) != 2:
+                failed += 1
+                continue
+            (siid, piid), value = item
             if isinstance(value, Exception) or value is None:
                 failed += 1
             else:

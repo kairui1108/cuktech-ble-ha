@@ -63,6 +63,11 @@ class BLEManager:
     CIRCUIT_BREAKER_COOLDOWN = 300  # 5 minutes
     MAX_AUTH_FAILURES = 15  # consecutive auth failures before restarting process
     LIMIT_RETRY_SEC = 15    # 限额关断命令未生效的重试窗口（命令超时 10s）
+    # 连续解密失败多少次判定会话密钥失步并触发重连。设备偶尔会发噪声帧/控制帧,
+    # 成功解密即清零；多帧子帧错位修好后这里的失败率应显著下降（见 P2）。
+    DECRYPT_FAIL_LIMIT = 3
+    MULTIFRAME_MAX_FRAMES = 100   # 多帧帧数钳制（损坏的帧头可能上报超大 count）
+    MULTIFRAME_DEADLINE_SEC = 30  # 多帧接收总超时，防止损坏帧头阻塞主循环
 
     def __init__(self, mac, token, state, config):
         self.mac = mac
@@ -92,6 +97,9 @@ class BLEManager:
         self._base_reconnect_delay = config.server.reconnect_base_delay
         self._max_reconnect_delay = config.server.reconnect_max_delay
         self._history = None
+        # 端口写未确认时置位：让主循环下一轮空闲立刻重读 settings，尽快把本地状态
+        # 与设备真实状态对齐（正常刷新周期最长可达一两分钟）。
+        self._settings_refresh_now = False
         self._sess_lock = threading.Lock()  # protects _active_sessions (accessed only from event loop)
         self._circuit_breaker_cooldown = 0.0
         self._circuit_breaker_failures = 0
@@ -801,6 +809,9 @@ class BLEManager:
             raise ConnectionError("Charger not found")
 
         self.ctrl = CuktechBLEController(self.mac, self.token)
+        # 注册端口推送回调：controller 在 GET/SET 等待响应窗口里收到端口推送时
+        # 直接交给这里处理，避免推送被吞（旧代码的回放条件 b4==0x02 永假）。
+        self.ctrl.on_port_push = self._process_decrypted_frame
         if sys.platform == "darwin":
             # mac_bytes (derived from the real MAC above) still feeds the
             # MiOT auth handshake -- only the connection-time identifier
@@ -1022,7 +1033,9 @@ class BLEManager:
                 except asyncio.TimeoutError:
                     now = time.time()
                     # Refresh settings during idle (no BLE push — avoids data loss from drain)
-                    if now - last_refresh > self.config.server.settings_refresh_interval:
+                    if (now - last_refresh > self.config.server.settings_refresh_interval
+                            or self._settings_refresh_now):
+                        self._settings_refresh_now = False
                         await self._refresh_settings()
                         now = time.time()
                         last_refresh = now
@@ -1309,7 +1322,16 @@ class BLEManager:
     async def _handle_set_command(self, cmd_data, cmd_future):
         piid, value = cmd_data
         try:
-            await self.ctrl.send_miot_command(2, piid, value=value)
+            res = await self.ctrl.send_miot_command(2, piid, value=value)
+            # 同 _handle_port_command: 无响应/被拒才失败; ACK-only 视为成功,
+            # 落地的是"意图写入的 value"而非设备回显(本机 SET 多为 ACK-only)。
+            if not res:
+                _LOGGER.warning("SET piid=%s rejected by device (no response), "
+                                "state not updated", piid)
+                if cmd_future and not cmd_future.done():
+                    cmd_future.set_result(
+                        {"ok": False, "error": "device did not confirm setting"})
+                return
             await self.state.update_settings({str(piid): value})
             # 同步协议扩展缓存，防止后续 toggle 读到过期值
             if piid == 21:
@@ -1328,22 +1350,80 @@ class BLEManager:
     async def _handle_port_command(self, cmd_data, cmd_future):
         port, action = cmd_data
         try:
-            cur = await self.ctrl.send_miot_command(2, 16)
-            cur_val = cur.get("value", 0) if cur else 0
-            if cur is None:
-                _LOGGER.warning('Failed to read port state, using 0')
+            # 端口开关是"读-改-写 PIID16 位掩码"。基线取值策略（评审修正）：
+            #   1. 权威值优先：先向设备 GET（健康链路上可靠，且不受缓存过期影响；
+            #      固件可能通过倒计时自行关口，缓存最长可能滞后一两个刷新周期）
+            #   2. GET 失败 → 回落本地缓存（绝不按 0 兜底：掩码算错会把其余正在
+            #      供电的口一起关掉，且不可自愈）
+            #   3. 两者都没有 → 拒绝写入
+            # port == "all" 的掩码是常量（0x0F/0x00），不依赖基线，因此不做此限制。
+            # 也不做"值未变就跳过"的判断：缓存可能滞后（固件倒计时会自行关口），
+            # 若缓存恰好等于目标值就会整条命令被跳过、设备没收到写入却返回 ok，
+            # 正是本改动要消除的"假成功"。all 的写入是幂等的，直接下发。
             if port == "all":
                 new_val = 0x0F if action == "on" else 0x00
+                cur_val = None
+                always_write = True
             else:
+                always_write = False
+                cur_val = None
+                cur = await self.ctrl.send_miot_command(2, 16)
+                if cur and isinstance(cur.get("value"), int):
+                    cur_val = cur["value"]
+                    # 权威基线：值没变可以安全跳过写入
+                else:
+                    cached = self.state.settings.get("16")
+                    if isinstance(cached, int):
+                        cur_val = cached
+                        # 基线不可信（缓存可能滞后于固件自行关口）→ 无条件下发，
+                        # 否则"缓存恰好等于目标值"会让命令被整条跳过却返回 ok，
+                        # 又是一次假成功。
+                        always_write = True
+                        _LOGGER.warning("PIID16 read failed, using cached mask 0x%02X "
+                                        "as baseline (unconditional write)", cached)
+                if cur_val is None:
+                    _LOGGER.error("Port %s %s aborted: PIID16 baseline unknown, "
+                                  "refusing to write", port, action)
+                    if cmd_future and not cmd_future.done():
+                        cmd_future.set_result(
+                            {"ok": False, "error": "port state (PIID16) unavailable"})
+                    return
                 bit = PORT_BITS[port]
                 new_val = cur_val | (1 << bit) if action == "on" else cur_val & ~(1 << bit)
-            if new_val != cur_val:
-                await self.ctrl.send_miot_command(2, 16, value=new_val)
-                await self.state.update_settings({"16": new_val})
+            if always_write or new_val != cur_val:
+                res = await self.ctrl.send_miot_command(2, 16, value=new_val)
+                # SET 结果判读(实测本机 SET 多为 ACK-only, 没有回显值):
+                #   None              → 无响应 / 设备回错误码拒绝 → 不落地
+                #   value 非 None     → 有 Result 回显 → 以设备回显值为准
+                #   ack_only          → 设备已接受但无回显 → 落地我们意图写入的值
+                # 未确认就改写状态会让"设备没生效、前端显示已生效"长期分叉。
+                if not res:
+                    # res is None 覆盖两种情形：真的无响应/超时，或设备回了带错误码的
+                    # Result（_recv_set_response 里检查 pt[9]/pt[10] 后返回 None）。
+                    _LOGGER.warning("Port %s %s not confirmed by device "
+                                    "(no response or device error), state not updated",
+                                    port, action)
+                    # 实测: 本机 PIID16 写入可能"回了错误码但设备已执行"。这里不谎报
+                    # 成功，但立刻安排一次 settings 重读，让本地状态尽快收敛到真实值。
+                    self._settings_refresh_now = True
+                    if cmd_future and not cmd_future.done():
+                        cmd_future.set_result(
+                            {"ok": False, "error": "device did not confirm port change"})
+                    return
+                # 设备回显与我们意图不一致时，以设备回显为准：settings["16"] 是后续
+                # 每次读-改-写的基线，写入意图值会让基线永久偏移，之后的开关可能在
+                # 错误的掩码上做 OR/AND（误开或误关用户没碰过的口）。
+                effective_val = new_val
+                if res.get("value") is not None and int(res["value"]) != new_val:
+                    effective_val = int(res["value"])
+                    _LOGGER.warning("Port %s %s: device reports mask 0x%02X "
+                                    "(intended 0x%02X), adopting device value",
+                                    port, action, effective_val, new_val)
+                await self.state.update_settings({"16": effective_val})
                 # Emit port state for all changed ports (SSE + MQTT)
                 if port == "all":
                     for piid in range(1, 5):
-                        if not bool(new_val & (1 << (piid - 1))):
+                        if not bool(effective_val & (1 << (piid - 1))):
                             if self._session_active(piid):
                                 self._close_session(piid, time.time(),
                                                     reason=END_REASON_USER_OFF)
@@ -1468,34 +1548,47 @@ class BLEManager:
         _LOGGER.info("PIID%d hw_protocol push: hi=%d lo=%d (raw=0x%08X)",
                      piid, hi_proto, lo_proto, val32)
 
-    async def _try_process_inline_frame(self, raw_data):
-        """Try to decrypt and process a raw BLE frame as inline port data.
-        
-        Shared between _handle_inline_data and _handle_multiframe.
-        Silently returns if data doesn't match inline format.
+    def _decrypt_payload(self, encrypted_payload, raw_data=None):
+        """解密设备载荷并做会话失步判定。成功返回明文, 失败返回 None。
+
+        内联帧传 raw_data[4:], 多帧传"拼接后的整体 payload"——两者都是设备
+        加密的完整载荷, 必须整体解密一次。多帧的每个子帧只有 2 字节帧号前缀,
+        逐个按内联帧剥 4 字节解密必然偏移错位、解密失败(并因此触发误重连)。
         """
+        pt = self.ctrl.decrypt(encrypted_payload)
+        if pt and len(pt) >= 8:
+            self._decrypt_failures = 0
+            _LOGGER.debug("decrypt ok: len=%d pt=%s", len(pt), pt.hex())
+            return pt
+        if not pt:
+            it = raw_data[:2].hex() if raw_data is not None and len(raw_data) >= 2 else "??"
+            kind = ("single" if raw_data is not None and len(raw_data) >= 3 and raw_data[2] == 0x02
+                    else ("multi" if raw_data is not None and len(raw_data) >= 3 and raw_data[2] == 0x00
+                          else "other"))
+            _LOGGER.debug("decrypt failed (kind=%s it=0x%s)", kind, it)
+        else:
+            _LOGGER.debug("decrypt output too short (%d < 8)", len(pt))
+        self._decrypt_failures += 1
+        if self._decrypt_failures >= self.DECRYPT_FAIL_LIMIT:
+            _LOGGER.warning("Decrypt failed %d times consecutively, session stale, "
+                            "triggering reconnect", self._decrypt_failures)
+            raise ConnectionError("Session stale due to consecutive decrypt failures")
+        return None
+
+    async def _try_process_inline_frame(self, raw_data):
+        """内联帧(data[2]==0x02): 剥 4 字节头后解密, 再交给下游处理。"""
         if not self.ctrl:
             return
-        _LOGGER.debug("inline_frame: raw=%s len=%d", raw_data.hex() if raw_data else "null", len(raw_data) if raw_data else 0)
-        encrypted_payload = raw_data[4:]
-        pt = self.ctrl.decrypt(encrypted_payload)
-        if pt:
-            _LOGGER.debug("inline_frame: decrypted=%s len=%d", pt.hex(), len(pt))
-        if not pt or len(pt) < 8:
-            if not pt:
-                # Diagnostic: log frame header + it so we can tell whether the
-                # failure is a key mismatch (device re-keyed) or frame misalignment.
-                it = raw_data[:2].hex() if raw_data and len(raw_data) >= 2 else "??"
-                kind = "single" if raw_data and len(raw_data) >= 3 and raw_data[2] == 0x02 else ("multi" if raw_data and len(raw_data) >= 3 and raw_data[2] == 0x00 else "other")
-                _LOGGER.debug("inline_frame: decrypt failed (kind=%s it=0x%s)", kind, it)
-            else:
-                _LOGGER.debug("inline_frame: too short (%d < 8)", len(pt))
-            self._decrypt_failures += 1
-            if self._decrypt_failures >= 3:
-                _LOGGER.warning("Decrypt failed %d times consecutively, session stale, triggering reconnect", self._decrypt_failures)
-                raise ConnectionError("Session stale due to consecutive decrypt failures")
+        _LOGGER.debug("inline_frame: raw=%s len=%d",
+                      raw_data.hex() if raw_data else "null",
+                      len(raw_data) if raw_data else 0)
+        pt = self._decrypt_payload(raw_data[4:], raw_data)
+        if pt is None:
             return
-        self._decrypt_failures = 0
+        await self._process_decrypted_frame(pt)
+
+    async def _process_decrypted_frame(self, pt):
+        """处理已解密的 MiOT 明文帧(端口推送 / 协议号推送等)。"""
         b4 = pt[4]
         piid = pt[7] if len(pt) > 7 else -1
 
@@ -1658,47 +1751,57 @@ class BLEManager:
                         lambda t: _LOGGER.error("History write failed: %s", t.exception()) if t.exception() else None)
 
     async def _handle_multiframe(self, data):
-        """Handle multi-frame BLE data. ACK protocol + attempt inline processing.
-        
-        Multi-frame is used for settings batch pushes and large responses.
-        The ACK (RCV_RDY + RCV_OK) is required to keep the BLE channel in sync.
-        Individual frames are also attempted as inline data for robustness.
+        """多帧数据：拼接子帧后整体解密一次。
+
+        子帧格式是 [帧号 2 字节][数据...]，与内联帧的 4 字节头不同——按内联帧
+        逐个解密必然偏移错位。这里参照 _recv_auth_response 的正确做法：剥掉每
+        个子帧的 2 字节帧号、拼接成完整加密载荷，再解密一次、交给下游处理。
+
+        同时做了三重防阻塞（损坏的帧头可能上报超大 count）：
+        - 帧数钳制到 MULTIFRAME_MAX_FRAMES
+        - 总 deadline 兜底（原先逐帧 3s 超时 × 超大 count 可阻塞数十小时）
+        - 收不到帧立即终止，不空转等满
         """
         if not self.ctrl:
             return
-        frame_count = data[4] + 0x100 * data[5]
-        if frame_count > 1000:
-            _LOGGER.warning("Multiframe count too large: %d, consuming all frames", frame_count)
-            await self.ctrl.client.write_gatt_char(
-                CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
-            for i in range(frame_count):
-                try:
-                    frame = await asyncio.wait_for(
-                        self.ctrl.wait_notify("cmd_recv", timeout=3.0), timeout=5.0)
-                    if frame:
-                        await self._try_process_inline_frame(frame)
-                except ConnectionError:
-                    # Session is stale (consecutive decrypt failures) — let it
-                    # propagate so the caller reconnects instead of swallowing it.
-                    raise
-                except (asyncio.TimeoutError, Exception) as e:
-                    _LOGGER.warning("Multiframe drain stopped at frame %d/%d: %s", i+1, frame_count, e)
-                    break
-            await self.ctrl.client.write_gatt_char(
-                CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
-            return
+        raw_count = data[4] + 0x100 * data[5]
+        frame_count = min(raw_count, self.MULTIFRAME_MAX_FRAMES)
+        if frame_count != raw_count:
+            _LOGGER.warning("Multiframe count %d exceeds limit, clamped to %d",
+                            raw_count, frame_count)
         await self.ctrl.client.write_gatt_char(
             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x01]), response=False)
+        payload = b''
         received_count = 0
+        deadline = time.monotonic() + self.MULTIFRAME_DEADLINE_SEC
         for _ in range(frame_count):
-            frame = await self.ctrl.wait_notify("cmd_recv", timeout=3.0)
-            if frame:
-                received_count += 1
-                await self._try_process_inline_frame(frame)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _LOGGER.warning("Multiframe deadline reached after %d/%d frames",
+                                received_count, frame_count)
+                break
+            frame = await self.ctrl.wait_notify("cmd_recv", timeout=min(remaining, 3.0))
+            if not frame:
+                break                      # 没帧了就停，不要空转等满 frame_count
+            received_count += 1
+            payload += frame[2:]           # 剥 2 字节帧号后拼接
         await self.ctrl.client.write_gatt_char(
             CHAR_CMD_RECV, bytes([0x00, 0x00, 0x01, 0x00]), response=False)
-        if received_count != frame_count:
-            _LOGGER.debug("Multiframe: received %d/%d frames", received_count, frame_count)
+        if received_count != raw_count:
+            # 不完整（丢帧 / 超时 / 被钳制截断）：拼接出来的载荷必然解不开,
+            # 但那是"没收全"而不是"密钥失步" —— 不能计入 _decrypt_failures,
+            # 否则连续几次坏帧就会触发一次毫无必要的整链重连。
+            _LOGGER.warning("Multiframe incomplete: received %d/%d frames "
+                            "(clamped to %d), skipping decrypt",
+                            received_count, raw_count, frame_count)
+            return
+        if not payload:
+            return
+        # 整体解密一次（ConnectionError 让上层重连，与内联路径一致）
+        pt = self._decrypt_payload(payload, data)
+        if pt is None:
+            return
+        await self._process_decrypted_frame(pt)
 
     def _publish_status(self, payload, retain=False):
         if self._mqtt_publish:

@@ -356,3 +356,89 @@ class TestSessionCleanup:
         sessions, _ = h2.get_sessions(port=1, period="all")
         assert len(sessions) == 0
         h2.close()
+
+
+class TestSessionAvgVI:
+    """均压/均流：闭合时传入的是断电瞬间值(≈0), 必须从采样点重算。"""
+
+    def _point(self, history, sid, ts, v, i):
+        history._conn.execute(
+            """INSERT INTO charge_points (session_id, timestamp, voltage, current, power, protocol)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (sid, ts, v, i, v * i, "PD"))
+        history._conn.commit()
+
+    def test_end_session_recomputes_from_points(self, history):
+        """有采样点时, avg 用采样点的时间加权均值, 而不是传入的瞬时 0 值。"""
+        sid = history.start_session(1, protocol="PD")
+        t = time.time()
+        for k in range(4):                       # 2A / 4A 交替, 权重相同
+            self._point(history, sid, t + k * 10, 20.0, 2.0 if k % 2 == 0 else 4.0)
+        history.end_session(sid, 1.0, 80.0, 0.0, 0.0, 600)
+
+        row = history._conn.execute(
+            "SELECT avg_voltage, avg_current FROM charge_sessions WHERE id = ?",
+            (sid,)).fetchone()
+        assert row["avg_voltage"] == pytest.approx(20.0, abs=0.1)
+        assert row["avg_current"] == pytest.approx(3.0, abs=0.1)
+
+    def test_end_session_falls_back_without_points(self, history):
+        """没有采样点时保持旧行为（用传入值）。"""
+        sid = history.start_session(1, protocol="PD")
+        history.end_session(sid, 1.0, 50.0, 19.5, 2.5, 600)
+        row = history._conn.execute(
+            "SELECT avg_voltage, avg_current FROM charge_sessions WHERE id = ?",
+            (sid,)).fetchone()
+        assert row["avg_voltage"] == pytest.approx(19.5)
+        assert row["avg_current"] == pytest.approx(2.5)
+
+    def test_gap_longer_than_cap_excluded(self, history):
+        """断档超过 30 分钟的区间不参与加权。"""
+        sid = history.start_session(1, protocol="PD")
+        t = time.time()
+        self._point(history, sid, t, 20.0, 2.0)
+        self._point(history, sid, t + 7200, 0.0, 0.0)   # 中间空 2 小时
+        history.end_session(sid, 1.0, 40.0, 0.0, 0.0, 600)
+        row = history._conn.execute(
+            "SELECT avg_voltage FROM charge_sessions WHERE id = ?", (sid,)).fetchone()
+        # 超限区间被跳过 → 退化为算术平均 (20 + 0) / 2 = 10
+        assert row["avg_voltage"] == pytest.approx(10.0, abs=0.1)
+
+    def test_backfill_fixes_historical_zero_rows(self, history):
+        """启动回填: avg=0 但有采样点的旧会话被重算。"""
+        sid = history.start_session(1, protocol="PD")
+        t = time.time()
+        for k in range(2):
+            self._point(history, sid, t + k * 10, 15.0, 1.0)
+        history.end_session(sid, 1.0, 15.0, 0.0, 0.0, 600)
+        # 改回"旧版本"的脏数据
+        history._conn.execute(
+            "UPDATE charge_sessions SET avg_voltage = 0, avg_current = 0 WHERE id = ?",
+            (sid,))
+        history._conn.commit()
+
+        fixed = history.backfill_session_avg_vi()
+        assert fixed >= 1
+        row = history._conn.execute(
+            "SELECT avg_voltage, avg_current FROM charge_sessions WHERE id = ?",
+            (sid,)).fetchone()
+        assert row["avg_voltage"] == pytest.approx(15.0, abs=0.1)
+        assert row["avg_current"] == pytest.approx(1.0, abs=0.1)
+
+
+class TestEnergyGapCap:
+    """能量积分断档上限: 闲置空档不得被积分成能量。"""
+
+    def test_energy_integration_caps_long_gaps(self, history):
+        """相邻采样点间隔远超 30s 时, 按 30s 封顶积分。"""
+        now = time.time()
+        history._conn.execute(
+            """INSERT INTO port_history (port, timestamp, voltage, current, power, active)
+               VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)""",
+            (1, now, 20.0, 2.0, 40.0, 1,
+             1, now + 3600, 20.0, 2.0, 40.0, 1))
+        history._conn.commit()
+        stats = history.get_statistics(1, hours=24)
+        # 不封顶会积出 40W × 1h = 40Wh; 封顶后 ≈ 40W × 30s ≈ 0.33Wh
+        assert stats.get("energy_wh", 0) < 1.0, \
+            f"断档未被封顶: {stats.get('energy_wh')}"

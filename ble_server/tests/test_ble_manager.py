@@ -159,7 +159,8 @@ class TestProcessCommands:
         """Test processing set command."""
         mgr = make_manager()
         mgr.ctrl = MagicMock()
-        mgr.ctrl.send_miot_command = AsyncMock(return_value={"ok": True})
+        mgr.ctrl.send_miot_command = AsyncMock(
+            return_value={"piid": 5, "value": 1, "raw": b""})
 
         future = asyncio.get_running_loop().create_future()
         await mgr.cmd_queue.put(("set", (5, 1), future))
@@ -203,6 +204,250 @@ class TestProcessCommands:
         assert "BLE error" in result["error"]
 
 
+class TestPortCommandSafety:
+    """PIID16 读-改-写的安全约束（对照 fork 审查: 掩码误写会关掉正在供电的口）。
+
+    掩码是四个口共用的位图, 基线一旦取错（例如 GET 失败按 0 兜底）, 写回的
+    只剩目标口自己的位 —— 其余正在供电的口被静默关闭, 且不可自愈。
+    """
+
+    @pytest.mark.asyncio
+    async def test_baseline_unknown_refuses_to_write(self):
+        """基线未知（本地无缓存 + GET 失败）时拒绝写入, 而不是按 0 兜底。"""
+        mgr = make_manager()
+        mgr.state.settings.pop("16", None)
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.send_miot_command = AsyncMock(return_value=None)  # GET 失败
+        mgr.set_mqtt_publisher(MagicMock())
+
+        future = asyncio.get_running_loop().create_future()
+        await mgr._handle_port_command(("c1", "off"), future)
+
+        assert future.result()["ok"] is False
+        # 关键: 没有向设备写过任何 SET
+        mgr.ctrl.send_miot_command.assert_called_once_with(2, 16)
+
+    @pytest.mark.asyncio
+    async def test_other_charging_ports_not_cleared_when_baseline_unknown(self):
+        """多口场景: C2 正在充电, 关 C1 时基线未知 → C2 必须保持开启。"""
+        mgr = make_manager()
+        mgr.state.settings["16"] = 0x02      # 只有 C2 开着（正在供电）
+        mgr.state.settings.pop("16")          # 本地缓存缺失, 必须向设备读
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.send_miot_command = AsyncMock(return_value=None)  # 读取失败
+        mgr.set_mqtt_publisher(MagicMock())
+
+        await mgr._handle_port_command(("c1", "off"), None)
+
+        # 不得写出任何 SET（按 0 兜底会写出 0x00, 把 C2 一起关掉）
+        sets = [c for c in mgr.ctrl.send_miot_command.call_args_list
+                if "value" in c.kwargs]
+        assert sets == [], f"基线未知时不得写出掩码: {sets}"
+
+    @pytest.mark.asyncio
+    async def test_uses_authoritative_get_as_baseline(self):
+        """基线优先取设备权威值（不受缓存过期影响）。"""
+        mgr = make_manager()
+        mgr.state.settings["16"] = 0x01      # 缓存是过期的旧值
+        mgr.ctrl = MagicMock()
+        calls = []
+
+        async def fake_send(siid, piid, value=None):
+            calls.append((siid, piid, value))
+            if value is None:
+                return {"piid": 16, "value": 0x03, "raw": b""}   # GET: 真实掩码 C1+C2
+            return {"piid": 16, "value": value, "raw": b""}      # SET 回显
+
+        mgr.ctrl.send_miot_command = fake_send
+        mgr.set_mqtt_publisher(MagicMock())
+
+        await mgr._handle_port_command(("c1", "off"), None)
+
+        # 以设备权威值 0x03 为基线 → 关 C1 得 0x02（C2 保留），而不是用缓存 0x01 算出的 0x00
+        sets = [c for c in calls if c[2] is not None]
+        assert sets and sets[0][2] == 0x02, f"未使用权威基线: {calls}"
+        assert mgr.state.settings["16"] == 0x02
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_cache_when_get_fails(self):
+        """GET 失败时回落到本地缓存（绝不按 0 兜底）。"""
+        mgr = make_manager()
+        mgr.state.settings["16"] = 0x03      # C1+C2
+        mgr.ctrl = MagicMock()
+        calls = []
+
+        async def fake_send(siid, piid, value=None):
+            calls.append((siid, piid, value))
+            if value is None:
+                return None                                   # GET 失败
+            return {"piid": 16, "value": value, "raw": b""}
+
+        mgr.ctrl.send_miot_command = fake_send
+        mgr.set_mqtt_publisher(MagicMock())
+
+        await mgr._handle_port_command(("c1", "off"), None)
+
+        sets = [c for c in calls if c[2] is not None]
+        assert sets and sets[0][2] == 0x02, f"缓存回落未生效: {calls}"
+
+    @pytest.mark.asyncio
+    async def test_all_off_does_not_require_baseline(self):
+        """port=all 的掩码是常量, 基线未知也必须能执行（评审 #2 回归）。"""
+        mgr = make_manager()
+        mgr.state.settings.pop("16", None)   # 无缓存
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.send_miot_command = AsyncMock(return_value={"value": 0x00})
+        mgr.set_mqtt_publisher(MagicMock())
+        for piid in (1, 2, 3, 4):
+            mgr._energy_states[piid].is_charging = True
+
+        future = asyncio.get_running_loop().create_future()
+        await mgr._handle_port_command(("all", "off"), future)
+
+        assert future.result()["ok"] is True, "all-off 不应因基线缺失被拒"
+        assert mgr.state.settings["16"] == 0x00
+        for piid in (1, 2, 3, 4):
+            assert mgr._energy_states[piid].is_charging is False
+
+    @pytest.mark.asyncio
+    async def test_cache_fallback_baseline_writes_unconditionally(self):
+        """GET 失败回落到缓存时, 即使缓存值恰好等于目标值也必须下发写入。
+
+        缓存可能滞后于固件（固件倒计时自行关口）：若因"值未变"跳过 SET,
+        设备没收到写入却返回 ok —— 又是一次假成功（评审第三轮 #2）。
+        """
+        mgr = make_manager()
+        mgr.state.settings["16"] = 0x02      # 缓存说 C2 已开
+        mgr.ctrl = MagicMock()
+        calls = []
+
+        async def fake_send(siid, piid, value=None):
+            calls.append((siid, piid, value))
+            if value is None:
+                return None                                   # GET 失败 → 走缓存
+            return {"piid": 16, "value": value, "raw": b""}
+
+        mgr.ctrl.send_miot_command = fake_send
+        mgr.set_mqtt_publisher(MagicMock())
+
+        future = asyncio.get_running_loop().create_future()
+        await mgr._handle_port_command(("c2", "on"), future)   # 目标 == 缓存值
+
+        sets = [c for c in calls if c[2] is not None]
+        assert sets, "缓存基线下值未变就跳过写入 —— 假成功"
+        assert sets[0][2] == 0x02
+        assert future.result()["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_all_always_writes_even_if_cache_matches(self):
+        """all 命令不得因"缓存等于目标值"而跳过写入（评审 #6）。
+
+        缓存可能滞后（固件倒计时自行关口）；若缓存恰好等于目标值就跳过 SET,
+        设备没收到写入却返回 ok, 正是"假成功"分叉。
+        """
+        mgr = make_manager()
+        mgr.state.settings["16"] = 0x0F      # 缓存说已全开
+        mgr.ctrl = MagicMock()
+        calls = []
+
+        async def fake_send(siid, piid, value=None):
+            calls.append((siid, piid, value))
+            return {"piid": 16, "value": 0x0F, "raw": b""}
+
+        mgr.ctrl.send_miot_command = fake_send
+        mgr.set_mqtt_publisher(MagicMock())
+
+        future = asyncio.get_running_loop().create_future()
+        await mgr._handle_port_command(("all", "on"), future)
+
+        sets = [c for c in calls if c[2] is not None]
+        assert sets, "缓存等于目标值时 all 命令被跳过, 没有真正下发"
+        assert sets[0][2] == 0x0F
+        assert future.result()["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_device_echo_mismatch_adopts_device_value(self):
+        """设备回显与意图不一致时以设备值为准, 避免基线永久偏移（评审 #5）。"""
+        mgr = make_manager()
+        mgr.state.settings["16"] = 0x03
+        mgr.ctrl = MagicMock()
+
+        async def fake_send(siid, piid, value=None):
+            if value is None:
+                return {"piid": 16, "value": 0x03, "raw": b""}   # GET
+            return {"piid": 16, "value": 0x00, "raw": b""}       # 设备回显 0x00（与意图 0x02 不符）
+
+        mgr.ctrl.send_miot_command = fake_send
+        mgr.set_mqtt_publisher(MagicMock())
+
+        await mgr._handle_port_command(("c1", "off"), None)
+
+        assert mgr.state.settings["16"] == 0x00, "应采用设备回显值作为基线"
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_set_does_not_update_state(self):
+        """SET 未被设备确认（无响应）时, 本地状态与前端广播都不得推进。"""
+        mgr = make_manager()
+        mgr.state.settings["16"] = 0x03
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.send_miot_command = AsyncMock(return_value=None)  # SET 无响应
+        mgr.set_mqtt_publisher(MagicMock())
+
+        future = asyncio.get_running_loop().create_future()
+        await mgr._handle_port_command(("c1", "off"), future)
+
+        assert future.result()["ok"] is False
+        assert mgr.state.settings["16"] == 0x03, "状态不得被未确认的写入改写"
+
+    @pytest.mark.asyncio
+    async def test_rejected_set_requests_immediate_settings_refresh(self):
+        """端口写未确认时置位立即刷新标志: 本机设备可能"回错误码但已执行",
+        本地需尽快与设备真实状态对齐（不谎报成功）。"""
+        mgr = make_manager()
+        mgr.state.settings["16"] = 0x03
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.send_miot_command = AsyncMock(return_value=None)
+        mgr.set_mqtt_publisher(MagicMock())
+        mgr._settings_refresh_now = False
+
+        await mgr._handle_port_command(("c1", "off"), None)
+
+        assert mgr._settings_refresh_now is True, "未确认的端口写应请求立即重读 settings"
+
+    @pytest.mark.asyncio
+    async def test_ack_only_set_applies_intended_value(self):
+        """仅 ACK 无 Result: 设备已接受(实测本机 SET 多为此形态) → 算成功。
+
+        落地的是"意图写入的值", 绝不能把 None 写进缓存（fork 指出的污染点）。
+        """
+        mgr = make_manager()
+        mgr.state.settings["16"] = 0x03
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.send_miot_command = AsyncMock(
+            return_value={"piid": 16, "value": None, "raw": None, "ack_only": True})
+        mgr.set_mqtt_publisher(MagicMock())
+
+        future = asyncio.get_running_loop().create_future()
+        await mgr._handle_port_command(("c1", "off"), future)
+
+        assert future.result()["ok"] is True
+        assert mgr.state.settings["16"] == 0x02, "应落地意图值, 不得写入 None"
+
+    @pytest.mark.asyncio
+    async def test_set_command_unconfirmed_does_not_update_state(self):
+        """通用 SET（_handle_set_command）未确认时同样不落地。"""
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.send_miot_command = AsyncMock(return_value=None)
+        mgr.set_mqtt_publisher(MagicMock())
+
+        future = asyncio.get_running_loop().create_future()
+        await mgr._handle_set_command((6, 3), future)
+
+        assert future.result()["ok"] is False
+        assert "6" not in mgr.state.settings or mgr.state.settings.get("6") != 3
+
+
 class TestHandleMultiframe:
     """Test multi-frame data handling."""
 
@@ -213,23 +458,23 @@ class TestHandleMultiframe:
         mgr.ctrl = MagicMock()
         mgr.ctrl.client = MagicMock()
         mgr.ctrl.client.write_gatt_char = AsyncMock()
-        # Decrypt-failure recovery shouldn't interfere with the drain loop test:
-        # stub out inline processing so the drain only exercises wait_notify.
-        mgr._try_process_inline_frame = AsyncMock()
+        # Decrypt downstream is stubbed so the drain only exercises wait_notify.
+        mgr._process_decrypted_frame = AsyncMock()
         call_count = 0
         async def fake_wait_notify(name, timeout=5.0):
             nonlocal call_count
             call_count += 1
             if call_count > 5:
-                raise asyncio.TimeoutError()
+                return None                 # 没有更多帧 → 立即终止
             return bytes(20)
         mgr.ctrl.wait_notify = fake_wait_notify
 
-        # data[2]=0x00 triggers multiframe branch, frame_count=0x03e9=1001 > 1000
+        # data[2]=0x00 triggers multiframe branch, frame_count=0x03e9=1001 > limit
         data = bytes([0, 0, 0x00, 4, 0x03, 0xe9])
 
         await mgr._handle_multiframe(data)
         assert mgr.ctrl.client.write_gatt_char.call_count == 2
+        # 收到 None 即停止, 不按 1001 逐帧空转
         assert call_count == 6
 
 
@@ -502,33 +747,141 @@ class TestMultiframeBoundary:
         assert mgr.ctrl.client.write_gatt_char.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_multiframe_large_count(self):
-        """Test multiframe with frame_count=1001 drains frames."""
+    async def test_multiframe_large_count_is_clamped(self):
+        """损坏的帧头上报超大 count 时必须钳制, 不能按 count 逐帧空转。
+
+        原实现会 for 循环 frame_count 次、每次等 ~3s, count=65535 时最长阻塞
+        数十小时, 整个 BLE 主循环停摆（HTTP 还能应答, 看起来"活着"）。
+        """
         mgr = make_manager()
         mgr.ctrl = MagicMock()
         mgr.ctrl.client = MagicMock()
         mgr.ctrl.client.write_gatt_char = AsyncMock()
-        # Stub inline processing so decrypt-failure recovery doesn't abort the drain.
-        mgr._try_process_inline_frame = AsyncMock()
         call_count = 0
 
         async def fake_wait_notify(name, timeout=5.0):
             nonlocal call_count
             call_count += 1
-            if call_count > 5:
-                raise asyncio.TimeoutError()
+            return bytes(20)          # 一直有帧返回
+
+        mgr.ctrl.wait_notify = fake_wait_notify
+
+        # frame_count = 0x03e9 = 1001 → 应被钳制到 MULTIFRAME_MAX_FRAMES
+        data = bytes([0, 0, 0x00, 4, 0x03, 0xe9])
+        await mgr._handle_multiframe(data)
+
+        assert call_count == mgr.MULTIFRAME_MAX_FRAMES, \
+            f"应按钳制值收帧, 实际 {call_count}"
+        assert mgr.ctrl.client.write_gatt_char.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_multiframe_stops_when_no_more_frames(self):
+        """收不到帧应立即终止, 不空转到 frame_count 满。"""
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+        call_count = 0
+
+        async def fake_wait_notify(name, timeout=5.0):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 3:
+                return None           # 没有更多帧
             return bytes(20)
 
         mgr.ctrl.wait_notify = fake_wait_notify
 
-        # frame_count = 0x03e9 = 1001
-        data = bytes([0, 0, 0x00, 4, 0x03, 0xe9])
-
+        data = bytes([0, 0, 0x00, 4, 0x64, 0x00])   # count = 100
         await mgr._handle_multiframe(data)
 
-        # ACK + drain loop hit 5 times before timeout + final ACK
-        assert mgr.ctrl.client.write_gatt_char.call_count == 2
-        assert call_count == 6
+        assert call_count == 4, f"收到 None 后应停止, 实际调用 {call_count} 次"
+
+    @pytest.mark.asyncio
+    async def test_incomplete_multiframe_does_not_count_decrypt_failure(self):
+        """不完整的多帧（超时/钳制截断）不得计入解密失败（评审 #6）。
+
+        拼接不全会导致 AES-CCM 校验必然失败, 若计入 _decrypt_failures,
+        连续几次坏帧就会触发一次毫无必要的整链重连。
+        """
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+        mgr.ctrl.decrypt = MagicMock(return_value=b"")   # 真去解密必然"失败"
+
+        async def fake_wait(name, timeout=5.0):
+            return None          # 一帧都收不到
+
+        mgr.ctrl.wait_notify = fake_wait
+        mgr._decrypt_failures = 0
+
+        data = bytes([0, 0, 0x00, 4, 0x03, 0x00])   # 声称 3 帧, 实际 0 帧
+        await mgr._handle_multiframe(data)
+
+        assert mgr._decrypt_failures == 0, "不完整多帧不应计入解密失败"
+        mgr.ctrl.decrypt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_clamped_multiframe_skips_decrypt(self):
+        """申报帧数超过钳制值时按截断处理: 不解密、不计数（评审 #6）。"""
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+        mgr.ctrl.decrypt = MagicMock(return_value=b"")
+        calls = 0
+
+        async def fake_wait(name, timeout=5.0):
+            nonlocal calls
+            calls += 1
+            return bytes(20)
+
+        mgr.ctrl.wait_notify = fake_wait
+        mgr._decrypt_failures = 0
+
+        data = bytes([0, 0, 0x00, 4, 0xFF, 0xFF])   # count=65535 > 钳制
+        await mgr._handle_multiframe(data)
+
+        assert calls == mgr.MULTIFRAME_MAX_FRAMES
+        assert mgr._decrypt_failures == 0
+        mgr.ctrl.decrypt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_multiframe_concatenates_then_decrypts_once(self):
+        """多帧必须拼接子帧(剥 2 字节帧号)后整体解密一次。
+
+        子帧只有 2 字节帧号前缀, 逐个按内联帧剥 4 字节解密必然偏移错位。
+        """
+        mgr = make_manager()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+        mgr.set_mqtt_publisher(MagicMock())
+
+        # 两个子帧: [帧号 2 字节] + 各 6 字节数据
+        frames = [
+            bytes([0x00, 0x00]) + bytes([0xAA] * 6),
+            bytes([0x01, 0x00]) + bytes([0xBB] * 6),
+        ]
+        it = iter(frames)
+
+        async def fake_wait_notify(name, timeout=5.0):
+            return next(it, None)
+
+        mgr.ctrl.wait_notify = fake_wait_notify
+        decrypted = bytes([0, 0, 0, 0, 0x04, 0, 0, 1, 0, 0x0a, 25, 201])
+        mgr.ctrl.decrypt = MagicMock(return_value=decrypted)
+
+        data = bytes([0, 0, 0x00, 4, 0x02, 0x00])   # count = 2
+        await mgr._handle_multiframe(data)
+
+        # 解密只调用一次, 且入参是拼接后的整体载荷(不含帧号)
+        mgr.ctrl.decrypt.assert_called_once()
+        payload = mgr.ctrl.decrypt.call_args[0][0]
+        assert payload == bytes([0xAA] * 6) + bytes([0xBB] * 6)
+        # 解密结果被下游处理（端口状态更新）
+        assert mgr.state.ports[1].voltage == 20.1
 
 
 class TestConcurrency:
@@ -539,7 +892,8 @@ class TestConcurrency:
         """Test multiple commands in queue are all processed."""
         mgr = make_manager()
         mgr.ctrl = MagicMock()
-        mgr.ctrl.send_miot_command = AsyncMock(return_value={"ok": True})
+        mgr.ctrl.send_miot_command = AsyncMock(
+            return_value={"piid": 5, "value": 1, "raw": b""})
         publisher = MagicMock()
         mgr.set_mqtt_publisher(publisher)
 
@@ -1248,7 +1602,8 @@ class TestSessionActivePredicate:
             mgr._energy_states[piid].session_wh = 5.0
         mgr.set_charge_limits({"c1": {"wh": 30.0, "mode": "once"}})
         mgr.ctrl = MagicMock()
-        mgr.ctrl.send_miot_command = AsyncMock(return_value={"value": 0x0F})
+        # all-off 的 SET 回显应是新掩码 0x00（设备不会回显旧值 0x0F）
+        mgr.ctrl.send_miot_command = AsyncMock(return_value={"value": 0x00})
 
         await mgr._handle_port_command(("all", "off"), None)
 
