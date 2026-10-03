@@ -1307,7 +1307,22 @@ class Server:
             except Exception:
                 pass
         s.history.close()
-        # Re-exec: replace current process with fresh server
+        # Windows 下 os.execv 替换映像后 WinRT/bleak 的事件循环无法在新映像内重建:
+        # HTTP 还能应答, 但 BLE 循环不再运转（connected 恒 false、无扫描日志）,
+        # 只能手动触发才恢复。因此 win32 改为干净退出, 由拉起方(监听进程退出的
+        # 桌面端)重新拉起; Linux/BlueZ 保持 os.execv 原语义。
+        if sys.platform == "win32":
+            _LOGGER.info("Restarting server (win32: clean exit, launcher will respawn)")
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+            except Exception:
+                pass
+            # 退出码取 1（非 0）而不是 0：本仓库的 systemd 单元用的是
+            # Restart=on-failure，认证卡死的自愈路径也用 os._exit(1)，
+            # 用 0 会被"只重启异常退出"的托管当成正常停止而不拉起，
+            # 表现为"保存配置后服务就停了"。
+            os._exit(1)
         os.execv(sys.executable, [sys.executable, str(Path(__file__).parent / "ha_server.py")])
 
     # ── Xiaomi Cloud API ──
@@ -1725,6 +1740,20 @@ async def on_startup(app_):
         if s.config.bemfa.enabled:
             await s.setup_bemfa()
         app_["ble_task"] = asyncio.create_task(s.ble.start())
+        # 回填历史会话的均压/均流：旧版本闭合会话时落库的是"断电瞬间"的瞬时值
+        # (≈0)，导致历史摘要恒为 0。有采样点的已闭合会话重算一次。
+        # 放在 MQTT/BLE 起来之后再跑（fire-and-forget），避免维护性任务拖慢就绪；
+        # 修正值只被历史接口消费，晚几秒无影响。
+        async def _backfill_session_avg():
+            try:
+                fixed = await asyncio.get_running_loop().run_in_executor(
+                    None, s.history.backfill_session_avg_vi)
+                if fixed:
+                    _LOGGER.info("Session avg backfill done: %d sessions", fixed)
+            except Exception as e:
+                _LOGGER.warning("Session avg backfill failed: %s", e)
+
+        app_["backfill_task"] = asyncio.create_task(_backfill_session_avg())
 
 
 async def on_shutdown(app_):
@@ -1753,6 +1782,18 @@ async def on_shutdown(app_):
             await ble_task
         except asyncio.CancelledError:
             pass
+    # 回填任务同样要收尾：它跑在 executor 线程里访问 history 连接，
+    # 若不取消/等待就 close() 连接，会与在途查询/写入竞争（报错且工作静默丢弃，
+    # 事件循环还可能报 "Task was destroyed but it is pending"）。
+    backfill_task = app_.get("backfill_task")
+    if backfill_task and not backfill_task.done():
+        backfill_task.cancel()
+        try:
+            await backfill_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            _LOGGER.warning("Backfill task error during shutdown: %s", e)
     if s.mqtt_client:
         s.mqtt_client.loop_stop()
         s.mqtt_client.disconnect()

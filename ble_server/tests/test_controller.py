@@ -1,6 +1,8 @@
 """Tests for controller.py - BLE controller operations."""
+import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
@@ -232,3 +234,116 @@ class TestSendEncryptedClearQueue:
         assert m_enc.called
         # header 帧确实通过 GATT 写入
         assert ctrl.client.write_gatt_char.called
+
+
+class TestPortPushDuringCommandWindow:
+    """GET/SET 等待响应期间到达的端口推送不得被吞（改动34）。
+
+    端口推送解密后的 b4 实测为 0x04；旧代码的回放/处理条件写的是 b4 == 0x02，
+    条件永假 → 推送被静默丢弃。修法不是"放回队列"（会被本循环立刻取回导致
+    自循环空转），而是通过 on_port_push 回调就地处理。
+    """
+
+    def _ctrl(self):
+        from src.cuktech_ble.controller import CuktechBLEController
+        c = CuktechBLEController(DEVICE_MAC, DEVICE_TOKEN)
+        c.client = MagicMock()
+        c.client.write_gatt_char = AsyncMock()
+        return c
+
+    def _frame(self, pt):
+        """造一个内联帧：raw 前 4 字节是头，decrypt 直接返回明文。"""
+        return bytes([0x00, 0x00, 0x02, 0x00]) + b"\x00" * 8
+
+    @pytest.mark.asyncio
+    async def test_push_forwarding_covers_all_b4_04_frames(self):
+        """转发条件必须覆盖所有 b4==0x04 推送, 不能只放行端口推送。
+
+        PIID17/18 的协议号推送同样是 b4==0x04；若条件写成
+        `b4 == 0x04 and pt_siid == 2 and 1 <= pt_piid <= 4`，协议推送在
+        GET/SET 窗口内仍会被吞（评审 #4）。
+        """
+        import inspect
+        from src.cuktech_ble.controller import CuktechBLEController
+        for fn in (CuktechBLEController._recv_get_response,
+                   CuktechBLEController._recv_set_response):
+            src = inspect.getsource(fn)
+            assert "if b4 == 0x04:" in src, \
+                f"{fn.__name__} 的推送转发条件仍带 piid 限制, 协议推送会被吞"
+            assert "if b4 == 0x02:" not in src, \
+                f"{fn.__name__} 仍残留 b4 == 0x02 的死条件"
+
+    @pytest.mark.asyncio
+    async def test_protocol_push_in_window_is_handled(self):
+        """窗口内的 PIID17 协议推送（同 b4==0x04）也必须转交回调。"""
+        c = self._ctrl()
+        handled = []
+
+        async def on_push(pt):
+            handled.append(pt)
+
+        c.on_port_push = on_push
+
+        # piid=17 的协议号推送: b4=0x04, siid=2, piid=17
+        proto = bytes([0, 0, 0, 0, 0x04, 0, 0x02, 0x11, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 0])
+        c.decrypt = MagicMock(return_value=proto)
+        frames = [self._frame(proto), None]
+
+        async def fake_wait(name, timeout=5.0):
+            return frames.pop(0) if frames else None
+
+        c.wait_notify = fake_wait
+        await c._recv_get_response(2, 16, timeout=1.0)
+
+        assert len(handled) == 1, "PIID17 协议推送在窗口内被吞"
+
+    @pytest.mark.asyncio
+    async def test_push_in_get_window_is_handled(self):
+        """GET 等待窗口内的端口推送应交给 on_port_push 处理, 不被丢弃。"""
+        c = self._ctrl()
+        handled = []
+
+        async def on_push(pt):
+            handled.append(pt)
+
+        c.on_port_push = on_push
+
+        # 端口推送明文: b4=0x04, siid=2, piid=1
+        push = bytes([0, 0, 0, 0, 0x04, 0, 0x02, 0x01, 0, 0, 0, 0, 0, 0, 0])
+        c.decrypt = MagicMock(return_value=push)
+
+        frames = [self._frame(push), None]   # 先来推送帧, 之后无帧(超时)
+
+        async def fake_wait(name, timeout=5.0):
+            return frames.pop(0) if frames else None
+
+        c.wait_notify = fake_wait
+
+        result = await c._recv_get_response(2, 16, timeout=1.0)
+
+        # GET 没有等到自己的响应
+        assert result is None
+        # 但推送帧被就地处理了（没有丢，也没有被放回队列造成自循环）
+        assert len(handled) == 1, f"端口推送被吞了: handled={len(handled)}"
+        assert handled[0] == push
+
+    @pytest.mark.asyncio
+    async def test_push_not_requeued(self):
+        """推送帧不得被放回 cmd_recv 队列（回放会自循环空转）。"""
+        c = self._ctrl()
+        c.on_port_push = AsyncMock()
+        queue = asyncio.Queue()
+        c._notify_queues["cmd_recv"] = queue
+
+        push = bytes([0, 0, 0, 0, 0x04, 0, 0x02, 0x01, 0, 0, 0, 0, 0, 0, 0])
+        c.decrypt = MagicMock(return_value=push)
+        frames = [self._frame(push), None]
+
+        async def fake_wait(name, timeout=5.0):
+            return frames.pop(0) if frames else None
+
+        c.wait_notify = fake_wait
+        await c._recv_get_response(2, 16, timeout=1.0)
+
+        assert queue.empty(), "推送帧被放回队列, 会被本循环取回导致自循环"

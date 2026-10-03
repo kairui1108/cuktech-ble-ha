@@ -33,6 +33,12 @@ class PortHistory:
     # 批量提交参数：降低高频采样下的写放大（每次 BLE 推送不再单独 COMMIT）
     BATCH_SIZE = 50          # 缓冲行数达到该值即强制提交
     BATCH_INTERVAL = 1.0     # 距上次提交超过该秒数即强制提交
+    # 能量积分的采样断档上限（秒）：相邻采样点间隔超过它就按它计，防止闲置/掉线的
+    # 空档被当成持续输出计入能量（fork 审查指出的"凭空计费"）。
+    ENERGY_GAP_CAP_SEC = 30
+    # 均压/均流重算时的采样断档上限（秒）：超过它的区间不参与加权，避免把中间的空载
+    # 挂载段（v>0/i=0）或掉线空档计入均值。
+    AVG_VI_GAP_CAP_SEC = 1800
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH, retention_days: int = DEFAULT_RETENTION_DAYS):
         self.db_path = db_path
@@ -412,7 +418,7 @@ class PortHistory:
                 MAX(power) as max_power,
                 SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) as active_count,
                 COALESCE(
-                    (SELECT SUM(p.power * (p.timestamp - p.prev_ts)) / 3600.0
+                    (SELECT SUM(p.power * MIN(p.timestamp - p.prev_ts, ?)) / 3600.0
                      FROM (
                          SELECT timestamp, power,
                                 LAG(timestamp) OVER (ORDER BY timestamp) as prev_ts
@@ -423,7 +429,9 @@ class PortHistory:
                 0) as energy_wh
             FROM port_history
             WHERE port = ? AND timestamp >= ?""",
-            (port, cutoff, port, cutoff)
+            # 采样断档上限 30s：闲置/掉线期间相邻两个采样点可能相隔很久, 不封顶会
+            # 把这段空档按某个功率"积分"成能量（凭空计费）。
+            (self.ENERGY_GAP_CAP_SEC, port, cutoff, port, cutoff)
         ).fetchone()
 
         if not row or row["samples"] == 0:
@@ -597,12 +605,106 @@ class PortHistory:
             except Exception as e:
                 _LOGGER.error("Failed to record charge point: %s", e)
 
+    def compute_session_avg_vi(self, session_id: int) -> tuple:
+        """从本会话采样点计算时间加权均压/均流, 返回 (avg_v, avg_i) 或 (None, None)。
+
+        闭合会话时传入的是"断电/低电流那一刻"的瞬时值(≈0), 直接落库会让历史
+        摘要的均压/均流恒为 0。这里改用采样点做梯形(时间)加权平均, 与桌面端
+        口径一致; 断档超过 30 分钟的区间不参与, 避免把空载挂载态拉低均值。
+        """
+        if not self._conn or not session_id:
+            return None, None
+        try:
+            # 与写路径共用同一把锁：本方法会被 end_session / 启动回填在
+            # executor 线程上调用，与 record_charge_point 的写并发访问同一条
+            # sqlite 连接（check_same_thread=False），不加锁会读到写事务中间态。
+            with self._db_lock:
+                rows = self._conn.execute(
+                    """SELECT timestamp, voltage, current FROM charge_points
+                       WHERE session_id = ? ORDER BY timestamp""",
+                    (session_id,)
+                ).fetchall()
+        except Exception as e:
+            _LOGGER.error("Failed to read charge points for avg: %s", e)
+            return None, None
+        pts = [(r["timestamp"], r["voltage"], r["current"]) for r in rows
+               if r["voltage"] is not None and r["current"] is not None]
+        if len(pts) < 2:
+            if len(pts) == 1:
+                return float(pts[0][1]), float(pts[0][2])
+            return None, None
+        wsum = vsum = isum = 0.0
+        for (t0, v0, i0), (t1, v1, i1) in zip(pts, pts[1:]):
+            dt = t1 - t0
+            if dt <= 0 or dt > self.AVG_VI_GAP_CAP_SEC:
+                continue
+            # 梯形加权: 区间内以两端均值代表该段
+            wsum += dt
+            vsum += dt * (v0 + v1) / 2.0
+            isum += dt * (i0 + i1) / 2.0
+        if wsum <= 0:
+            # 全部区间都超限: 退化为算术平均, 至少不是 0
+            return (sum(p[1] for p in pts) / len(pts),
+                    sum(p[2] for p in pts) / len(pts))
+        return vsum / wsum, isum / wsum
+
+    def backfill_session_avg_vi(self) -> int:
+        """启动回填: 重算历史中 avg=0 但有采样点的已闭合会话。返回修复行数。
+
+        批量提交（单次 commit）而不是每条一次：启动阶段可能有大量历史脏行,
+        逐条 fsync 会明显拖慢就绪时间。
+        """
+        if not self._conn:
+            return 0
+        fixed = 0
+        updates = []
+        try:
+            with self._db_lock:
+                ids = [r["id"] for r in self._conn.execute(
+                    """SELECT id FROM charge_sessions
+                       WHERE end_time IS NOT NULL
+                         AND (avg_voltage IS NULL OR avg_voltage = 0)
+                         AND EXISTS (SELECT 1 FROM charge_points
+                                     WHERE session_id = charge_sessions.id)"""
+                ).fetchall()]
+        except Exception as e:
+            _LOGGER.error("Failed to scan sessions for backfill: %s", e)
+            return 0
+        for sid in ids:
+            avg_v, avg_i = self.compute_session_avg_vi(sid)
+            if avg_v is None:
+                continue
+            updates.append((round(avg_v, 2), round(avg_i, 2), sid))
+        if not updates:
+            return 0
+        try:
+            with self._db_lock:
+                self._conn.executemany(
+                    """UPDATE charge_sessions
+                       SET avg_voltage = ?, avg_current = ? WHERE id = ?""",
+                    updates)
+                self._conn.commit()
+            fixed = len(updates)
+        except Exception as e:
+            _LOGGER.error("Failed to backfill session averages: %s", e)
+            return 0
+        if fixed:
+            _LOGGER.info("Backfilled avg voltage/current for %d sessions", fixed)
+        return fixed
+
     def end_session(self, session_id: int, total_wh: float, peak_power_w: float,
                     avg_voltage: float, avg_current: float, duration_sec: int):
-        """End a charge session with final stats."""
+        """End a charge session with final stats.
+
+        avg_voltage/avg_current 传入的是闭合瞬间的瞬时值(通常已归零), 仅作为
+        "没有采样点"时的回落; 有采样点时一律用采样点的时间加权均值重算。
+        """
         if not self._conn or not session_id:
             return
         avg_power = total_wh / (duration_sec / 3600.0) if duration_sec > 0 else 0
+        calc_v, calc_i = self.compute_session_avg_vi(session_id)
+        if calc_v is not None:
+            avg_voltage, avg_current = calc_v, calc_i
         with self._db_lock:
             try:
                 self._conn.execute(
