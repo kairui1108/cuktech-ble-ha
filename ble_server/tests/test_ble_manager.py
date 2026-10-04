@@ -2538,6 +2538,83 @@ class TestSessionLifecycle:
         ps.voltage = 5.0
         assert mgr._should_sample_port(1, ps) is True
 
+    def test_empty_port_releases_residual_start_protection(self):
+        """空口（电压塌掉）必须解除"刚结束"的残留保护。
+
+        残留保护把重开门限抬到 max(0.4W, 2×T_low)（最高 1.0W），而 5V 口上
+        0.5~1W 的小设备正好卡在这条线下面。释放只能发生在采样判定里：读数全零
+        又没有会话的端口本来会被跳过，_manage_session 跑不到，note_no_load()
+        永远不被调用——于是"这个口充过大功率设备"会永久挡住后续的小功率设备
+        （基线是会话结束后 60s 门限就回落）。
+        """
+        mgr = make_manager()
+        ps = mgr.state.ports[1]
+        gate = mgr._start_gates[1]
+
+        gate.note_session_end(peak_power=90.0)
+        assert gate.threshold_now(5.0) == pytest.approx(1.0), "90W 会话后重开门限抬到 1.0W"
+
+        ps.voltage = 0.0
+        ps.current = 0.0
+        assert mgr._should_sample_port(1, ps) is False, "空口仍按老规矩跳过（省空转）"
+        assert gate.threshold_now(5.0) == pytest.approx(0.5), "空口应解除残留保护"
+
+        # 还有电压、只是不取电（设备插着，满电维持）→ 保护必须留着
+        gate.note_session_end(peak_power=90.0)
+        ps.voltage = 20.0
+        ps.current = 0.0
+        assert mgr._should_sample_port(1, ps) is True
+        assert gate.threshold_now(5.0) == pytest.approx(1.0), "设备还插着不得解除保护"
+
+    @pytest.mark.asyncio
+    async def test_low_power_device_starts_after_unplug(self):
+        """拔出收尾后重新插上 5V/0.7W 的小设备，必须开得出新会话。
+
+        回归场景：会话以 UNPLUG 结束时曾把重开门限抬到 1.0W 并永久保留，
+        0.7W 的耳机再也开不出会话——充电照旧，但界面、能耗统计、限额与
+        充满即停全部失效。
+        """
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr, wh=8.0, peak=90.0)
+        mgr.state.ports[1].voltage = 0.0
+        mgr.state.ports[1].current = 0.0
+        mgr.state.ports[1].active = False
+
+        t0 = 1000.0
+        mgr._manage_session(1, t0, 0.0, 0.0, active=False)              # 拔出那一帧
+        mgr._manage_session(1, t0 + mgr.NO_LOAD_DEBOUNCE_SEC + 1.0,     # 去抖走完 → 收尾
+                            0.0, 0.0, active=False)
+        await asyncio.sleep(0.05)
+        assert es.is_charging is False
+        assert mgr._start_gates[1].threshold_now(5.0) == pytest.approx(0.5), \
+            "以拔出的方式结束，不得留下抬高后的重开门限"
+
+        # 重新插入 5V/0.7W（低于残留保护线、高于基础门限 0.5W）
+        assert mgr._should_sample_port(1, mgr.state.ports[1]) is False
+        for k in range(35):
+            mgr._manage_session(1, t0 + 100 + k, 5.0, 0.14, active=True)
+        assert es.is_charging is True, "0.7W 的小设备应当开得出会话"
+
+    @pytest.mark.asyncio
+    async def test_full_device_keeps_residual_protection(self):
+        """满电维持（no_load 结束）后不得解除保护：残留功耗不许开新会话。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr, wh=8.0, peak=90.0)
+        mgr.state.ports[1].voltage = 20.0
+        mgr.state.ports[1].current = 0.0
+        mgr.state.ports[1].active = True
+
+        t0 = 2000.0
+        mgr._manage_session(1, t0, 20.0, 0.0, active=True)              # 设备还在，只是不吸电
+        mgr._manage_session(1, t0 + mgr.NO_LOAD_DEBOUNCE_SEC + 1.0,
+                            20.0, 0.0, active=True)
+        await asyncio.sleep(0.05)
+        assert es.is_charging is False
+        assert mgr._start_gates[1].threshold_now(5.0) == pytest.approx(1.0), \
+            "满电维持结束仍要保留残留保护（0.5W 涓流不许开新会话）"
+
     @pytest.mark.asyncio
     async def test_unplug_push_then_no_more_pushes_still_closes(self):
         """拔出推送只来一帧、之后再无推送：定时器续上后续样本，会话按期收尾。"""

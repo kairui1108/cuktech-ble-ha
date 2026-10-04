@@ -68,7 +68,16 @@ class PortHistory:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA wal_autocheckpoint=1000")  # checkpoint every 1000 pages
         self._create_tables()
-        self._reap_orphan_sessions()
+        # 崩溃/强杀遗留的未闭合会话（end_time IS NULL）在这里收尾：按采样点补算
+        # 能量/峰值，结束时刻取最后一个采样点——**不是**整行删掉。删掉会把一整段
+        # 充电的能量、均压均流、时长连同采样点一起丢掉，历史列表里也再看不见。
+        # 只有能量过小的（<0.05Wh，等同没充过）才按常规口径删除，见该方法。
+        # 这是启动清理的**唯一**入口：以前另有一个"直接 DELETE"的 reap，两者同时
+        # 存在时后者（在 connect 里先跑）会把行删光，让这里的收尾永远无事可做。
+        try:
+            self.close_stale_sessions()
+        except Exception as e:      # 兜底遗留失败不该拖垮整个启动
+            _LOGGER.error("Failed to close stale sessions on startup: %s", e)
         self._cleanup_old_data()
         # 以连接时刻为提交基准：否则 _last_commit=0 会让启动后的第一个采样点
         # 立刻触发一次 flush（无谓的一次提交）。
@@ -350,29 +359,6 @@ class PortHistory:
             return True
         except Exception:
             return False
-
-    def _reap_orphan_sessions(self):
-        """启动时清理崩溃遗留的未结束会话（end_time IS NULL）及其采样点。
-
-        进程崩溃（未走 on_shutdown 的 _close_active_sessions）会留下
-        end_time IS NULL / total_wh=0 的会话行；重启后内存会话状态已丢失，
-        这类行不可能再被 end_session 更新，属于永久孤儿数据——get_sessions
-        按 total_wh>0 过滤使它们永远不可见、也永远不被清理。
-        仅在启动时执行（运行时正常进行中的会话 end_time IS NULL，不可删）。
-        """
-        if not self._conn:
-            return
-        try:
-            self._conn.execute(
-                """DELETE FROM charge_points WHERE session_id IN
-                   (SELECT id FROM charge_sessions WHERE end_time IS NULL)""")
-            removed = self._conn.execute(
-                "DELETE FROM charge_sessions WHERE end_time IS NULL").rowcount
-            self._conn.commit()
-            if removed:
-                _LOGGER.info("Reaped %d orphan charge session(s) from unclean shutdown", removed)
-        except Exception as e:
-            _LOGGER.error("Failed to reap orphan charge sessions: %s", e)
 
     def _cleanup_old_data(self):
         """Remove data older than retention period (port samples + closed sessions)."""
@@ -877,6 +863,9 @@ class PortHistory:
         /崩溃才会留下这种行——列表会永远把它们当"充电中"。能量与峰值按采样点
         现算（进行中的行这两列还是 0），结束时刻取最后一个采样点（没有点就退回
         start_time）；能量过小的按常规口径删除，避免留下 0Wh 空行。
+
+        启动清理的唯一入口是 connect()（运行中不能调用：那时 end_time IS NULL
+        就是"正在充电"的正常状态）。
         """
         if not self._conn:
             return 0

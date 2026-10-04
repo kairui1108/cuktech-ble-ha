@@ -822,9 +822,16 @@ class BLEManager:
         必须继续处理**：设备拔出后固件不再推送这个口，而"无负载"结束判定要靠
         连续样本走完 NO_LOAD_DEBOUNCE_SEC——跳过它会让去抖永远走不完，会话永久
         停在"活跃"，也会连带跳过下面的 verify_port 主动重读。
+
+        顺带：读数全零（电压塌掉）＝端口真的空了，在这里解除"刚结束"的残留保护。
+        释放只能发生在这里——这一口没有会话、读数全零，下面会直接跳过，
+        _manage_session 永远跑不到；而残留保护抬高的重开门限（最高 1.0W）会把
+        5V 口上 0.5~1W 的小设备永久挡在会话之外（基线是结束后 60s 就回落）。
         """
         if ps is None:
             return False
+        if ps.voltage < self._session_dets[piid].VOLTAGE_FLOOR_V and ps.current <= 0:
+            self._start_gates[piid].note_no_load()
         if ps.voltage > 0 or ps.current > 0:
             return True
         return self._session_active(piid)
@@ -1005,8 +1012,13 @@ class BLEManager:
         if was_charging:
             self._release_limit(piid, reason)
             self._arm_full_off(piid, reason, timestamp)
-            # 开始门限进入静默期（防"残留功耗反复开新会话"），并复位边界判定
-            self._start_gates[piid].note_session_end(es.max_power)
+            # 开始门限：拔出（电压塌掉）＝端口真的空了，直接解除残留保护，下一次
+            # 插入是全新的一次充电；其余原因（NO_LOAD 满电维持 / LOW_POWER 收敛 /
+            # 用户关端口）都进入静默期抬高重开门限，防止残留功耗反复开新会话。
+            if reason == END_REASON_UNPLUG:
+                self._start_gates[piid].note_no_load()
+            else:
+                self._start_gates[piid].note_session_end(es.max_power)
             self._session_dets[piid].reset()
             if reason != END_REASON_NO_LOAD:
                 # NO_LOAD 要保留起始时刻：自动断电要等它持续够久才武装（见 _manage_session）

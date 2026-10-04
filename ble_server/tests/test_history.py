@@ -345,22 +345,54 @@ class TestSessionCleanup:
         sessions, _ = history.get_sessions(port=1, period="all")
         assert any(s["id"] == sid for s in sessions)
 
-    def test_connect_reaps_orphan_sessions(self, temp_db):
-        """崩溃遗留的未结束会话（end_time IS NULL）在下次启动 connect 时被清理。"""
+    def test_connect_closes_orphan_sessions(self, temp_db):
+        """崩溃遗留的未结束会话（end_time IS NULL）在下次启动 connect 时收尾。
+
+        收尾＝按采样点补算能量/峰值、结束时刻取最后一个采样点，会话与曲线都留着；
+        只有能量过小（<0.05Wh，等同没充过）的才按常规口径删除。以前这里是另一套
+        "直接 DELETE"的清理，会把一整段充电的数据丢掉，而且它先跑，让收尾永远
+        无事可做。
+        """
         from history import PortHistory
 
         h1 = PortHistory(db_path=temp_db)
         h1.connect()
-        sid = h1.start_session(1, protocol="PD")
-        h1.record_charge_point(sid, 20.0, 2.5, 50.0, "PD")
-        # 不调用 end_session，模拟进程崩溃
-        h1.close()
+        t0 = time.time() - 600
+        # ① 有能量的孤儿：10 段 × 60s × 9W ≈ 1.5Wh
+        sid_wh = h1.start_session(1, protocol="PD")
+        # ② 只有一个采样点的孤儿：梯形积分不出能量
+        sid_empty = h1.start_session(3, protocol="PD")
+        with h1._db_lock:
+            h1._conn.execute("UPDATE charge_sessions SET start_time = ? WHERE id = ?",
+                             (t0, sid_wh))
+            for k in range(11):
+                h1._conn.execute(
+                    """INSERT INTO charge_points
+                       (session_id, timestamp, voltage, current, power, protocol)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (sid_wh, t0 + k * 60, 9.0, 1.0, 9.0, "PD"))
+            h1._conn.execute(
+                """INSERT INTO charge_points
+                   (session_id, timestamp, voltage, current, power, protocol)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (sid_empty, t0, 9.0, 1.0, 9.0, "PD"))
+            h1._conn.commit()
+        h1.close()      # 不调用 end_session，模拟进程崩溃
 
         h2 = PortHistory(db_path=temp_db)
-        h2.connect()  # 应回收孤儿会话
-        assert h2.get_session_points(sid) == []
+        h2.connect()    # 应在这里收尾
+
+        kept = h2.get_session(sid_wh)
+        assert kept is not None, "有能量的遗留会话必须被收尾，而不是删掉"
+        assert kept["end_time"] is not None
+        assert abs(kept["end_time"] - (t0 + 600)) < 1.0, "结束时刻取最后一个采样点"
+        assert kept["total_wh"] == pytest.approx(1.5, abs=0.05), "能量按采样点现算"
+        assert h2.get_session_points(sid_wh), "采样点要留着（曲线还在）"
         sessions, _ = h2.get_sessions(port=1, period="all")
-        assert len(sessions) == 0
+        assert [s["id"] for s in sessions] == [sid_wh]
+
+        assert h2.get_session(sid_empty) is None, "没有能量的孤儿按常规口径删除"
+        assert h2.get_session_points(sid_empty) == []
         h2.close()
 
 

@@ -1981,12 +1981,8 @@ async def on_startup(app_):
             "bemfa": s.bemfa.quality() if s.bemfa else {"score": 0, "uptime": 0, "ping_lost": 0, "reconnect_count": 0},
         })
         s.history.connect()
-        # 上一次进程被强杀/崩溃时可能留下 end_time 为空的会话行：历史列表会永远
-        # 把它当"充电中"。正常关机路径已收尾，这里只兜底遗留（结束时刻取最后采样点）。
-        try:
-            s.history.close_stale_sessions()
-        except Exception as e:
-            _LOGGER.error("Failed to close stale sessions: %s", e)
+        # connect() 内部已经收尾了上次强杀/崩溃遗留的未闭合会话（见 history.py），
+        # 这里不再重复调用：清理只有一个入口，免得两处口径不一致。
         s.ble.set_history(s.history)
         # 加载充电会话记录开关（history.db meta 单源，默认开启，即时切换无需重启）
         s.ble.record_sessions = s.history.get_session_recording()
