@@ -1,5 +1,6 @@
 """Shared fixtures for CUKTECH BLE Server tests."""
 import asyncio
+import os
 import sqlite3
 import tempfile
 import pytest
@@ -8,6 +9,12 @@ from unittest.mock import AsyncMock, patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# ha_server 在 **导入时** 就会按 CUKTECH_LOG_FILE 建立轮转文件处理器；测试期间
+# 必须指向临时文件，否则会把测试日志写进生产日志（/tmp/cuktech_server.log）。
+# 这行必须在任何 `import ha_server` 之前执行。
+os.environ["CUKTECH_LOG_FILE"] = os.path.join(
+    tempfile.gettempdir(), "cuktech_server_test.log")
 
 from history import PortHistory
 

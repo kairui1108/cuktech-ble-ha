@@ -11,6 +11,7 @@ import gzip
 import hashlib
 import json
 import logging
+import logging.handlers
 import math
 import os
 import threading
@@ -31,11 +32,47 @@ except ImportError:
     QrCodeXiaomiCloudClient = None
 from bemfa_client import BemfaClient, MSG_ON, MSG_OFF
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+
+# 日志文件路径：由 cuktech_ctl.sh 通过 CUKTECH_LOG_FILE 传入（默认与脚本一致），
+# 两边必须指向同一个文件，`cuktech_ctl.sh log` 才读得到。
+LOG_FILE = os.environ.get("CUKTECH_LOG_FILE", "/tmp/cuktech_server.log")
+LOG_MAX_BYTES = int(os.environ.get("CUKTECH_LOG_MAX_BYTES", 20 * 1024 * 1024))
+LOG_BACKUP_COUNT = int(os.environ.get("CUKTECH_LOG_BACKUP_COUNT", 5))
+
+
+def _setup_logging() -> None:
+    """根 logger：按大小轮转的文件处理器 + 控制台。
+
+    文件处理器是主日志（cuktech_ctl.sh log 读的就是它），按 LOG_MAX_BYTES 切割、
+    保留 LOG_BACKUP_COUNT 份，避免长期运行无限增长（info 级别下约 9 MB/天）。
+    控制台输出由 ctl 重定向到 *.console.log，用于保留"日志系统就绪前"的启动期
+    异常（导入错误、解释器告警等）。
+    """
+    fmt = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s",
+                            "%Y-%m-%d %H:%M:%S")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    if not any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers):
+        try:
+            fh = logging.handlers.RotatingFileHandler(
+                LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT,
+                encoding="utf-8")
+            fh.setFormatter(fmt)
+            root.addHandler(fh)
+        except Exception as e:      # 路径不可写等 → 退回仅控制台输出
+            logging.getLogger("cuktech_server").warning(
+                "File log handler disabled (%s): %s", LOG_FILE, e)
+    # 仅交互式前台运行时才把日志打到终端。被 cuktech_ctl.sh 重定向到文件时若再加
+    # 一个 StreamHandler，会和主日志内容完全重复（实测两文件行数相同），白白翻倍。
+    if sys.stderr.isatty() and not any(
+            isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler) for h in root.handlers):
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
+
+
+_setup_logging()
 _LOGGER = logging.getLogger("cuktech_server")
 
 
