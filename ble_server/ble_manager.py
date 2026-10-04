@@ -6,7 +6,9 @@ import os
 import random
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
+from typing import Optional
 
 try:
     from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION, AuthConnectionError
@@ -28,7 +30,11 @@ PORT_IDS = {name: piid for piid, name in PORT_NAMES.items()}
 # 会话终止原因：决定 once 限额是否被消费（见 _release_limit）
 END_REASON_USER_OFF = "port_off"      # 用户/限额触发的端口关闭
 END_REASON_UNPLUG = "unplug"          # 拔出负载（V=0,I=0 主动探测确认）
-END_REASON_LOW_POWER = "low_power"    # 功率衰减/低电流自然结束（充满）
+END_REASON_LOW_POWER = "low_power"    # 低功率收敛自然结束（充满/维持态）
+END_REASON_NO_LOAD = "no_load"        # 端口无负载但仍在协商电压（设备充满后不吸电）
+                                      # —— 同样算"自然结束"（不再是 USER_OFF），但自动断电
+                                      #    要等它持续够久（NO_LOAD_ARM_SEC）才武装，避免把
+                                      #    自适应充电的短暂停顿当成充满。
 END_REASON_LINK_LOSS = "link_loss"    # BLE 链路中断/重连（基础设施，会话可续）
 END_REASON_SHUTDOWN = "shutdown"      # 服务停止/关机
 END_REASON_UNKNOWN = "unknown"        # 未标注原因（保守：视为真实终止）
@@ -68,6 +74,29 @@ class BLEManager:
     DECRYPT_FAIL_LIMIT = 3
     MULTIFRAME_MAX_FRAMES = 100   # 多帧帧数钳制（损坏的帧头可能上报超大 count）
     MULTIFRAME_DEADLINE_SEC = 30  # 多帧接收总超时，防止损坏帧头阻塞主循环
+    # 采样"新鲜度"：定时器路径只在超过这段时间没有推送时，才代表该口的真实状态
+    # （否则会用同一份陈旧 V/I 重复喂判定）
+    SAMPLE_FRESH_SEC = 2.0
+    # "端口无负载"去抖：单帧 V/I=0（推送间隙/固件瞬时不上报）绝不能立刻结束会话
+    NO_LOAD_DEBOUNCE_SEC = 3.0
+    # "设备彻底不吸电"要持续这么久，才算"自然结束"并允许自动断电
+    # （比会话结束本身保守：自适应充电的短暂停顿不会把端口断掉）
+    NO_LOAD_ARM_SEC = 600.0
+    # 会话刚以 no_load 结束的端口：已经有"一整段充电 + 停止取电"作证据，确认窗口
+    # 可以短得多（真正恢复充电会在 START_HOLD_SEC≈30s 内重开会话并撤销挂起）
+    NO_LOAD_ARM_SESSION_SEC = 120.0
+    # "确实在充电"的功率门限。判据必须用功率而不是电流：满电设备会周期性冒
+    # 0.1A（≈0.5W）的涓流脉冲，按"电流>0 就重置窗口"会让窗口永远走不完
+    # （实机：c1 会话结束后端口一直不关，自动断电从未被武装）。
+    NO_LOAD_BUSY_W = 2.0
+    # 充满即停：会话被"自动判定结束"（low_power）后关闭端口。
+    FULL_OFF_MIN_WH = 1.0         # 本会话能量下限，防瞬时低功率误断
+    FULL_OFF_DEFAULT_MODE = DEFAULT_LIMIT_MODE  # 未指定模式时与限额一致（once）
+    FULL_OFF_RETRY_SEC = 15.0     # 断电命令未生效的重试窗口（命令超时 10s）
+    FULL_OFF_MAX_ATTEMPTS = 4     # 重试上限（约 60s），超出放弃并告警
+    # 长期供电端口：曲线点不落库，仅留内存环形窗口供详情浮层滑动查看
+    PERMANENT_RETAIN_SEC = 3600   # 内存保留时长（1h）
+    PERMANENT_POINT_MIN_INTERVAL = 1.0  # 最小采样间隔（秒）
 
     def __init__(self, mac, token, state, config):
         self.mac = mac
@@ -104,23 +133,41 @@ class BLEManager:
         self._circuit_breaker_cooldown = 0.0
         self._circuit_breaker_failures = 0
         # Energy tracking
-        from energy import AdaptiveEnergyIntegrator, PortEnergyState, ChargeEndDetector
+        from energy import (AdaptiveEnergyIntegrator, PortEnergyState,
+                            ChargeSessionDetector, SessionStartGate)
         self._energy_integrator = AdaptiveEnergyIntegrator()
         self._energy_states = {i: PortEnergyState() for i in range(1, 5)}
-        self._charge_detectors = {i: ChargeEndDetector() for i in range(1, 5)}
+        # 会话边界判定（时间窗+功率）与开始门限（功率+持续+静默期）
+        self._session_dets = {i: ChargeSessionDetector() for i in range(1, 5)}
+        self._start_gates = {i: SessionStartGate() for i in range(1, 5)}
         self._active_sessions = {}  # port -> session_id
+        # 与 _no_load_armed 一样按四个口预置：空字典的话首个无负载样本只记录
+        # 起始时刻就返回，去抖实际被拉长了一个采样间隔，且字典大小无人收敛。
+        self._no_load_since = {i: None for i in range(1, 5)}   # port -> 开始"无负载"的时间戳
+        self._no_load_armed = {i: False for i in range(1, 5)}
+        # 上一次会话是不是"设备还插着但停止取电"（no_load）结束的：决定确认窗口长短
+        self._no_load_from_session = {i: False for i in range(1, 5)}
         # Charge limits (指定充电量后自动关断端口)
         # wh<=0 = 禁用；mode: once(命中即消费清零) / always(长期有效，每次会话重新武装)
         self._charge_limits = {i: 0.0 for i in range(1, 5)}
         self._limit_modes = {i: DEFAULT_LIMIT_MODE for i in range(1, 5)}
         self._limit_fired = {i: False for i in range(1, 5)}   # 本会话已入队关断（防重入）
         self._limit_fired_at = {i: 0.0 for i in range(1, 5)}
+        # 端口模式（启动时由服务器从 DB meta 注入）
+        # permanent_ports：长期供电设备 —— 只停充电曲线点（charge_points）写入，
+        #   会话行/耗能统计/充满事件照常；曲线留在内存环形窗口里供详情滑动查看。
+        # full_off_ports：充满后自动关闭端口（复用会话检测的"判满"结果）。
+        self.permanent_ports: set = set()
+        self.full_off: dict = {}    # {piid: once|always}，空 = 关闭充满即停
+        self._full_off_pending = {i: 0.0 for i in range(1, 5)}   # 已判满、待确认断电
+        self._full_off_attempts = {i: 0 for i in range(1, 5)}
+        self._full_off_last_try = {i: 0.0 for i in range(1, 5)}
+        self._full_off_fired = {i: False for i in range(1, 5)}   # 上次会话是否已充满断电
+        self._permanent_points = {i: deque() for i in range(1, 5)}
+        self._permanent_last_point = {i: 0.0 for i in range(1, 5)}
         # Protocol debounce: track consecutive protocol readings per port
         self._proto_buf = {i: [] for i in range(1, 5)}  # port -> [last N protocols]
         self._PROTO_DEBOUNCE_N = 3  # consecutive readings to confirm protocol
-        # Session end debounce: consecutive low-current count per port
-        self._low_current_count = {i: 0 for i in range(1, 5)}
-        self._LOW_CURRENT_N = 300  # consecutive readings below threshold to end session
         # Idle port verification: when a port stops receiving BLE pushes, actively
         # GET it after IDLE_VERIFY_SEC to detect unplug (V/I stuck at last value).
         self._IDLE_VERIFY_SEC = 15          # idle > 15s → trigger one active GET
@@ -198,9 +245,94 @@ class BLEManager:
             "next_reconnect_delay": next_delay,
         }
 
+    # ── 端口模式（长期供电 / 充满即停） ──────────────────────────────
+    # 两者互斥：常供端口若"充满即停"会把长期供电的负载断掉，语义自相矛盾，
+    # 因此在设置常供时强制清掉该口的即停标记（API 层另有 400 兜底）。
+
+    @staticmethod
+    def _normalize_port_names(names) -> set:
+        """把任意输入归一成 {piid} 集合（非法项静默丢弃，不抛异常）。"""
+        if isinstance(names, str):
+            names = [names]
+        if not isinstance(names, (list, tuple, set, frozenset)):
+            return set()
+        wanted = {str(n).strip().lower() for n in names}
+        return {piid for name, piid in PORT_IDS.items() if name in wanted}
+
+    def set_permanent_ports(self, names) -> list:
+        """设置长期供电端口，返回归一后的端口名列表（持久化由调用方负责）。"""
+        self.permanent_ports = self._normalize_port_names(names)
+        for piid in self.permanent_ports:
+            self.full_off.pop(piid, None)           # 互斥
+            # 互斥必须连"已挂起的断电"一起撤销：否则刚声明长期供电的端口仍会被
+            # 在途的 off 命令/重试断掉（_enforce_full_off 只看 _full_off_pending）
+            self._full_off_pending[piid] = 0.0
+            self._full_off_attempts[piid] = 0
+            self._full_off_fired[piid] = False
+            self._charge_limits[piid] = 0.0         # 长期供电没有"限额断电"这回事
+            self._limit_fired[piid] = False
+            self._permanent_points[piid].clear()
+            self._permanent_last_point[piid] = 0.0
+        return self.get_port_modes_state()["permanent_ports"]
+
+    def is_permanent_name(self, name) -> bool:
+        """按端口名判断是否长期供电（API 层做参数校验用）。"""
+        return PORT_IDS.get(str(name).strip().lower()) in self.permanent_ports
+
+    def set_full_off(self, entries) -> dict:
+        """设置"充满即停"（端口名 → 模式）。接受 {name: mode} 或 [name]（默认 once）。
+
+        长期供电端口一律剔除；不再启用的端口顺手清掉"已充满断电"标记，
+        免得下次打开时还挂着上一次的旧状态。
+        """
+        if isinstance(entries, str) or isinstance(entries, (list, tuple, set, frozenset)):
+            # 列表形式按默认模式启用；键必须是端口名（_normalize_port_names 给的是 piid）
+            entries = {PORT_NAMES[p]: self.FULL_OFF_DEFAULT_MODE
+                       for p in self._normalize_port_names(entries)}
+        clean = {}
+        if isinstance(entries, dict):
+            for name, mode in entries.items():
+                piid = PORT_IDS.get(str(name).strip().lower())
+                if piid is None or piid in self.permanent_ports:
+                    continue
+                _, norm_mode = normalize_charge_limit(0, mode)
+                clean[piid] = norm_mode
+        for piid in list(self._full_off_fired):
+            if piid not in clean:
+                self._full_off_fired[piid] = False
+                # 撤销尚未确认的自动断电：否则关掉"充满即停"后，在途的 off 与
+                # 重试（_enforce_full_off 只看 _full_off_pending）仍会把端口断掉
+                self._full_off_pending[piid] = 0.0
+                self._full_off_attempts[piid] = 0
+        self.full_off = clean
+        return self.get_port_modes_state()["full_off_ports"]
+
+    def is_full_off(self, piid: int) -> bool:
+        return piid in self.full_off
+
+    def full_off_mode(self, piid: int) -> str:
+        return self.full_off.get(piid, "")
+
+    def get_port_modes_state(self) -> dict:
+        """端口模式状态（供 /api/port-modes 与 /api/status 读取）。
+
+        端口名按 PORT_NAMES 顺序输出（c1/c2/c3/a），与 meta 里的归一顺序一致，
+        前端 indexOf 判定与人工核对都省一次排序。
+        """
+        ordered = [(piid, name) for name, piid in PORT_IDS.items()]
+        return {
+            "permanent_ports": [n for p, n in ordered if p in self.permanent_ports],
+            # {端口名: once|always}：模式跟限额一样是"一次性 / 长期有效"
+            "full_off_ports": {n: self.full_off[p] for p, n in ordered if p in self.full_off},
+            "full_off_fired": [n for p, n in ordered if self._full_off_fired[p]],
+        }
+
     def get_live_session_data(self) -> dict:
         """Get real-time energy data for active charging sessions.
         Returns dict mapping port (1-4) to {session_id, session_wh, max_power, start_time}.
+
+        长期供电端口同样出现在这里（耗能统计照常计入），但带 permanent=True 标记，
+        前端据此用紧凑样式渲染并走"内存滑动窗口"详情。
         """
         result = {}
         for port, es in self._energy_states.items():
@@ -210,8 +342,90 @@ class BLEManager:
                     "session_wh": round(es.session_wh, 4),
                     "max_power": round(es.max_power, 2),
                     "start_time": es.session_start,
+                    "permanent": port in self.permanent_ports,
                 }
         return result
+
+    # ── 长期供电端口的会话曲线（内存窗口，不落库） ──
+
+    def _append_permanent_point(self, piid: int, voltage: float, current: float,
+                                protocol: str = "") -> None:
+        """常供端口的采样点进内存环形窗口：按时间裁剪，超出保留时长即淘汰。
+
+        能量/峰值/时长是会话级累计（PortEnergyState），与窗口淘汰无关——这正是
+        "窗口滑动时被移出窗口的数据仍计入统计"的实现方式。
+        """
+        now = time.time()
+        if now - self._permanent_last_point[piid] < self.PERMANENT_POINT_MIN_INTERVAL:
+            return   # 节流到 ≥1s/点：窗口内存上限 ~3600 点/端口
+        self._permanent_points[piid].append((
+            round(now, 3), round(voltage, 2), round(current, 2),
+            round(voltage * current, 1), protocol or ""))
+        self._permanent_last_point[piid] = now
+        cutoff = now - self.PERMANENT_RETAIN_SEC
+        pts = self._permanent_points[piid]
+        while pts and pts[0][0] < cutoff:
+            pts.popleft()
+
+    def _permanent_port_of_session(self, session_id) -> Optional[int]:
+        """会话 id -> 端口（仅当前活跃会话可解析；已结束的常供会话无曲线可查）。"""
+        for port, sid in self._active_sessions.items():
+            if sid == session_id:
+                return port
+        return None
+
+    def get_permanent_session_window(self, session_id, window_sec: float = 900.0,
+                                     to_ts: Optional[float] = None) -> Optional[dict]:
+        """常供会话的详情数据：内存窗口内的点 + **整个会话**的统计。
+
+        返回 None 表示该会话不在内存里（非活跃 / 非长供）——调用方回落 DB 路径。
+        window_sec 决定曲线窗口宽度，to_ts 是窗口右端（缺省=最新），窗口可在保留
+        时长内左右滑动；统计恒为会话级累计，不受窗口与淘汰影响。
+        """
+        port = self._permanent_port_of_session(session_id)
+        if port is None or port not in self.permanent_ports:
+            return None
+        es = self._energy_states[port]
+        pts = self._permanent_points[port]
+        now = time.time()
+        end = min(float(to_ts) if to_ts else now, now)
+        width = max(60.0, float(window_sec or 900.0))
+        start = end - width
+        rows = [p for p in pts if start <= p[0] <= end]
+        available_from = pts[0][0] if pts else now
+        available_to = pts[-1][0] if pts else now
+        duration = int((now - es.session_start) if es.session_start else 0)
+        dur_h = duration / 3600.0
+        ps = self.state.ports.get(port)
+        return {
+            "permanent": True,
+            "points": [
+                {"timestamp": t, "voltage": v, "current": i, "power": p, "protocol": proto}
+                for t, v, i, p, proto in rows
+            ],
+            "stats": {
+                "session_id": session_id,
+                "port": port,
+                "start_time": es.session_start,
+                "end_time": None,
+                "total_wh": round(es.session_wh, 4),
+                "avg_power_w": round(es.session_wh / dur_h, 1) if dur_h > 0 else 0,
+                "peak_power_w": round(es.max_power, 2),
+                "avg_voltage": round(ps.voltage, 2) if ps else 0,
+                "avg_current": round(ps.current, 2) if ps else 0,
+                "duration_sec": duration,
+            },
+            "window": {
+                "retain_sec": self.PERMANENT_RETAIN_SEC,
+                "window_sec": width,
+                "from": start,
+                "to": end,
+                "available_from": available_from,
+                "available_to": available_to,
+                "count": len(rows),
+                "total_points": len(pts),
+            },
+        }
 
     # ── Charge limits ────────────────────────────────────────────────
     # 语义：本端口"本次充电会话"输出能量达到阈值后自动关闭该端口断电。
@@ -241,17 +455,31 @@ class BLEManager:
         """当前限额配置 + 各端口本会话充电进度（供 API/前端读取）。
 
         session_wh 是"本会话已输出能量"，前端据此显示"已充 X / 限额 Y Wh"。
+        session_sec / avg_power_w 是本会话的时长与平均功率（常供卡用它替代实时功率：
+        实时功率每帧都在跳，卡片上放统计值更有意义）。会话结束后时长按
+        "last_end_time − session_start" 算，不会随挂钟继续变大，平均值因此仍然准确。
         """
-        return {
-            PORT_NAMES.get(p, str(p)): {
+        now = time.time()
+        out = {}
+        for p in range(1, 5):
+            es = self._energy_states[p]
+            end = now if es.is_charging else es.last_end_time
+            if es.session_start and end and end > es.session_start:
+                session_sec = end - es.session_start
+            else:
+                session_sec = 0.0
+            avg_w = es.session_wh / (session_sec / 3600.0) if session_sec > 0 else 0.0
+            out[PORT_NAMES.get(p, str(p))] = {
                 "wh": self._charge_limits[p],
                 "mode": self._limit_modes[p],
                 "fired": self._limit_fired[p],
-                "session_wh": round(self._energy_states[p].session_wh, 3),
-                "is_charging": self._energy_states[p].is_charging,
+                "session_wh": round(es.session_wh, 3),
+                "session_sec": round(session_sec, 1),
+                "avg_power_w": round(avg_w, 2),
+                "is_charging": es.is_charging,
+                "session_start": es.session_start,
             }
-            for p in range(1, 5)
-        }
+        return out
 
     def _enforce_charge_limit(self, piid: int, timestamp: float) -> None:
         """达到阈值时把"关闭该端口"入队，由命令循环统一执行。
@@ -264,6 +492,8 @@ class BLEManager:
         入队；若 LIMIT_RETRY_SEC 内端口仍在充电（命令超时/失败），说明配置未
         生效，复位标记让下一帧重试。
         """
+        if piid in self.permanent_ports:
+            return   # 长期供电端口不做限额断电（API 也会拒绝设置，这里是兜底）
         wh = self._charge_limits[piid]
         if wh <= 0:
             return
@@ -279,11 +509,111 @@ class BLEManager:
         self._limit_fired_at[piid] = timestamp
         _LOGGER.info("Charge limit reached: port=%s %.2fWh >= %.2fWh (%s), switching off",
                      PORT_NAMES.get(piid, piid), es.session_wh, wh, self._limit_modes[piid])
+        if not self._enqueue_port_off(piid):
+            self._limit_fired[piid] = False
+
+    def _enqueue_port_off(self, piid: int) -> bool:
+        """把"关闭该端口"入队（与用户命令串行，由命令循环统一执行）。"""
         try:
             self.cmd_queue.put_nowait(("port", (PORT_NAMES[piid], "off"), None))
+            return True
         except asyncio.QueueFull:
-            self._limit_fired[piid] = False
-            _LOGGER.error("Command queue full, charge limit not enqueued for port %d", piid)
+            _LOGGER.error("Command queue full, port off not enqueued for port %d", piid)
+            return False
+
+    # ── 充满即停（判满 → 自动关闭端口） ──
+    # "充到什么时候算结束"由 energy.ChargeSessionDetector 判定（时间窗 + 功率 +
+    # 波动豁免，连续收敛 HOLD_SEC），会话以 END_REASON_LOW_POWER 结束时武装断电；
+    # "设备彻底不吸电"（END_REASON_NO_LOAD）另走持续 NO_LOAD_ARM_SEC 的保守武装。
+
+    def _arm_full_off(self, piid: int, reason: str, timestamp: float) -> None:
+        """会话"自动结束"（low_power）后挂起"该端口自动断电"。
+
+        只在开启该选项的端口生效；能量过小的会话（瞬时低功率/刚插上就涓流）不武装，
+        避免误断。会话以其它原因结束（用户关端口/拔出/链路中断/关机）不在此列。
+        """
+        if not self.is_full_off(piid) or reason != END_REASON_LOW_POWER:
+            return
+        es = self._energy_states[piid]
+        if es.session_wh < self.FULL_OFF_MIN_WH:
+            _LOGGER.info("Full-off skipped for port %s: session only %.2fWh (< %.2fWh)",
+                         PORT_NAMES.get(piid, piid), es.session_wh, self.FULL_OFF_MIN_WH)
+            return
+        self._full_off_pending[piid] = timestamp
+        self._full_off_attempts[piid] = 0
+        self._full_off_last_try[piid] = timestamp
+        _LOGGER.info("Charging session auto-ended (port=%s, %.2fWh): auto power-off armed",
+                     PORT_NAMES.get(piid, piid), es.session_wh)
+        # 同 _maybe_arm_full_off：入队失败保留 pending，让 _enforce_full_off 重试
+        self._enqueue_port_off(piid)
+
+    def _maybe_arm_full_off(self, piid: int, timestamp: float,
+                            reason: str = "session_end") -> None:
+        """挂起"自动断电"（只在开启该选项且尚未挂起的端口）。
+
+        reason 只进日志：no_load = 端口已连续确认"没在充电"够久（见 _manage_session
+        分支 D），这时不设能量门槛——时间窗本身就是证据。
+
+        这里**不能**沿用 _arm_full_off 的 FULL_OFF_MIN_WH 门槛：门槛读的是
+        `es.session_wh`（最近一次会话的能量），而设备充满后常会周期性冒几秒的
+        小会话（实测：10.2Wh 大会话之后跟了一个 7 秒 0Wh 会话），那会把证据
+        覆盖成 0，导致自动断电再也武装不起来——正是"会话结束了端口却不关"。
+        """
+        if not self.is_full_off(piid) or self._full_off_pending[piid]:
+            return
+        es = self._energy_states[piid]
+        self._full_off_pending[piid] = timestamp
+        self._full_off_attempts[piid] = 0
+        self._full_off_last_try[piid] = timestamp
+        _LOGGER.info("Auto power-off armed (port=%s, %s, %.2fWh this session, %.1fW peak)",
+                     PORT_NAMES.get(piid, piid), reason, es.session_wh, es.max_power)
+        # 入队失败不能清掉 pending：清了就没有重试了（_enforce_full_off 只看
+        # pending，且 no_load 路径还有 _no_load_armed 挡着重新武装）。
+        # 留着 pending，由 _enforce_full_off 按 FULL_OFF_RETRY_SEC 重试。
+        self._enqueue_port_off(piid)
+
+    def _enforce_full_off(self, piid: int, timestamp: float) -> None:
+        """确认"判满断电"是否生效；端口仍 active 就按窗口重试，超上限放弃。
+
+        必须在"端口已无功率"之外判定：挂起时该口已停止充电，只等 readback
+        变 inactive（见 1s 定时器里的调用点）。
+        """
+        if not self._full_off_pending[piid]:
+            return
+        name = PORT_NAMES.get(piid, piid)
+        ps = self.state.ports.get(piid)
+        if not ps or not ps.active:
+            self._full_off_pending[piid] = 0.0
+            self._full_off_fired[piid] = True
+            _LOGGER.info("Full-off confirmed: port %s switched off", name)
+            # once：命中即消费（与限额 once 同语义），always 留着下次会话继续生效
+            if self.full_off_mode(piid) == LIMIT_MODE_ONCE:
+                self.full_off.pop(piid, None)
+                # 消费后功能变回"未启用"，"已触发"就不能再挂着：它只是个"本次会话
+                # 断过电"的瞬时标记，留着会让卡片长期显示自相矛盾的
+                # "未启用 · 已触发"，状态点也一直停在警示色。
+                # （always 模式不清：功能仍生效，"已启用 · 已触发"是有意义的信息，
+                #   下次会话起点由 _start_session 复位。）
+                self._full_off_fired[piid] = False
+                _LOGGER.info("One-shot full-off consumed (port %s)", name)
+                self._persist_full_off_async()
+            return
+        self._full_off_fired[piid] = False
+        if timestamp - self._full_off_last_try[piid] < self.FULL_OFF_RETRY_SEC:
+            return
+        attempts = self._full_off_attempts[piid]
+        if attempts >= self.FULL_OFF_MAX_ATTEMPTS:
+            self._full_off_pending[piid] = 0.0
+            _LOGGER.warning("Full-off for port %s not confirmed after %d attempts, giving up",
+                            name, attempts)
+            return
+        self._full_off_attempts[piid] = attempts + 1
+        self._full_off_last_try[piid] = timestamp
+        _LOGGER.warning("Full-off for port %s not confirmed within %ds, retrying (%d/%d)",
+                        name, int(self.FULL_OFF_RETRY_SEC), attempts + 1,
+                        self.FULL_OFF_MAX_ATTEMPTS)
+        # 入队失败保留 pending：下次到点再试，直接清掉就再也没有重试机会了
+        self._enqueue_port_off(piid)
 
     def _release_limit(self, piid: int, reason: str = END_REASON_UNKNOWN) -> None:
         """会话终止时的限额生命周期处理。
@@ -333,6 +663,21 @@ class BLEManager:
             lambda t: _LOGGER.error("Persist charge limits failed: %s", t.exception())
             if t.exception() else None)
 
+    def _persist_full_off_async(self) -> None:
+        """把"充满即停"写回 DB meta（once 被消费后自动回写）。非阻塞。"""
+        if not self._history:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _LOGGER.warning("No event loop, full-off modes not persisted to DB")
+            return
+        snapshot = {PORT_NAMES[p]: m for p, m in self.full_off.items()}
+        task = loop.run_in_executor(None, self._history.set_full_off, snapshot)
+        task.add_done_callback(
+            lambda t: _LOGGER.error("Persist full-off modes failed: %s", t.exception())
+            if t.exception() else None)
+
     async def request_stop(self):
         """请求停止 BLE 循环 (设置 _stop_event，不直接断开)。"""
         self._close_active_sessions(END_REASON_SHUTDOWN)
@@ -350,8 +695,7 @@ class BLEManager:
                 with self._sess_lock:
                     sid = self._active_sessions.pop(port, None)
                 duration = int(now - (es.session_start or now))
-                det = self._charge_detectors[port]
-                det.on_session_end(now)
+                self._session_dets[port].reset()
                 es.is_charging = False
                 self._release_limit(port, reason)
                 es.last_end_time = now
@@ -436,14 +780,21 @@ class BLEManager:
 
     def _record_charge_point(self, piid: int, voltage: float, current: float,
                              protocol: str = "") -> bool:
-        """写入会话采样点（仅真实会话且记录开启时；占位负 sid 或记录关闭均跳过）。
+        """写入会话采样点（仅真实会话、记录开启、且非常供端口；返回是否提交写库）。
 
-        集中两处采样点写入门控，返回是否实际提交了写库任务。
+        常供端口（permanent_ports）不落 charge_points，曲线改存内存环形窗口
+        （供详情浮层滑动查看）；会话行与耗能统计照常记录，因此这里先于
+        record_sessions 判定常供，避免"关了记录开关连内存窗口也没了"的混淆。
         """
-        if not self.record_sessions:
+        # 常供端口先判：它根本不写 charge_points，与 record_sessions 无关，
+        # 只看有没有会话（记录关闭时 sid 是负值占位，内存窗口仍应继续积累）。
+        if piid in self.permanent_ports and self._energy_states[piid].is_charging:
+            self._append_permanent_point(piid, voltage, current, protocol)
             return False
         sid = self._active_sessions.get(piid)
         if not sid or sid <= 0:
+            return False
+        if not self.record_sessions:
             return False
         loop = asyncio.get_running_loop()
         task = loop.run_in_executor(
@@ -464,6 +815,171 @@ class BLEManager:
         """
         return piid in self._active_sessions or self._energy_states[piid].is_charging
 
+    def _should_sample_port(self, piid: int, ps) -> bool:
+        """定时器这一轮要不要对这一口做采样 / 会话判定。
+
+        读数为 0 的口通常无事可做（省掉空转与空曲线点），**但只要会话还开着就
+        必须继续处理**：设备拔出后固件不再推送这个口，而"无负载"结束判定要靠
+        连续样本走完 NO_LOAD_DEBOUNCE_SEC——跳过它会让去抖永远走不完，会话永久
+        停在"活跃"，也会连带跳过下面的 verify_port 主动重读。
+        """
+        if ps is None:
+            return False
+        if ps.voltage > 0 or ps.current > 0:
+            return True
+        return self._session_active(piid)
+
+    # ── 会话生命周期（开始 / 结束的唯一入口） ──────────────────────
+    # 两条采样路径都调这里：BLE 推送帧（C1/C2 有推送）与 1s 定时器（C3/USB-A 没有
+    # 推送、以及推送停掉时）。判定全部按"时间窗 + 功率"，与采样率无关；"端口无负载"
+    # 走独立去抖，绝不单帧结束会话。
+
+    def _port_enabled(self, piid: int) -> bool:
+        """端口开关状态（PIID16 位掩码，与 /api/status 的 enabled 同源）。"""
+        mask = self.state.settings.get("16")
+        if not isinstance(mask, int):
+            return True          # 读不到就当开着（宁可继续会话，也不凭空结束）
+        name = PORT_NAMES.get(piid)
+        bit = PORT_BITS.get(name)
+        return True if bit is None else bool(mask & (1 << bit))
+
+    def _manage_session(self, piid: int, timestamp: float, voltage: float,
+                        current: float, active: bool, protocol: str = "") -> None:
+        """会话开始/结束/采样的统一处理（两条采样路径的唯一入口）。
+
+        每次调用都喂一次检测器：两条路径都已经用 SAMPLE_FRESH_SEC 门闩保证
+        "这一帧确实是新采样"，不会拿同一份陈旧 V/I 重复喂。
+        """
+        es = self._energy_states[piid]
+        det = self._session_dets[piid]
+        gate = self._start_gates[piid]
+        power = voltage * current
+
+        det.feed(timestamp, voltage, current)
+
+        if es.is_charging:
+            # A) 端口被关掉（用户/限额/倒计时）→ 这是我们自己的动作，无需去抖
+            if not self._port_enabled(piid):
+                self._close_session(piid, timestamp, voltage, current,
+                                    END_REASON_USER_OFF)
+                return
+            # B) 端口报无负载：先按端口状态位判断"是拔出还是设备不吸电"，并做去抖
+            #    "无负载"只看电流（电压为 0 而电流不为 0 在物理上不成立；反过来
+            #    电压仍在协商范围内、电流为 0 才是"充满/维持"的真实场景）。
+            #    电压只用来分类结果，不用来决定是否进入本分支。
+            if not active or current <= 0:
+                gate.note_no_load()
+                since = self._no_load_since.get(piid)
+                if since is None:
+                    self._no_load_since[piid] = timestamp
+                    _LOGGER.debug("Port %s reads no load, debouncing (%ds)",
+                                  PORT_NAMES.get(piid, piid), self.NO_LOAD_DEBOUNCE_SEC)
+                    return
+                if timestamp - since < self.NO_LOAD_DEBOUNCE_SEC:
+                    return
+                # 电压还在协商范围内 → 设备仍在、只是不吸电（充满/维持）＝自然结束
+                # 电压塌掉 → 真的拔出了
+                reason = (END_REASON_UNPLUG if voltage < det.VOLTAGE_FLOOR_V
+                          else END_REASON_NO_LOAD)
+                sid = self._close_session(piid, timestamp, voltage, current, reason)
+                _LOGGER.info("Session %s ended by no-load (port=%s, %.1fWh, %.1fV, reason=%s)",
+                             sid if sid else "n/a", PORT_NAMES.get(piid, piid),
+                             es.session_wh, voltage, reason)
+                return
+            self._no_load_since[piid] = None
+            self._no_load_armed[piid] = False
+            # C) 有负载：低功率收敛判定（时间窗 + 功率 + 波动豁免）
+            if det.should_end(timestamp, es.session_wh, es.session_start):
+                sid = self._close_session(piid, timestamp, voltage, current,
+                                          END_REASON_LOW_POWER)
+                if sid:
+                    _LOGGER.info("Session %d ended by low-power convergence "
+                                 "(port=%s, %.1fWh, p_fast=%.2fW, T=%.2fW, held=%.0fs)",
+                                 sid, PORT_NAMES.get(piid, piid), es.session_wh,
+                                 det.p_fast(), det.threshold_w(), det.HOLD_SEC)
+            return
+
+        # D) 端口上"没在充电"：持续足够久（NO_LOAD_ARM_SEC）才武装自动断电。
+        #    判据是**功率**不是电流：满电设备会周期性冒 0.1A（≈0.5W）的涓流脉冲，
+        #    按"电流>0 就重置"会让窗口永远走不完（实机：会话结束了端口一直不关）。
+        #    电压必须仍在协商范围内——电压塌了是拔出，不该断（也没意义）。
+        #    不能拿 active 当判据：active = in_use or V>0 or I>0，只要电压还在它
+        #    就是 True，用它过滤会让本分支永不成立（插着不充正是 active=True）。
+        if power > self.NO_LOAD_BUSY_W:
+            self._no_load_since[piid] = None
+            self._no_load_armed[piid] = False
+            self._no_load_from_session[piid] = False
+        elif (self.is_full_off(piid) and not self._full_off_pending[piid]
+                and not self._no_load_armed[piid]
+                and voltage >= det.VOLTAGE_FLOOR_V):
+            # 不能用 setdefault：键被预置成了 None，setdefault 只认"键不存在"，
+            # 会一路返回 None 让计时永远起步不了（首样本白记一次）。
+            since = self._no_load_since.get(piid)
+            if since is None:
+                since = timestamp
+                self._no_load_since[piid] = since
+            # 会话刚以 no_load 结束：已有一整段充电作证据，确认窗口更短
+            window = (self.NO_LOAD_ARM_SESSION_SEC if self._no_load_from_session[piid]
+                      else self.NO_LOAD_ARM_SEC)
+            if timestamp - since >= window:
+                self._no_load_armed[piid] = True
+                self._maybe_arm_full_off(piid, timestamp, reason="no_load")
+        # E) 开始判定：功率门限 + 持续 + 结束后的静默期（防残留反复开会话）
+        if active and self._port_enabled(piid) and gate.should_start(timestamp, det.p_fast(), voltage):
+            self._start_session(piid, timestamp, voltage, current, protocol)
+
+    def _start_session(self, piid: int, timestamp: float, voltage: float,
+                       current: float, protocol: str = "") -> None:
+        """开会话：内存会话生命周期始终完整（记录关闭时用占位 sid）。"""
+        es = self._energy_states[piid]
+        es.is_charging = True
+        es.session_wh = 0
+        es.session_start = timestamp
+        es.max_power = voltage * current
+        es.max_current = current
+        self._no_load_since[piid] = None
+        self._no_load_armed[piid] = False
+        self._no_load_from_session[piid] = False
+        self._session_dets[piid].reset()
+        # 会话起点重新武装限额（always 长期有效靠此持续；once 若已消费则 wh<=0）
+        self._limit_fired[piid] = False
+        # 充满即停同样按会话重新武装：清挂起/重试/已触发，并丢掉上一会话的内存曲线
+        self._full_off_pending[piid] = 0.0
+        self._full_off_attempts[piid] = 0
+        self._full_off_fired[piid] = False
+        self._permanent_points[piid].clear()
+        self._permanent_last_point[piid] = 0.0
+        _LOGGER.info("Session started (port=%s, %.1fW, protocol=%s)",
+                     PORT_NAMES.get(piid, piid), voltage * current, protocol or "idle")
+        if not self._history:
+            return
+        loop = asyncio.get_running_loop()
+        if self.record_sessions:
+            task = loop.run_in_executor(None, self._history.start_session, piid, protocol)
+
+            def _on_session_start(t, p=piid):
+                if t.exception():
+                    _LOGGER.error("Start session failed for port %d: %s", p, t.exception())
+                    return
+                new_sid = t.result()
+                if not new_sid:
+                    _LOGGER.error("Start session failed for port %d: DB returned no sid", p)
+                    return
+                with self._sess_lock:
+                    es2 = self._energy_states.get(p)
+                    if es2 is None or not es2.is_charging or self._active_sessions.get(p) is not None:
+                        # 回调前会话已结束/被新会话取代：闭合刚建的 DB 行
+                        self._close_resumed_orphan(p, new_sid)
+                        return
+                    self._active_sessions[p] = new_sid
+
+            task.add_done_callback(_on_session_start)
+        else:
+            # 记录关闭：不写库，用内存伪造负 sid 保持会话（实时显示/事件照常）
+            self._fake_sid_counter -= 1
+            with self._sess_lock:
+                self._active_sessions[piid] = self._fake_sid_counter
+
     def _close_session(self, piid, timestamp, voltage=0, current=0,
                        reason: str = END_REASON_UNKNOWN):
         """Close a charge session: cleanup state, notify, and write to DB.
@@ -477,19 +993,33 @@ class BLEManager:
         所有会话终止路径都收敛到本方法的 is_charging 跃迁，因此限额清理挂在
         跃迁处即可覆盖全部出口（本方法有多个 return）。
         """
-        det = self._charge_detectors[piid]
         es = self._energy_states[piid]
         with self._sess_lock:
             sid = self._active_sessions.pop(piid, None)
         if sid is None and not es.is_charging:
             return None
-        det.on_session_end(timestamp)
         # 仅在真实跃迁时清理限额：占位清理路径（sid 残留但 is_charging 已 False）
         # 会再次进入本方法，此时限额早已消费，重复清理会误伤新会话的配置。
         was_charging = es.is_charging
         es.is_charging = False
         if was_charging:
             self._release_limit(piid, reason)
+            self._arm_full_off(piid, reason, timestamp)
+            # 开始门限进入静默期（防"残留功耗反复开新会话"），并复位边界判定
+            self._start_gates[piid].note_session_end(es.max_power)
+            self._session_dets[piid].reset()
+            if reason != END_REASON_NO_LOAD:
+                # NO_LOAD 要保留起始时刻：自动断电要等它持续够久才武装（见 _manage_session）
+                self._no_load_since[piid] = None
+                self._no_load_armed[piid] = False
+                self._no_load_from_session[piid] = False
+            else:
+                # 设备还插着、只是停止取电：允许用较短的确认窗口武装自动断电
+                self._no_load_from_session[piid] = True
+            if piid in self.permanent_ports:
+                # 会话结束即释放内存窗口：常供曲线不落库，不为已结束会话留数据
+                self._permanent_points[piid].clear()
+                self._permanent_last_point[piid] = 0.0
         es.last_end_time = timestamp
         duration = int(timestamp - (es.session_start or timestamp))
         # 仅真实会话（开启记录期间创建的正 sid）可以写库；负 sid 为关闭期间占位
@@ -1135,17 +1665,22 @@ class BLEManager:
                         self._last_verify_time[piid] = now
                     except asyncio.QueueFull:
                         self._pending_verify.discard(piid)
+            # 判满断电的确认/重试与历史写入无关，且必须早于下面的 V/I 过滤：
+            # 挂起时端口已停止充电（V/I 可能为 0），只等 readback 变 inactive。
+            for piid in range(1, 5):
+                self._enforce_full_off(piid, now)
             if not self._history or self._stop_event.is_set():
                 continue
             loop = asyncio.get_running_loop()
             for piid in range(1, 5):
                 try:
                     ps = self.state.ports.get(piid)
-                    if not ps or (ps.voltage <= 0 and ps.current <= 0):
-                        continue
                     es = self._energy_states[piid]
+                    if not self._should_sample_port(piid, ps):
+                        continue
                     # BLE handler already recorded if last_time < 2s ago
-                    idle = es.last_time is None or (now - es.last_time > 2)
+                    idle = (es.last_time is None
+                            or (now - es.last_time) > self.SAMPLE_FRESH_SEC)
                     # Active verification: if the port has been idle (no BLE push)
                     # longer than IDLE_VERIFY_SEC, enqueue a GET so the main loop
                     # actively re-samples it. This catches the case where the unplug
@@ -1162,24 +1697,21 @@ class BLEManager:
                         except asyncio.QueueFull:
                             self._pending_verify.discard(piid)
                     if idle:
+                        # 定时器只在"没有推送"时代表这一口的真实状态（C3/A 全靠它）
+                        self._manage_session(piid, now, ps.voltage, ps.current,
+                                             active=ps.active, protocol=ps.protocol or "")
+                        # 采样点同样要写：C3/USB-A 全靠定时器驱动，不写就没有曲线，
+                        # end_session 的均压/均流也会退化成 0。常供端口走内存窗口，
+                        # 那里自带 1s 节流且 0A 也是有效曲线点，故不受 current>0 限制。
+                        if (self._history and es.is_charging
+                                and piid in self._active_sessions
+                                and (ps.current > 0 or piid in self.permanent_ports)):
+                            self._record_charge_point(piid, ps.voltage, ps.current,
+                                                      ps.protocol or "")
                         # Only integrate if current > 0 (no power transfer at 0A)
                         if es.is_charging and ps.current > 0:
                             self._energy_integrator.update(
                                 es, ps.voltage, ps.current, now)
-                            det = self._charge_detectors[piid]
-                            det.update(ps.voltage * ps.current, now)
-                            # Check if session should end (gradual power decline)
-                            if det.should_end_session(es, now):
-                                self._low_current_count[piid] = 0
-                                sid = self._close_session(piid, now, ps.voltage, ps.current,
-                                                          END_REASON_LOW_POWER)
-                                if sid and sid > 0:
-                                    _LOGGER.info("Timer ended session %d (port %d, %.1fWh)",
-                                                 sid, piid, es.session_wh)
-                            else:
-                                # 仅真实会话（正 sid）且记录开启时写入采样点
-                                self._record_charge_point(
-                                    piid, ps.voltage, ps.current, ps.protocol or "")
                             # 充电量达到阈值 → 入队关断（与 push 路径同一判定）
                             self._enforce_charge_limit(piid, now)
                         # port_history: always write for chart continuity
@@ -1497,11 +2029,14 @@ class BLEManager:
                     cmd_future.set_result({"ok": False, "error": "decode failed"})
                 return
             old = self.state.ports.get(piid)
+            # 会话还开着但端口已无负载 → 必须结束会话。这与"读数有没有变化"无关：
+            # 拔出后的 0V/0A 可能早就写进状态了（丢的只是"结束会话"这一步），
+            # 只看变化的话这个会话会一直挂到重启。
+            if not port_info["active"] and self._session_active(piid):
+                self._close_session(piid, time.time(), reason=END_REASON_UNPLUG)
             # Only update if the live reading differs meaningfully from what we
             # hold — prevents redundant MQTT/SSE emits on unchanged polls.
             if old is None or (port_info["voltage"], port_info["current"]) != (old.voltage, old.current):
-                if not port_info["active"] and self._session_active(piid):
-                    self._close_session(piid, time.time(), reason=END_REASON_UNPLUG)
                 _LOGGER.info("verify_port: Port %s update: %s", PORT_NAMES[piid], port_info)
                 await self.state.update_port(piid, port_info)
                 _invalidate()
@@ -1646,90 +2181,14 @@ class BLEManager:
                 current = port_info.get("current", 0)
                 timestamp = time.time()
                 es = self._energy_states[piid]
-                det = self._charge_detectors[piid]
 
                 # Accumulate energy (trapezoidal integration needs continuous timestamps)
                 self._energy_integrator.update(es, voltage, current, timestamp)
-                det.update(voltage * current, timestamp)
 
-                # Check gradual power decline on every push (not just low-current)
-                if es.is_charging and det.should_end_session(es, timestamp):
-                    self._low_current_count[piid] = 0
-                    sid = self._close_session(piid, timestamp, voltage, current,
-                                              END_REASON_LOW_POWER)
-                    if sid and sid > 0:
-                        _LOGGER.info("Det ended session %d (port %d, %.1fWh)",
-                                     sid, piid, es.session_wh)
-                    return  # Session ended by detector, skip normal session management
-
-                # Session management
-                active = port_info.get("active", False)
-                start_threshold = 0.1
-                if es.last_end_time and (timestamp - es.last_end_time) < 60:
-                    start_threshold = 0.3
-
-                if active and current > start_threshold and not es.is_charging:
-                    # Start new session（内存会话生命周期始终完整：即使记录关闭也
-                    # 保持实时显示；仅 DB 写入受 record_sessions 控制）
-                    self._low_current_count[piid] = 0
-                    es.is_charging = True
-                    es.session_wh = 0
-                    es.session_start = timestamp
-                    es.max_power = voltage * current
-                    es.max_current = current
-                    # 会话起点重新武装限额（always 长期有效靠此持续；once 若已消费
-                    # 则 wh<=0，此处复位标志无副作用）
-                    self._limit_fired[piid] = False
-                    if self._history:
-                        loop = asyncio.get_running_loop()
-                        protocol = port_info.get("protocol", "")
-                        if self.record_sessions:
-                            task = loop.run_in_executor(None, self._history.start_session, piid, protocol)
-                            def _on_session_start(t, p=piid):
-                                if t.exception():
-                                    _LOGGER.error("Start session failed for port %d: %s", p, t.exception())
-                                    return
-                                new_sid = t.result()
-                                if not new_sid:
-                                    _LOGGER.error("Start session failed for port %d: DB returned no sid", p)
-                                    return
-                                with self._sess_lock:
-                                    es2 = self._energy_states.get(p)
-                                    if es2 is None or not es2.is_charging or self._active_sessions.get(p) is not None:
-                                        # 回调前会话已结束/被新会话取代：闭合刚建的 DB 行
-                                        self._close_resumed_orphan(p, new_sid)
-                                        return
-                                    self._active_sessions[p] = new_sid
-                            task.add_done_callback(_on_session_start)
-                        else:
-                            # 记录关闭：不写库，使用内存伪造负 sid 保持会话
-                            # 实时显示/充电完成事件正常（负值不与真实会话冲突）
-                            self._fake_sid_counter -= 1
-                            with self._sess_lock:
-                                self._active_sessions[piid] = self._fake_sid_counter
-
-                elif not active and es.is_charging:
-                    # Port closed — end session immediately (no debounce needed)
-                    self._low_current_count[piid] = 0
-                    self._close_session(piid, timestamp, voltage, current,
-                                        END_REASON_USER_OFF)
-
-                elif current <= 0.1 and es.is_charging:
-                    # Current dropped — debounce before ending
-                    self._low_current_count[piid] += 1
-                    # Also check ChargeEndDetector for gradual power decline
-                    if self._low_current_count[piid] >= self._LOW_CURRENT_N or det.should_end_session(es, timestamp):
-                        self._low_current_count[piid] = 0
-                        sid = self._close_session(piid, timestamp, voltage, current,
-                                                  END_REASON_LOW_POWER)
-                        if sid and sid > 0:
-                            _LOGGER.info("LowCurrent ended session %d (port %d, %.1fWh)",
-                                         sid, piid, es.session_wh)
-                # Catch missed end_session: port turns off but session not tracked
-                elif current <= 0.1 and not es.is_charging and piid in self._active_sessions:
-                    sid = self._close_session(piid, timestamp, reason=END_REASON_USER_OFF)
-                    if sid and sid > 0:
-                        _LOGGER.warning("Closing stale session %d on port %d", sid, piid)
+                # 会话生命周期：唯一入口（定时器路径也走它），内部按"时间窗+功率"判定
+                self._manage_session(piid, timestamp, voltage, current,
+                                     active=port_info.get("active", False),
+                                     protocol=port_info.get("protocol", ""))
 
                 # 充电量达到阈值 → 入队关断该端口（限流断电）。
                 # 放在会话管理之后：本帧若已因拔插/低电流结束会话（is_charging
@@ -1737,8 +2196,10 @@ class BLEManager:
                 # 与用户命令共用 _handle_port_command 路径（命令循环异步执行后
                 # 才真正关断），本帧继续走完采样/曲线写入无副作用。
                 self._enforce_charge_limit(piid, timestamp)
+                # 判满断电的确认/重试（挂起后端口已停止充电，与上面的判定互不影响）
+                self._enforce_full_off(piid, timestamp)
 
-                # Record charge points (every push during active session)
+                # 记录采样点（真实会话且记录开启时；全站仅此一处 + 定时器路径）
                 if self._history and es.is_charging and piid in self._active_sessions:
                     self._record_charge_point(
                         piid, voltage, current, port_info.get("protocol", ""))

@@ -25,12 +25,22 @@ from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS
 from ble_manager import BLEManager, set_status_cache_invalidator, END_REASON_SHUTDOWN
 from energy import MAX_LIMIT_WH, LIMIT_MODES
 from history import PortHistory
-try:
-    from xiaomi_cloud import XiaomiCloudLoginError, QrCodeXiaomiCloudClient
-except ImportError:
-    XiaomiCloudLoginError = Exception
-    QrCodeXiaomiCloudClient = None
 from bemfa_client import BemfaClient, MSG_ON, MSG_OFF
+
+
+def _load_xiaomi_cloud():
+    """按需导入小米云扫码登录客户端（延迟导入）。
+
+    该模块只被 3 个低频端点使用（/api/xiaomi/login、/qr/complete、/beaconkey），
+    却会连带拉进 requests + pycryptodome —— 实测在真实进程里常驻约 6.3 MB。
+    原先放在模块顶层急切导入，等于为一个几乎不用的功能长期占内存；
+    改为首次调用时才导入（结果由 sys.modules 缓存，代价只付一次，首次请求略慢）。
+
+    返回 (QrCodeXiaomiCloudClient, XiaomiCloudLoginError)；依赖缺失时抛
+    ImportError，由调用方转成明确的接口错误。
+    """
+    from xiaomi_cloud import QrCodeXiaomiCloudClient, XiaomiCloudLoginError
+    return QrCodeXiaomiCloudClient, XiaomiCloudLoginError
 
 
 # 日志文件路径：由 cuktech_ctl.sh 通过 CUKTECH_LOG_FILE 传入（默认与脚本一致），
@@ -172,6 +182,11 @@ class Server:
             retention_days=self.config.server.history_retention_days,
         )
         self.bemfa: BemfaClient | None = None
+        # 后台任务挂在实例上而不是 aiohttp 的 app_ 里：应用启动完成后再写 app_
+        # 会触发 aiohttp 的 DeprecationWarning（"Changing state of started or
+        # joined application is deprecated"），未来版本会直接报错。
+        self._ble_task: asyncio.Task | None = None
+        self._backfill_task: asyncio.Task | None = None
         effective_level = self.config.server.log_level
         logging.getLogger().setLevel(LOG_LEVELS.get(effective_level, logging.INFO))
         env_var = os.environ.get("CUKTECH_LOG_LEVEL")
@@ -470,6 +485,9 @@ class Server:
         data = await self.state.to_dict()
         data["mqtt_connected"] = self.mqtt_client is not None and self.mqtt_client.is_connected()
         data["session_recording"] = bool(self.ble.record_sessions)
+        modes = self.ble.get_port_modes_state()
+        data["permanent_ports"] = modes["permanent_ports"]
+        data["full_off_ports"] = modes["full_off_ports"]
         self._status_cache_bytes = await asyncio.to_thread(
             lambda: json.dumps(data, ensure_ascii=False).encode()
         )
@@ -607,23 +625,21 @@ class Server:
             async with self._start_lock:
                 if self.ble.is_running:
                     return web.json_response({"ok": True, "enabled": True, "note": "already running"})
-                app_ = request.app
-                if "ble_task" in app_:
-                    old = app_["ble_task"]
-                    if old and not old.done():
-                        old.cancel()
-                        try:
-                            await old
-                        except asyncio.CancelledError:
-                            pass
-                app_["ble_task"] = asyncio.create_task(self.ble.start())
+                old = self._ble_task
+                if old and not old.done():
+                    old.cancel()
+                    try:
+                        await old
+                    except asyncio.CancelledError:
+                        pass
+                self._ble_task = asyncio.create_task(self.ble.start())
         else:
             async with self._start_lock:
                 await self.ble.request_stop()
-                app_ = request.app
-                if "ble_task" in app_ and app_["ble_task"] and not app_["ble_task"].done():
+                task = self._ble_task
+                if task and not task.done():
                     try:
-                        await asyncio.wait_for(app_["ble_task"], timeout=10)
+                        await asyncio.wait_for(task, timeout=10)
                     except (asyncio.CancelledError, asyncio.TimeoutError):
                         pass
                 # _disconnect() (在 start() 的 finally 中) 已进行完整的 Bleak 清理，
@@ -708,6 +724,100 @@ class Server:
         _LOGGER.info("Charge session recording %s", "enabled" if enabled else "disabled")
         return web.json_response({"ok": True, "enabled": enabled})
 
+    async def handle_port_modes(self, request):
+        """GET/POST /api/port-modes — 端口模式：长期供电 / 充满即停。
+
+        两者都持久化在 history.db 的 meta 表（单源，随数据库备份/清除），
+        即时生效、无需重启。
+
+        - permanent 长期供电设备：该端口不写充电曲线点（charge_points），曲线只
+          留在内存滑动窗口里供详情浮层查看；会话行与耗能统计照常记录。
+        - full_off 充满即停：复用会话检测的"判满"结果（平均功率 <1W 持续 10 分钟，
+          或连续 300 帧低电流）在会话自然结束时自动关闭该端口。和限额一样带模式：
+          once 命中即消费（一次），always 每次会话重新生效。
+
+        互斥：长期供电端口不允许开即停（否则把长期供电的负载断掉，语义自相矛盾）。
+        """
+        if request.method == "GET":
+            state = self.ble.get_port_modes_state()
+            state["ok"] = True
+            return web.json_response(state)
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+
+        port = str(data.get("port", "")).strip().lower()
+        if port not in PORT_BITS:
+            return web.json_response({"ok": False, "error": f"unknown port: {port}"}, status=400)
+        permanent = data.get("permanent")
+        full_off = data.get("full_off")
+        if permanent is None and full_off is None:
+            return web.json_response(
+                {"ok": False, "error": "permanent or full_off required"}, status=400)
+        for key, value in (("permanent", permanent), ("full_off", full_off)):
+            if value is not None and not isinstance(value, bool):
+                return web.json_response(
+                    {"ok": False, "error": f"{key} must be boolean"}, status=400)
+
+        current = self.ble.get_port_modes_state()
+        permanent_ports = set(current["permanent_ports"])
+        full_off_modes = dict(current["full_off_ports"])
+        if permanent is not None:
+            if permanent:
+                permanent_ports.add(port)
+                full_off_modes.pop(port, None)   # 互斥：设为长期供电即清掉该口即停
+            else:
+                permanent_ports.discard(port)
+        if full_off is not None:
+            if full_off and port in permanent_ports:
+                return web.json_response(
+                    {"ok": False,
+                     "error": f"port {port} is permanent power, full_off is not applicable"},
+                    status=400)
+            if full_off:
+                mode_raw = data.get("mode")
+                if mode_raw is None:
+                    full_off_modes[port] = self.ble.FULL_OFF_DEFAULT_MODE
+                else:
+                    mode = str(mode_raw).strip().lower()
+                    if mode not in LIMIT_MODES:
+                        return web.json_response(
+                            {"ok": False, "error": f"mode must be one of {LIMIT_MODES}"},
+                            status=400)
+                    full_off_modes[port] = mode
+            else:
+                full_off_modes.pop(port, None)
+
+        loop = asyncio.get_running_loop()
+        if self.history:
+            # 同步 sqlite 写放线程池，避免阻塞事件循环
+            await loop.run_in_executor(
+                None, self.history.set_permanent_ports, sorted(permanent_ports))
+            await loop.run_in_executor(
+                None, self.history.set_full_off, full_off_modes)
+        # 长期供电端口不保留限额（与即停互斥同理）：登记为长期供电时把该口限额清零
+        # 并落库——否则界面上"限额已设"与实际行为不一致（看着设了却永不断电）。
+        # 必须在 set_permanent_ports 之前读快照：那个方法也会在内存里清零，先设就查不到。
+        limits = self.ble.get_charge_limits_state()
+        stale = [name for name in permanent_ports if limits.get(name, {}).get("wh", 0) > 0]
+        if stale:
+            merged = {name: {"wh": e["wh"], "mode": e["mode"]} for name, e in limits.items()}
+            for name in stale:
+                merged[name]["wh"] = 0.0
+            if self.history:
+                await loop.run_in_executor(None, self.history.set_charge_limits, merged)
+            self.ble.set_charge_limits(merged)
+            _LOGGER.info("Charge limits cleared for permanent power ports: %s", sorted(stale))
+        self.ble.set_permanent_ports(permanent_ports)
+        self.ble.set_full_off(full_off_modes)
+        self.invalidate_status_cache()
+        state = self.ble.get_port_modes_state()
+        _LOGGER.info("Port modes updated: permanent=%s full_off=%s",
+                     state["permanent_ports"], state["full_off_ports"])
+        state["ok"] = True
+        return web.json_response(state)
+
     async def handle_web_language(self, request):
         """GET/POST /api/web-language — Web UI language (DB meta, instant).
 
@@ -790,6 +900,11 @@ class Server:
             if not math.isfinite(wh) or wh < 0 or wh > MAX_LIMIT_WH:
                 return web.json_response(
                     {"ok": False, "error": f"port {port}: wh must be finite and within 0-{MAX_LIMIT_WH:g}"},
+                    status=400)
+            if wh > 0 and self.ble.is_permanent_name(port):
+                return web.json_response(
+                    {"ok": False,
+                     "error": f"port {port} is permanent power, charge limit is not applicable"},
                     status=400)
             if mode_raw is None:
                 mode = None   # 保留该端口既有 mode
@@ -1014,6 +1129,7 @@ class Server:
                         s["avg_current"] = round(port_state.current, 2)
                     s["duration_sec"] = dur_sec
                     s["is_active"] = True
+                    s["permanent"] = bool(ld.get("permanent"))
                     matched = True
                     break
             if not matched and sid:
@@ -1033,6 +1149,7 @@ class Server:
                     "avg_voltage": avg_v, "avg_current": avg_i,
                     "duration_sec": dur_sec,
                     "protocol": port_state.protocol if port_state else "", "is_active": True,
+                    "permanent": bool(ld.get("permanent")),
                 })
                 total += 1
 
@@ -1041,6 +1158,11 @@ class Server:
         for s in sessions:
             if s.get("id") not in live_sids:
                 s["is_active"] = False
+            # 只有"正在供着电的常供会话"才mark：历史行可能是标记常供之前录的，
+            # 那时曲线是照常落库的，标成常供会让详情看起来像"曲线丢了"。
+            s["permanent"] = bool(s.get("permanent")) and bool(s.get("is_active"))
+            if s["permanent"] and s.get("port") not in self.ble.permanent_ports:
+                s["permanent"] = False
 
         return web.json_response({
             "sessions": sessions,
@@ -1051,17 +1173,82 @@ class Server:
         })
 
     async def handle_session_points(self, request):
-        """GET /api/sessions/{id}/points?downsample=600"""
+        """GET /api/sessions/{id}/points?downsample=600[&window=3600]
+
+        普通会话：DB 里的全量采样点（形状不变）。
+        长期供电会话：曲线点不落库，改从内存窗口取；`window` 是窗口宽度（秒，
+        缺省/<=0 = 内存保留时长 1 小时＝能给的都给了），`to` 是窗口右端
+        （缺省=最新）。界面已不再提供窗口长度/滑动控件，这两个参数保留给
+        脚本/调试按需取更窄的一段。两种会话都附带整个会话的 stats
+        （能耗/峰值/时长），前端统计块一律用它——窗口只影响曲线，不影响统计。
+        """
         sid = int(request.match_info["id"])
         target = int(request.query.get("downsample", "0"))
+        # 默认窗口 = 内存保留时长（1 小时）：常供会话的曲线只在内存里留这么久，
+        # 界面也不再提供"窗口长度"选择，所以缺省就应当是"能给的都给了"。
+        # 读不到属性时退回 3600，绝不因为一个缺省值把整个接口打成 400。
+        try:
+            default_window = float(self.ble.PERMANENT_RETAIN_SEC)
+        except (AttributeError, TypeError, ValueError):
+            default_window = 3600.0
+        try:
+            window_sec = float(request.query.get("window", str(default_window)))
+            to_raw = request.query.get("to")
+            to_ts = float(to_raw) if to_raw else None
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"ok": False, "error": "window/to must be numbers"}, status=400)
+        if window_sec <= 0:
+            window_sec = float(self.ble.PERMANENT_RETAIN_SEC)
+
         loop = asyncio.get_running_loop()
+        win = self.ble.get_permanent_session_window(sid, window_sec, to_ts)
+        if win is not None:
+            points = win["points"]
+            if target > 0 and len(points) > target:
+                from downsample import lttb_downsample
+                points = await loop.run_in_executor(
+                    None, lttb_downsample, points, target)
+            return web.json_response({**win, "points": points})
+
         points = await loop.run_in_executor(
             None, self.history.get_session_points, sid)
         if target > 0 and len(points) > target:
             from downsample import lttb_downsample
             points = await loop.run_in_executor(
                 None, lttb_downsample, points, target)
-        return web.json_response({"points": points})
+
+        resp = {"points": points}
+        if not points:
+            # 长期供电会话不落曲线点：明确告诉前端"是没存曲线"，不是加载失败
+            resp["no_curve"] = True
+        session = await loop.run_in_executor(None, self.history.get_session, sid)
+        # 服务端是常供与否的唯一权威，且必须**每次都给出**（含 false）：
+        # 端口中途退出常供后，前端若只"见到 true 才置位"会一直挂着旧标题与
+        # "没有曲线"提示。DB 回落分支同样要回答这个问题。
+        resp["permanent"] = bool(session and session.get("port") in self.ble.permanent_ports)
+        if session:
+            # 会话级统计（前端统计块优先用它，避免"只按窗口点现算"的偏差）
+            duration = session.get("duration_sec") or 0
+            if not session.get("end_time"):
+                duration = max(1, int(time.time() - (session.get("start_time") or time.time())))
+            resp["stats"] = {
+                "session_id": sid,
+                "port": session.get("port"),
+                "start_time": session.get("start_time"),
+                "end_time": session.get("end_time"),
+                "total_wh": round(session.get("total_wh") or 0, 4),
+                "avg_power_w": session.get("avg_power_w") or 0,
+                "peak_power_w": session.get("peak_power_w") or 0,
+                "avg_voltage": session.get("avg_voltage") or 0,
+                "avg_current": session.get("avg_current") or 0,
+                "duration_sec": duration,
+            }
+            if session.get("port") in self.ble.permanent_ports:
+                # 常供端口不落曲线点：这里只有"活跃但内存窗口刚起步/已结束"两种情况，
+                # 统计照给；permanent 标记由内存窗口分支负责，历史行不标。
+                resp["window"] = None
+        return web.json_response(resp)
 
     async def handle_session_export(self, request):
         """GET /api/sessions/{id}/export — 单个会话的采样点 CSV（会话详情浮层的"导出"）。
@@ -1384,6 +1571,14 @@ class Server:
         if server not in ("cn", "de", "us", "ru", "tw", "sg", "in", "i2"):
             return web.json_response({"ok": False, "error": "无效的服务器区域"}, status=400)
 
+        # 延迟导入：requests/pycryptodome 只在真正发起扫码登录时才加载
+        try:
+            QrCodeXiaomiCloudClient, XiaomiCloudLoginError = _load_xiaomi_cloud()
+        except ImportError as e:
+            _LOGGER.error("Xiaomi cloud client unavailable: %s", e)
+            return web.json_response(
+                {"ok": False, "error": f"小米云登录依赖缺失: {e}"}, status=503)
+
         try:
             import secrets as _secrets
             loop = asyncio.get_running_loop()
@@ -1425,6 +1620,14 @@ class Server:
         if not entry:
             return web.json_response({"ok": False, "error": "会话已过期，请重新获取二维码"}, status=400)
         client, _timer = entry
+
+        # 延迟导入（此时客户端实例已存在，模块通常已加载，仅取异常类型）
+        try:
+            XiaomiCloudLoginError = _load_xiaomi_cloud()[1]
+        except ImportError as e:
+            _LOGGER.error("Xiaomi cloud client unavailable: %s", e)
+            return web.json_response(
+                {"ok": False, "error": f"小米云登录依赖缺失: {e}"}, status=503)
 
         try:
             loop = asyncio.get_running_loop()
@@ -1472,6 +1675,14 @@ class Server:
         if not entry:
             return web.json_response({"ok": False, "error": "会话已过期，请重新扫码"}, status=400)
         client, _timer = entry
+
+        # 延迟导入（此时客户端实例已存在，模块通常已加载，仅取异常类型）
+        try:
+            XiaomiCloudLoginError = _load_xiaomi_cloud()[1]
+        except ImportError as e:
+            _LOGGER.error("Xiaomi cloud client unavailable: %s", e)
+            return web.json_response(
+                {"ok": False, "error": f"小米云登录依赖缺失: {e}"}, status=503)
 
         try:
             loop = asyncio.get_running_loop()
@@ -1647,10 +1858,15 @@ async def request_size_limit_middleware(request, handler):
 
 @web.middleware
 async def request_timeout_middleware(request, handler):
-    """Apply a per-request timeout (30s for API, 120s for SSE)."""
+    """Apply a per-request timeout (30s for API).
+
+    SSE（/api/events）是长连接，**不设超时**：原先给它 120s 超时，服务端每 2 分钟
+    主动掐断一次，浏览器只能不停重连（真机日志 32.5 小时里 145 次连接 / 157 次断开）。
+    连接寿命改由 handle_sse 自己维持（keepalive 心跳 + 客户端断开时退出）。
+    """
     if request.path == "/api/events":
-        timeout = 120.0
-    elif request.path.startswith("/api/"):
+        return await handler(request)
+    if request.path.startswith("/api/"):
         timeout = 30.0
     else:
         # Static files / HTML — no timeout
@@ -1729,6 +1945,8 @@ app.router.add_get("/api/web-language", lambda r: get_server().handle_web_langua
 app.router.add_post("/api/web-language", lambda r: get_server().handle_web_language(r))
 app.router.add_get("/api/charge-limits", lambda r: get_server().handle_charge_limits(r))
 app.router.add_post("/api/charge-limits", lambda r: get_server().handle_charge_limits(r))
+app.router.add_get("/api/port-modes", lambda r: get_server().handle_port_modes(r))
+app.router.add_post("/api/port-modes", lambda r: get_server().handle_port_modes(r))
 app.router.add_get("/api/chart", lambda r: get_server().handle_chart(r))
 app.router.add_get("/api/statistics/{port}", lambda r: get_server().handle_statistics(r))
 app.router.add_get("/api/export/{port}", lambda r: get_server().handle_export(r))
@@ -1763,6 +1981,12 @@ async def on_startup(app_):
             "bemfa": s.bemfa.quality() if s.bemfa else {"score": 0, "uptime": 0, "ping_lost": 0, "reconnect_count": 0},
         })
         s.history.connect()
+        # 上一次进程被强杀/崩溃时可能留下 end_time 为空的会话行：历史列表会永远
+        # 把它当"充电中"。正常关机路径已收尾，这里只兜底遗留（结束时刻取最后采样点）。
+        try:
+            s.history.close_stale_sessions()
+        except Exception as e:
+            _LOGGER.error("Failed to close stale sessions: %s", e)
         s.ble.set_history(s.history)
         # 加载充电会话记录开关（history.db meta 单源，默认开启，即时切换无需重启）
         s.ble.record_sessions = s.history.get_session_recording()
@@ -1771,12 +1995,16 @@ async def on_startup(app_):
         # 拔出/充电自然结束）或"触发关断"时消费，因此这里直接读取、不做任何清零。
         # 代价：进程被强杀期间若用户已拔插（未被观测到），限额会留到下次充电。
         s.ble.set_charge_limits(s.history.get_charge_limits())
+        # 加载端口模式（长期供电 / 充满即停，history.db meta 单源）。
+        # 顺序：先常供再即停 —— set_permanent_ports 会剔除同口的即停标记（互斥）。
+        s.ble.set_permanent_ports(s.history.get_permanent_ports())
+        s.ble.set_full_off(s.history.get_full_off())
         await s.setup_mqtt()
         if s.mqtt_client:
             s.setup_mqtt_subscriptions()
         if s.config.bemfa.enabled:
             await s.setup_bemfa()
-        app_["ble_task"] = asyncio.create_task(s.ble.start())
+        s._ble_task = asyncio.create_task(s.ble.start())
         # 回填历史会话的均压/均流：旧版本闭合会话时落库的是"断电瞬间"的瞬时值
         # (≈0)，导致历史摘要恒为 0。有采样点的已闭合会话重算一次。
         # 放在 MQTT/BLE 起来之后再跑（fire-and-forget），避免维护性任务拖慢就绪；
@@ -1790,7 +2018,7 @@ async def on_startup(app_):
             except Exception as e:
                 _LOGGER.warning("Session avg backfill failed: %s", e)
 
-        app_["backfill_task"] = asyncio.create_task(_backfill_session_avg())
+        s._backfill_task = asyncio.create_task(_backfill_session_avg())
 
 
 async def on_shutdown(app_):
@@ -1812,7 +2040,7 @@ async def on_shutdown(app_):
             await asyncio.wait_for(s.bemfa.stop(), timeout=3.0)
         except Exception:
             pass
-    ble_task = app_.get("ble_task")
+    ble_task = s._ble_task
     if ble_task:
         ble_task.cancel()
         try:
@@ -1822,7 +2050,7 @@ async def on_shutdown(app_):
     # 回填任务同样要收尾：它跑在 executor 线程里访问 history 连接，
     # 若不取消/等待就 close() 连接，会与在途查询/写入竞争（报错且工作静默丢弃，
     # 事件循环还可能报 "Task was destroyed but it is pending"）。
-    backfill_task = app_.get("backfill_task")
+    backfill_task = s._backfill_task
     if backfill_task and not backfill_task.done():
         backfill_task.cancel()
         try:

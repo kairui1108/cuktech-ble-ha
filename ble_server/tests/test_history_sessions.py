@@ -327,3 +327,68 @@ class TestSessionCsvExport:
         src = inspect.getsource(ha_server)
         assert 'add_get("/api/sessions/{id}/export"' in src
         assert "handle_session_export" in src
+
+
+class TestCloseStaleSessions:
+    """上次进程被强杀/崩溃遗留的未闭合会话，启动时要能收尾。"""
+
+    def test_closes_open_session_at_last_point(self, history):
+        """有能量的遗留会话：结束时刻取最后一个采样点，能量按点现算。
+
+        进行中的会话行 total_wh/peak 还是 0（只在 end_session 时才写），
+        所以收尾必须按采样点现算，否则会被当成 0Wh 空行删掉。
+        """
+        sid = history.start_session(1, protocol="PD")
+        t0 = time.time() - 600
+        with history._db_lock:
+            # 把会话起点也挪到过去，让采样点落在 start_time 之后（真实时序）
+            history._conn.execute(
+                "UPDATE charge_sessions SET start_time = ? WHERE id = ?", (t0, sid))
+            for k in range(11):        # 10 段 × 60s × 9W ≈ 1.5Wh
+                history._conn.execute(
+                    """INSERT INTO charge_points
+                       (session_id, timestamp, voltage, current, power, protocol)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (sid, t0 + k * 60, 9.0, 1.0, 9.0, "PD"))
+            history._conn.commit()
+        last = t0 + 600
+
+        assert history.close_stale_sessions() == 1
+
+        sess = history.get_session(sid)
+        assert sess["end_time"] is not None, "遗留会话必须被收尾"
+        # 结束时刻取最后一个采样点（不是"启动时刻"）
+        assert abs(sess["end_time"] - last) < 1.0
+        assert sess["duration_sec"] == pytest.approx(600, abs=2)
+        assert sess["total_wh"] == pytest.approx(1.5, abs=0.05), "能量按采样点现算"
+        assert sess["peak_power_w"] == pytest.approx(9.0, abs=0.01)
+
+    def test_closed_sessions_are_untouched(self, history):
+        sid = history.start_session(1)
+        history.record_charge_point(sid, 9.0, 1.0, 9.0, "PD")
+        history.end_session(sid, 1.0, 9.0, 9.0, 1.0, 600)
+        before = history.get_session(sid)["end_time"]
+
+        assert history.close_stale_sessions() == 0
+        assert history.get_session(sid)["end_time"] == before
+
+    def test_zero_energy_open_session_is_deleted(self, history):
+        """没有能量的遗留行按常规口径删除，不留 0Wh 空行。"""
+        sid = history.start_session(1)
+        history.flush()
+        assert history.close_stale_sessions() == 1
+        assert history.get_session(sid) is None
+
+    def test_session_without_points_ends_at_start_time(self, history):
+        """有能量但一个采样点都没有（例如刚开就崩）：结束时刻退回 start_time。"""
+        sid = history.start_session(1)
+        history._conn.execute(
+            "UPDATE charge_sessions SET total_wh = 1.5 WHERE id = ?", (sid,))
+        history._conn.commit()
+        start = history.get_session(sid)["start_time"]
+
+        assert history.close_stale_sessions() == 1
+        sess = history.get_session(sid)
+        assert sess["end_time"] is not None
+        assert sess["duration_sec"] == 0
+        assert abs(sess["end_time"] - start) < 1.0
