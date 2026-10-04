@@ -64,6 +64,10 @@ function makeEl() {
             if (p === 'dataset') return {};
             if (p === 'classList') return { add() {}, remove() {}, toggle() {}, contains() { return false; } };
             if (p === 'children' || p === 'options') return [];
+            // 子查询：桩元素里没有子节点，返回 null/[]（与真实 DOM 的"没匹配到"一致）。
+            // 卡头状态点就是用 card.querySelector('.charge-limit-dot') 拿的。
+            if (p === 'querySelector') return () => null;
+            if (p === 'querySelectorAll') return () => [];
             return makeNoop();
         },
         set() { return true; },
@@ -101,6 +105,10 @@ function makeTrackedEl(id) {
         getAttribute(k) { return k in attrs ? attrs[k] : null; },
         removeAttribute(k) { delete attrs[k]; },
         addEventListener(type, fn) { (handlers[type] = handlers[type] || []).push(fn); },
+        // 卡头状态点是 card.querySelector('.charge-limit-dot') 拿的：桩里没有子节点，
+        // 按"没匹配到"返回 null（真实 DOM 同义），免得被测代码因为桩缺方法而抛错。
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
         // 测试用后门：把事件直接派发给注册的处理函数
         fire(type, ev) { (handlers[type] || []).forEach(fn => fn(ev)); },
         _classes: classes,
@@ -243,6 +251,52 @@ const swipe = (dx, dy) => {
     check(els.limitDot_c1._classes.has('is-current') && !els.limitDot_c2._classes.has('is-current'),
           '只有栈顶那个点是 is-current');
     check(els.limitDot_c2.getAttribute('aria-label').length > 1, 'aria-label 带上了状态文案');
+
+    console.log('\n-- 模式下拉：改了还没保存时，轮询不能把它打回去 --');
+    els.limitMode_c1.value = 'once';
+    els.limitMode_c1.dataset.touched = '1';        // onchange 里置的保护位
+    ctx.ChargeLimit.state.limits.c1 = { wh: 0, mode: 'always', session_wh: 0, is_charging: false, fired: false };
+    peek(ctx, 'updateChargeLimitUI()');
+    eq(els.limitMode_c1.value, 'once', '保护位置位后，轮询不覆盖用户的选择');
+    els.limitMode_c1.dataset.touched = '';         // 保存成功 / 后端值追上后解除保护
+    peek(ctx, 'updateChargeLimitUI()');
+    eq(els.limitMode_c1.value, 'always', '解除保护后恢复跟随后端值');
+    // 后端值本来就等于用户选择时，保护位应自动解除（否则会永久卡住不同步）
+    els.limitMode_c1.value = 'always';
+    els.limitMode_c1.dataset.touched = '1';
+    peek(ctx, 'updateChargeLimitUI()');
+    eq(els.limitMode_c1.dataset.touched, '', '选择与后端一致时自动解除保护');
+
+    console.log('\n-- 没有能量限额时，模式下拉显示"自动"自己的模式 --');
+    ctx.ChargeLimit.modes.full_off_ports = { c1: 'always' };
+    ctx.ChargeLimit.state.limits.c1 = { wh: 0, mode: 'once', session_wh: 0, is_charging: false, fired: false };
+    peek(ctx, 'updateChargeLimitUI()');
+    eq(els.limitMode_c1.value, 'always',
+       '只开了自动：下拉跟自动的模式走（否则刷新后被打回限额的旧模式）');
+    ctx.ChargeLimit.state.limits.c1 = { wh: 30, mode: 'once', session_wh: 5, is_charging: true, fired: false };
+    ctx.ChargeLimit.modes.full_off_ports = { c1: 'always' };
+    peek(ctx, 'updateChargeLimitUI()');
+    eq(els.limitMode_c1.value, 'once', '有限额时以限额的模式为准（下拉紧挨着 Wh 输入）');
+    ctx.ChargeLimit.modes.full_off_ports = {};
+
+    console.log('\n-- 只改模式（没填阈值）也要能存下来 --');
+    let posted = null;
+    ctx.fetch = async (url, opts) => {
+        posted = { url, body: JSON.parse(opts.body) };
+        return { ok: true, status: 200, json: async () => ({ ok: true, limits: {} }) };
+    };
+    ctx.ChargeLimit.state.limits.c1 = { wh: 0, mode: 'always', session_wh: 0, is_charging: false, fired: false };
+    els.limitWh_c1.value = '';
+    els.limitMode_c1.value = 'once';
+    await peek(ctx, "applyChargeLimit('c1')");
+    eq(posted && posted.body, { port: 'c1', wh: 0, mode: 'once' },
+       '空阈值 + 改了模式：只提交模式（wh=0，不影响限额值）');
+    // 阈值被改空但原本有限额时不能走这条路（会静默关掉限额）
+    posted = null;
+    els.limitMode_c1.value = 'always';
+    ctx.ChargeLimit.state.limits.c1 = { wh: 30, mode: 'once', session_wh: 5, is_charging: true, fired: false };
+    await peek(ctx, "applyChargeLimit('c1')");
+    eq(posted, null, '原本有限额时清空阈值仍然报错，不会静默关掉限额');
 
     console.log('\n-- 点指示点直接跳到目标端口 --');
     const flown = top();                        // 跳页时被换下的是旧栈顶

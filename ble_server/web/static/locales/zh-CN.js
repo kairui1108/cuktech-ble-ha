@@ -8,6 +8,7 @@
     global.I18N_RESOURCES['zh-CN'] = {
         // ── Common ──
         common: {
+            initPartial: '部分界面初始化失败，请刷新页面',
             connect: '连接设备',
             disconnect: '断开设备',
             restart: '重启',
@@ -149,6 +150,8 @@
             unit: 'Wh',
             placeholder: 'Wh',
             off: '未启用',
+            enabled: '已启用',
+            used: '已充 {{used}} Wh',
             once: '仅一次',
             always: '长期有效',
             fired: '已触发',
@@ -156,8 +159,30 @@
             set: '设置',
             clear: '关闭',
             saved: '限额已保存',
+            modeSaved: '模式已保存',
             cleared: '已关闭该端口限额',
-            saveFailed: '设置失败：{{msg}}'
+            saveFailed: '设置失败：{{msg}}',
+            // 两枚紧凑开关：卡面只放这几个字，细节走 title 提示
+            permanent: '长期供电',
+            permanentHint: '长期供电：不记曲线、不被限额关闭',
+            permanentOff: '点击关闭长期供电',
+            permanentConfirm: '再点一次确认',
+            permanentClearsLimit: '开启长期供电会清除该端口限额，再点一次确认',
+            permanentAvg: '平均功率',
+            permanentAvgLast: '上次平均功率',
+            permanentOut: '本次已输出',
+            permanentLastOut: '上次输出',
+            permanentNoOutput: '暂无输出',
+            permanentDurLabel: '已持续',
+            permanentDurMin: '{{m}}分钟',
+            permanentDurHour: '{{h}}小时{{m}}分',
+            permanentDurDay: '{{d}}天{{h}}小时',
+            permanentDurDayOnly: '{{d}}天',
+            permanentNote: '不记曲线，耗电统计照常',
+            fullOff: '自动',
+            fullOffHint: '识别到充满电后自动关闭该端口',
+            fullOffFired: '已充满断电',
+            permanentConflict: '长期供电端口不适用自动断电'
         },
 
         // ── Charge history ──
@@ -191,7 +216,10 @@
             peakPowerUnit: '峰功率 W',
             avgVoltageUnit: '均电压 V',
             avgCurrentUnit: '均电流 A',
-            yesterdayTime: '昨天 {{time}}'
+            yesterdayTime: '昨天 {{time}}',
+            // 长期供电（常供）相关：记录列表里的标记 + 详情浮层的滑动窗口
+            permanentWindow: '长期供电',
+            noCurve: '此会话没有采样曲线，仅保留统计'
         },
 
         // ── Energy overview card (用电统计) ──
