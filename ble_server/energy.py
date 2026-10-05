@@ -111,19 +111,36 @@ def _median(values) -> float:
     return statistics.median(values) if values else 0.0
 
 
+# ── "充满"判定的阈值（单一来源：tail_threshold_w 与 SessionStartGate 都用它）──
+# T = max(TAIL_MIN_W, min(TAIL_CAP_W, TAIL_PEAK_RATIO × 会话充电峰值))
+#
+# 上限为什么是 0.6W 而不是 0.5W：这条线是**绝对功率**，而充电器的**电流上报步进
+# 是绝对的**（实机 C1 是 0.1A/档）。5V/PPS 档下 0.1A × 5.1V = 0.51W 恰好跨过 0.5W，
+# 而判据是严格大于——设备最典型的涓流（0/0.1A 交替）于是有一半样本被判成"仍在充电"，
+# 收敛计时被 120s 波动预算反复清零，会话永远判不满（实机 C1 回放：3 小时 0 次判满）。
+# 0.6W 让它明确落在阈值内侧，同时 0.15A（0.75W）仍算在充电；20V 档 0.6W ≈ 0.03A，
+# 与旧值几乎无差别（这类大功率设备的尾巴是 1W 量级，本来就不靠这条线判满）。
+TAIL_MIN_W = 0.05        # 噪声地板（≈0.01A@5V）：阈值再低也不低于它
+TAIL_CAP_W = 0.6         # 阈值上限
+TAIL_PEAK_RATIO = 0.20   # 相对项：20% × 会话充电峰值（小功率设备靠它定阈值）
+
+
 def tail_threshold_w(peak_power: float) -> float:
-    """"充满"的功率阈值：T = max(0.05W, min(0.5W, 20% × 充电峰值))。
+    """"充满"的功率阈值：T = max(TAIL_MIN_W, min(TAIL_CAP_W, 20% × 充电峰值))。
 
     判据的物理依据：**真满时功率是逐渐逼近 0 的**（CC→CV 收敛后设备几乎不再取电），
     所以这条线只取"接近 0"的量级：
-      · 大功率设备 → 0.5W 上限（20V 下 ≈0.025A，仍在 0.01A 上报精度内可分辨）；
+      · 大功率设备 → TAIL_CAP_W 上限（0.6W：5V 下 0.1A 的涓流要能判满，见上方说明）；
       · 小功率设备（5V/0.5~1W 耳机）→ 按 20% 自身比例：0.1 / 0.2W；
       · 0.05W 是噪声地板。
     **偶发抖动（例如 300s 窗口里偶尔跳到 1.5W）不靠阈值兜**：交给
     20s/180s 中位数 + 波动预算(GRACE_SEC) + 与阈值解耦的回升门槛(RECOVER_FLOOR_W)，
     所以"偶尔跳一下"既不会让判据失效，也不会被误判成充满。
+
+    注意：阈值只由本模块的 TAIL_* 常量决定（历史上类里另有一份同名常量，从不参与
+    计算，改它没有任何效果——已删除，避免再次误导）。
     """
-    return max(0.05, min(0.5, 0.20 * (peak_power or 0.0)))
+    return max(TAIL_MIN_W, min(TAIL_CAP_W, TAIL_PEAK_RATIO * (peak_power or 0.0)))
 
 
 class ChargeSessionDetector:
@@ -139,10 +156,10 @@ class ChargeSessionDetector:
     新判据（全部按秒计算，与采样率无关）：
       · p_fast = 最近 FAST_SEC 的功率中位数（中位数天然抗单帧尖峰）
       · p_slow = 最近 SLOW_SEC 的功率中位数（判趋势是否已经平下来）
-      · 阈值 T_low = max(ABS_TAIL_MIN_W, min(TAIL_CAP_W, PEAK_RATIO × p_base))，
-        形状要点：2.5W 是**上限**而不是地板——大功率设备"充满后仅剩系统负载"
-        （1~2W）靠它兜住；小功率设备（5V/0.5~1W 的耳机）按自身比例算，阈值降到
-        0.1~0.2W，否则会出现"还在充就被判满"。0.05W 只是噪声地板。
+      · 阈值 T_low = max(TAIL_MIN_W, min(TAIL_CAP_W, TAIL_PEAK_RATIO × p_base))
+        （模块常量，见 tail_threshold_w）：上限而不是地板——大功率设备"充满后仅剩
+        系统负载"（1~2W）由回升门槛兜住；小功率设备（5V/0.5~1W 的耳机）按自身比例
+        算，阈值降到 0.1~0.2W，否则会出现"还在充就被判满"。
       · 波动豁免：考察窗内"超阈值(OVER_MULT×T_low)时间占比" ≤ OVER_RATIO，
         且最近 RECENT_SEC 内没有连续 ≥ RECOVER_SEC 的回升 → 仍视为收敛；
         真正恢复充电（持续回升）→ 收敛计时清零重数
@@ -156,11 +173,9 @@ class ChargeSessionDetector:
     ASSESS_SEC = 300.0           # 波动占比考察窗
     RECENT_SEC = 90.0            # "回升"只在这段内考察（避免几分钟前的尖峰长期阻塞）
     HOLD_SEC = 600.0             # 收敛需连续保持多久 → 判定结束（可配）
-    ABS_TAIL_MIN_W = 0.05        # 噪声地板（≈0.01A@5V）：阈值再低也不低于它
-    TAIL_CAP_W = 0.5             # 阈值上限：真满时功率是"逐渐逼近 0"的，
-                                 #   所以这条线只取"接近 0"的量级（20V 下 ≈0.025A，
-                                 #   仍在充电器 0.01A 上报精度内可分辨）；抖动不靠它兜。
-    PEAK_RATIO = 0.20            # 相对项：20% × 会话充电峰值（小功率设备靠它定阈值）
+    # 阈值的三个常量在模块级（TAIL_MIN_W / TAIL_CAP_W / TAIL_PEAK_RATIO），由
+    # tail_threshold_w() 统一计算：这里**不再**放同名常量——历史上放了一份却从不
+    # 参与计算，改它没有任何效果（排查"为什么不判满"时被误导过一次）。
     GRACE_SEC = 120.0            # HOLD 窗口内容忍的"非收敛"总时长（≈20%，偶发波动豁免）
     RECOVER_FLOOR_W = 5.0        # "充电恢复"的绝对门槛：几瓦的屏幕/系统负载波动不算恢复
     RECOVER_SEC = 45.0           # 连续超过恢复门槛该秒数 → 判定充电恢复，计时清零

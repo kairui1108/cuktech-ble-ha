@@ -732,8 +732,11 @@ class Server:
 
         - permanent 长期供电设备：该端口不写充电曲线点（charge_points），曲线只
           留在内存滑动窗口里供详情浮层查看；会话行与耗能统计照常记录。
-        - full_off 充满即停：复用会话检测的"判满"结果（平均功率 <1W 持续 10 分钟，
-          或连续 300 帧低电流）在会话自然结束时自动关闭该端口。和限额一样带模式：
+        - full_off 充满即停：复用会话检测的"判满"结果——20s/180s 两个功率中位数都低于
+          T_low = max(0.05W, min(0.6W, 20%×本次会话峰值))，且该收敛状态连续保持
+          HOLD_SEC=600s（期间偶发非收敛累计不超过 GRACE_SEC=120s；出现连续 ≥45s
+          超过 max(5W, 2×T_low) 则视为"恢复充电"，计时清零重来）。判满后会话以
+          low_power 自然结束，随即自动关闭该端口。和限额一样带模式：
           once 命中即消费（一次），always 每次会话重新生效。
 
         互斥：长期供电端口不允许开即停（否则把长期供电的负载断掉，语义自相矛盾）。
@@ -1975,6 +1978,10 @@ async def on_startup(app_):
         s.loop = asyncio.get_running_loop()
         set_status_cache_invalidator(s.invalidate_status_cache)
         s.ble.set_sse_emitter(s.sse)
+        # 认证连续失败到上限时让 BLE 层回调这里重启：Linux 走 os.execv（本机没有
+        # systemd/supervisor 也能自愈），win32 干净退出交给拉起方 —— 具体分流在
+        # _restart() 里。不注册的话 BLE 层只能 os._exit(1) 等外部管理器，而本机没有。
+        s.ble.set_restart_handler(s._restart)
         s.ble.set_quality_provider(lambda: {
             "ble": s.ble.connection_quality(),
             "mqtt": s.mqtt_quality(),

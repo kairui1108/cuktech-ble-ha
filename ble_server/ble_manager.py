@@ -68,6 +68,8 @@ class BLEManager:
     CIRCUIT_BREAKER_MAX_FAIL = 20  # consecutive failures before cooling off
     CIRCUIT_BREAKER_COOLDOWN = 300  # 5 minutes
     MAX_AUTH_FAILURES = 15  # consecutive auth failures before restarting process
+    # 认证卡死重启前，等这么久把"正在重启"状态发出去（MQTT/SSE 一次投递的时间）
+    AUTH_STUCK_NOTIFY_SEC = 2.0
     LIMIT_RETRY_SEC = 15    # 限额关断命令未生效的重试窗口（命令超时 10s）
     # 连续解密失败多少次判定会话密钥失步并触发重连。设备偶尔会发噪声帧/控制帧,
     # 成功解密即清零；多帧子帧错位修好后这里的失败率应显著下降（见 P2）。
@@ -77,8 +79,14 @@ class BLEManager:
     # 采样"新鲜度"：定时器路径只在超过这段时间没有推送时，才代表该口的真实状态
     # （否则会用同一份陈旧 V/I 重复喂判定）
     SAMPLE_FRESH_SEC = 2.0
-    # "端口无负载"去抖：单帧 V/I=0（推送间隙/固件瞬时不上报）绝不能立刻结束会话
-    NO_LOAD_DEBOUNCE_SEC = 3.0
+    # "端口无负载"去抖：单帧 V/I=0（推送间隙/固件瞬时不上报）绝不能立刻结束会话。
+    # 取 15s 由实测定：2 天 1Hz 采样里，会话内"零电流后恢复"的停顿 C1 最长 14s
+    # （86 次中 ≥3s 有 32 次、≥8s 只剩 2 次），3s 会把 34 次停顿判成会话结束，
+    # 8s 仍剩 2 次，15s 归零。代价只是"设备确实停止取电/拔出"的识别晚十几秒：
+    # C1/C2 的拔出另有推送帧 + 15s 空闲主动重读的快路径，且 120s/600s 的断电
+    # 武装窗口远大于此。切段的隐性代价更高——session_wh 归零 → Wh 限额进度重来；
+    # 恢复后的负载若连续不足 START_HOLD_SEC，连新会话都开不出来，那段能量不记录。
+    NO_LOAD_DEBOUNCE_SEC = 15.0
     # "设备彻底不吸电"要持续这么久，才算"自然结束"并允许自动断电
     # （比会话结束本身保守：自适应充电的短暂停顿不会把端口断掉）
     NO_LOAD_ARM_SEC = 600.0
@@ -110,6 +118,9 @@ class BLEManager:
         self._mqtt_publish = None
         self._sse_emitter = None
         self._quality_provider = None
+        # 自愈重启处理器（服务层注入；未注入时只能退回"退出等外部管理器拉起"，见
+        # _recover_from_auth_stuck）
+        self._restart_handler = None
         # 充电会话记录开关：关闭时只停止 DB 写入（start/point/end 均 gate），
         # 内存会话生命周期/实时显示/充电完成事件照常。启动时由服务器从 DB meta 注入。
         self.record_sessions: bool = True
@@ -195,6 +206,15 @@ class BLEManager:
     def set_quality_provider(self, provider):
         """Set a callback that returns combined quality dict from all sources."""
         self._quality_provider = provider
+
+    def set_restart_handler(self, handler):
+        """注册"进程自愈重启"处理器（由服务层提供，见 _recover_from_auth_stuck）。
+
+        BLEManager 自己不知道该怎么重启（要按平台停 MQTT/Bemfa/历史再决定
+        execv 还是干净退出），所以只留一个钩子；ha_server 启动时挂上自己的
+        _restart。
+        """
+        self._restart_handler = handler
 
     def _sse_emit(self, event_type, data):
         """Emit SSE event if emitter is connected. Sync — emitter uses threading.Lock internally."""
@@ -1140,6 +1160,37 @@ class BLEManager:
         """连续认证失败达到阈值后，重启整个进程以恢复 BLE 会话。"""
         return auth_fail_count >= BLEManager.MAX_AUTH_FAILURES
 
+    async def _recover_from_auth_stuck(self) -> None:
+        """认证连续失败到上限：重启进程以重建 BLE 会话（本方法不会正常返回）。
+
+        优先走服务层注册的重启处理器（ha_server._restart）——它按平台分流：
+        Linux 用 os.execv 真正自愈（**不需要**外部守护），win32 干净退出交给
+        拉起方（execv 后 WinRT 事件循环无法在新映像内重建）。
+
+        没有处理器时退回 os._exit(1)：那条路**必须有外部进程管理器**
+        （systemd / supervisor / 脚本）才会被重新拉起，否则服务会一直停着
+        —— 实机踩过：本机既没有 systemd 单元，crontab 里那条 ensure_server.sh
+        又指向不存在的路径，结果 15 次失败后进程退出、停机 3 小时 25 分。
+        os._exit 不执行 finally 里的 _disconnect()，但进程整体退出后 BLE/GATT
+        句柄随进程回收；遗留的会话行由启动时的收尾逻辑补完。
+        """
+        _LOGGER.critical(
+            "Auth failed %d times consecutively. "
+            "Restarting process to recover BLE session.",
+            self._auth_fail_count)
+        self._publish_status(
+            {"connected": False, "error": "auth_stuck_restarting"}, retain=True)
+        # 给 MQTT/SSE 一点时间把上面这条状态发出去，再重启
+        await asyncio.sleep(self.AUTH_STUCK_NOTIFY_SEC)
+        if self._restart_handler is not None:
+            await self._restart_handler()
+            _LOGGER.error("Restart handler returned without restarting the process")
+        else:
+            _LOGGER.warning(
+                "No restart handler registered: exiting now; an external supervisor "
+                "is required to bring the service back")
+        os._exit(1)
+
     def _get_reconnect_delay(self):
         """Calculate exponential backoff delay with jitter."""
         delay = min(
@@ -1230,20 +1281,7 @@ class BLEManager:
                     self._auth_fail_count += 1
                     await self._force_disconnect_bluetooth()
                     if self._should_restart_process(self._auth_fail_count):
-                        _LOGGER.critical(
-                            "Auth failed %d times consecutively. "
-                            "Restarting process to recover BLE session.",
-                            self._auth_fail_count)
-                        self._publish_status(
-                            {"connected": False, "error": "auth_stuck_restarting"},
-                            retain=True)
-                        # 给 MQTT/SSE 一点时间发送状态，然后退出进程
-                        # 外部进程管理器 (systemd / supervisor / 脚本) 会自动重启。
-                        # 注: os._exit 不会执行 finally 中的 _disconnect() 清理，
-                        # 但进程随即整体退出，BLE/GATT 句柄随进程回收，
-                        # 会话残留由进程管理器重启兜底，无需在退出前手动断开。
-                        await asyncio.sleep(2)
-                        os._exit(1)
+                        await self._recover_from_auth_stuck()
                     elif self._auth_fail_count >= 5:
                         _LOGGER.error(
                             "Auth failed %d times consecutively. "

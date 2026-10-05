@@ -16,6 +16,14 @@ from ble_manager import (END_REASON_USER_OFF, END_REASON_UNPLUG, END_REASON_LOW_
 from state import ChargerState, PORT_NAMES, PORT_BITS, PORT_DEFAULT
 
 
+class _RestartRequested(Exception):
+    """模拟服务层重启处理器：execv / _exit 都不会正常返回，用异常表示"映像被替换"。"""
+
+
+class _ProcessExited(Exception):
+    """模拟 os._exit：立刻终止进程（测试里用异常代替，否则会杀掉 pytest）。"""
+
+
 def make_config():
     """Create a mock config object."""
     config = MagicMock()
@@ -734,6 +742,53 @@ class TestAuthFailureRetry:
         # After our fix: auth failure SHOULD trigger power cycle
         assert mgr._force_disconnect_bluetooth.call_count >= 1
         assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_auth_stuck_restarts_via_registered_handler(self):
+        """连续 auth 失败到上限：必须走服务层注册的重启处理器（Linux 下即 execv 自愈）。
+
+        回归：这条分支原来直接 os._exit(1)，注释写着"外部进程管理器会自动重启"——
+        而本机既没有 systemd 单元、crontab 里的 ensure_server.sh 也指向不存在的路径，
+        结果 15 次失败后进程退出、服务停机 3 小时 25 分。现在 Linux 通过处理器
+        os.execv，不需要任何外部守护。
+        """
+        mgr = make_manager()
+        mgr.AUTH_STUCK_NOTIFY_SEC = 0        # 别真等那 2 秒
+        mgr._auth_fail_count = mgr.MAX_AUTH_FAILURES
+        calls = []
+
+        async def handler():
+            calls.append("restart")
+            raise _RestartRequested()        # execv 不返回：用它模拟"映像被替换"
+
+        mgr.set_restart_handler(handler)
+        with patch("ble_manager.os._exit") as exit_mock:
+            with pytest.raises(_RestartRequested):
+                await mgr._recover_from_auth_stuck()
+        assert calls == ["restart"], "必须调用注册的重启处理器"
+        exit_mock.assert_not_called()        # 处理器没返回 → 不该再走 os._exit
+
+    @pytest.mark.asyncio
+    async def test_auth_stuck_without_handler_exits_for_supervisor(self):
+        """没有处理器时退回 os._exit(1)：那条路必须有外部管理器，否则起不来。"""
+        mgr = make_manager()
+        mgr.AUTH_STUCK_NOTIFY_SEC = 0
+        mgr._auth_fail_count = mgr.MAX_AUTH_FAILURES
+        with patch("ble_manager.os._exit", side_effect=_ProcessExited) as exit_mock:
+            with pytest.raises(_ProcessExited):
+                await mgr._recover_from_auth_stuck()
+        exit_mock.assert_called_once_with(1)
+
+    def test_ha_server_registers_restart_handler(self):
+        """服务层必须注册自愈重启处理器。
+
+        这行 wiring 没法用行为测试覆盖（要跑 on_startup 就得起整套 BLE/MQTT/HTTP），
+        所以直接盯源码文本——它正是"停机 3 小时 25 分"那次事故的修复点：不注册就
+        等于退回"退出等外部管理器"，而本机没有管理器。
+        """
+        src = (Path(__file__).parent.parent / "ha_server.py").read_text(encoding="utf-8")
+        assert "s.ble.set_restart_handler(s._restart)" in src, "ha_server 必须注册重启处理器"
+        assert "async def _restart(self)" in src, "_restart 必须仍是异步方法（处理器按协程调用）"
 
 
 class TestMultiframeBoundary:
@@ -2181,6 +2236,86 @@ class TestSessionLifecycle:
         assert spy.call_args[0][4] == END_REASON_UNPLUG, "电压塌掉 → 拔出"
 
     @pytest.mark.asyncio
+    async def test_short_current_dropout_does_not_split_session(self):
+        """充电中短暂断流（PD 重协商/档位切换、固件握手）不得把会话切成两段。
+
+        回放实测：I=0 只持续 5s 就收尾的话，断流后立刻按 45W 重开，一条会话变成
+        两条——session_wh 归零，Wh 限额进度跟着归零重来，历史里还多一行碎片。
+        去抖现在是 15s（见 test_debounce_window_matches_measured_pauses），远小于
+        120s/600s 的断电武装窗口。
+        """
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr, wh=8.0, peak=45.0)
+        spy = self._spy_close(mgr)
+
+        t0 = 1000.0
+        for k in range(5):                       # 5s 零电流（V 仍在协商范围内）
+            mgr._manage_session(1, t0 + k, 20.0, 0.0, active=True)
+        await asyncio.sleep(0.05)
+        spy.assert_not_called()
+        assert es.is_charging is True, "5s 断流不得结束会话"
+
+        # 恢复供电后仍是同一条会话（不重开、能量不清零）
+        mgr._manage_session(1, t0 + 6, 20.0, 2.25, active=True)
+        await asyncio.sleep(0.05)
+        spy.assert_not_called()
+        assert es.is_charging is True
+        assert es.session_wh == pytest.approx(8.0), "会话能量不因断流被清零"
+
+    @pytest.mark.asyncio
+    async def test_long_zero_current_still_ends_as_no_load(self):
+        """断流超过（放宽后的）去抖窗口仍要收尾：15s 是放宽，不是取消。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr, wh=8.0, peak=45.0)
+        spy = self._spy_close(mgr)
+
+        t0 = 2000.0
+        for k in range(int(mgr.NO_LOAD_DEBOUNCE_SEC) + 1):
+            mgr._manage_session(1, t0 + k, 20.0, 0.0, active=True)
+        await asyncio.sleep(0.05)
+        spy.assert_called_once()
+        assert spy.call_args[0][4] == END_REASON_NO_LOAD, "电压仍在 → 设备不吸电（自然结束）"
+        assert es.is_charging is False
+
+    @pytest.mark.asyncio
+    async def test_debounce_window_matches_measured_pauses(self):
+        """去抖定在 15s 是实测结论，不是拍脑袋：12s 必须吸收、20s 必须收尾。
+
+        数据（2 天 1Hz 的 port_history，仅统计落在会话区间内的零电流段）：
+          C1 86 次"暂停后恢复"：最长 14s，≥3s 32 次、≥8s 2 次、≥15s 0 次；
+          C3 9 次最长 4s；USB-A 3 次最长 8s。
+        3s 会把 34 次停顿判成会话结束（session_wh 归零 → Wh 限额进度重来），
+        8s 仍剩 2 次，15s 归零。这条把窗口两端都钉住，避免有人随手调小/调大。
+        """
+        assert BLEManager.NO_LOAD_DEBOUNCE_SEC == 15.0, \
+            f"去抖窗口应为 15s（实测结论），实际 {BLEManager.NO_LOAD_DEBOUNCE_SEC}"
+
+        # 12s 零电流（实测最长 14s 的同类停顿）→ 必须吸收
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr, wh=8.0, peak=45.0)
+        spy = self._spy_close(mgr)
+        for k in range(12):
+            mgr._manage_session(1, 3000.0 + k, 20.0, 0.0, active=True)
+        await asyncio.sleep(0.05)
+        spy.assert_not_called()
+        assert es.is_charging is True, "12s 停顿不得结束会话"
+
+        # 20s 零电流 → 必须收尾（设备真的不取电了）
+        mgr2 = make_manager()
+        mgr2._history = MagicMock()
+        es2 = self._charging(mgr2, wh=8.0, peak=45.0)
+        spy2 = self._spy_close(mgr2)
+        for k in range(20):
+            mgr2._manage_session(1, 4000.0 + k, 20.0, 0.0, active=True)
+        await asyncio.sleep(0.05)
+        spy2.assert_called_once()
+        assert spy2.call_args[0][4] == END_REASON_NO_LOAD
+        assert es2.is_charging is False
+
+    @pytest.mark.asyncio
     async def test_port_disabled_ends_immediately(self):
         """端口被关（用户/限额）是我们自己的动作：不去抖，立即以 USER_OFF 结束。"""
         mgr = make_manager()
@@ -2552,7 +2687,7 @@ class TestSessionLifecycle:
         gate = mgr._start_gates[1]
 
         gate.note_session_end(peak_power=90.0)
-        assert gate.threshold_now(5.0) == pytest.approx(1.0), "90W 会话后重开门限抬到 1.0W"
+        assert gate.threshold_now(5.0) == pytest.approx(1.2), "90W 会话后重开门限抬到 2×T_low=1.2W"
 
         ps.voltage = 0.0
         ps.current = 0.0
@@ -2564,7 +2699,7 @@ class TestSessionLifecycle:
         ps.voltage = 20.0
         ps.current = 0.0
         assert mgr._should_sample_port(1, ps) is True
-        assert gate.threshold_now(5.0) == pytest.approx(1.0), "设备还插着不得解除保护"
+        assert gate.threshold_now(5.0) == pytest.approx(1.2), "设备还插着不得解除保护"
 
     @pytest.mark.asyncio
     async def test_low_power_device_starts_after_unplug(self):
@@ -2612,8 +2747,8 @@ class TestSessionLifecycle:
                             20.0, 0.0, active=True)
         await asyncio.sleep(0.05)
         assert es.is_charging is False
-        assert mgr._start_gates[1].threshold_now(5.0) == pytest.approx(1.0), \
-            "满电维持结束仍要保留残留保护（0.5W 涓流不许开新会话）"
+        assert mgr._start_gates[1].threshold_now(5.0) == pytest.approx(1.2), \
+            "满电维持结束仍要保留残留保护（涓流不许开新会话）"
 
     @pytest.mark.asyncio
     async def test_unplug_push_then_no_more_pushes_still_closes(self):

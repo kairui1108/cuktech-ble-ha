@@ -181,7 +181,7 @@ def test_min_energy_and_duration_gates():
 
 
 def test_threshold_shape_self_calibrates():
-    """T = max(0.05W, min(2.5W, 20%×充电峰值))：大功率按残留量级、小功率按比例。
+    """T = max(0.05W, min(0.6W, 20%×充电峰值))：大功率按残留量级、小功率按比例。
 
     这张表就是"低功耗设备能否被正确识别"的核心：5V/0.5W 耳机阈值 0.1W、
     5V/1W 阈值 0.2W —— 它们充电时远高于阈值（不会判满），掉到涓流才结束。
@@ -190,9 +190,10 @@ def test_threshold_shape_self_calibrates():
     assert tail_threshold_w(0.5) == 0.1
     assert tail_threshold_w(1.0) == 0.2
     assert tail_threshold_w(2.0) == 0.4
-    assert tail_threshold_w(5.0) == 0.5
-    assert tail_threshold_w(20.0) == 0.5      # cap：判据是"功率逼近 0"，不是某个残留水平
-    assert tail_threshold_w(60.0) == 0.5
+    assert tail_threshold_w(3.0) == 0.6      # 比例项刚好够到上限
+    assert tail_threshold_w(5.0) == 0.6
+    assert tail_threshold_w(20.0) == 0.6     # cap：判据是"功率逼近 0"，不是某个残留水平
+    assert tail_threshold_w(60.0) == 0.6
     assert tail_threshold_w(0.0) == 0.05          # 噪声地板
     # 检测器内部用同一函数
     det = ChargeSessionDetector()
@@ -201,8 +202,73 @@ def test_threshold_shape_self_calibrates():
     print("PASS: test_threshold_shape_self_calibrates")
 
 
+def test_threshold_constants_are_the_module_ones():
+    """阈值只能由模块常量决定（单一来源）。
+
+    历史上类里另有一份同名的 TAIL_CAP_W/PEAK_RATIO/ABS_TAIL_MIN_W，从不参与计算
+    ——"调阈值"改了没效果，排查"为什么不判满"时被它误导过。这里既钉住模块常量，
+    也钉住"改模块常量真的会改变结果"。
+    """
+    import energy
+    assert (energy.TAIL_MIN_W, energy.TAIL_CAP_W, energy.TAIL_PEAK_RATIO) == (0.05, 0.6, 0.20)
+    assert not hasattr(ChargeSessionDetector, "TAIL_CAP_W"), "类里不得再有同名死常量"
+    assert not hasattr(ChargeSessionDetector, "PEAK_RATIO")
+    assert not hasattr(ChargeSessionDetector, "ABS_TAIL_MIN_W")
+    old = energy.TAIL_CAP_W
+    try:
+        energy.TAIL_CAP_W = 0.9
+        assert tail_threshold_w(60.0) == 0.9, "改模块常量必须真的生效"
+    finally:
+        energy.TAIL_CAP_W = old
+    assert tail_threshold_w(60.0) == 0.6
+    print("PASS: test_threshold_constants_are_the_module_ones")
+
+
+def test_5v_trickle_at_one_current_step_is_judged_full():
+    """5V 档 0.1A 的涓流必须判满（实机 C1 的 bug 现场）。
+
+    充电器电流上报步进是 0.1A：5.1V × 0.1A = 0.51W。旧的 0.5W 上限（严格大于）
+    把这个最典型的涓流判成"仍在充电"，收敛计时被波动预算反复清零 → 永不判满。
+    """
+    det = ChargeSessionDetector()
+    _feed(det, 0.0, 60, 20.0, voltage=20.0)          # 峰值 20W → 阈值取上限
+    assert det.threshold_w() == 0.6
+    # 尾巴：5.1V/0.1A 稳定涓流（0.51W）
+    _feed(det, 1.0, 200, 0.51, voltage=5.1)
+    assert det.converged(), "5.1V/0.1A = 0.51W 应被视为接近 0（旧 0.5W 上限下判不了）"
+    assert not det.converged() or det.p_fast() <= det.threshold_w()
+    # 0.15A（0.77W）仍算在充电
+    det2 = ChargeSessionDetector()
+    _feed(det2, 0.0, 60, 20.0, voltage=20.0)
+    _feed(det2, 1.0, 200, 0.77, voltage=5.1)
+    assert not det2.converged(), "0.77W 不该被判满"
+    print("PASS: test_5v_trickle_at_one_current_step_is_judged_full")
+
+
+def test_5v_alternating_trickle_reaches_full():
+    """实机 C1 的尾巴模式（0V/0.1A 交替）必须能走到判满。
+
+    回放真实采样：旧的 0.5W 上限下，交替模式只有 ~36% 样本收敛 → 600s 保持期内
+    grace 累积 ~0.6s/s、三分钟就耗尽 120s 预算 → 计时被清零 17 次，3 小时判不满。
+    """
+    det = ChargeSessionDetector()
+    _feed(det, 0.0, 120, 20.0, voltage=9.0)          # 充电段（峰值 20W）
+    t = 120.0
+    ended = None
+    for k in range(1200):                            # 交替 0/0.1A，最多 20 分钟
+        i = 0.1 if k % 2 == 0 else 0.0
+        t += 1.0
+        det.feed(t, 5.1, i)
+        if det.should_end(t, 5.0, 0.0):
+            ended = t - 120.0
+            break
+    assert ended is not None, "0/0.1A 交替（5.1V）必须能判满"
+    assert 600 <= ended <= 700, f"应在 HOLD_SEC 后不久判满，实际 {ended}s"
+    print(f"PASS: test_5v_alternating_trickle_reaches_full (涓流后 {ended:.0f}s)")
+
+
 def test_low_power_device_end_to_end():
-    """5V/1W 蓝牙耳机：充电过程中不判满；掉到 0.05W 后连续收敛 10 分钟才结束。"""
+    """""5V/1W 蓝牙耳机：充电过程中不判满；掉到 0.05W 后连续收敛 10 分钟才结束。"""""
     det = ChargeSessionDetector()
     t = _feed(det, 0.0, 20 * 60, 1.0, voltage=5.0)          # 1W 充 20 分钟
     assert not det.converged(), "1W 明显高于阈值 0.2W，不能判满"
