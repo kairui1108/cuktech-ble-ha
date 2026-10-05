@@ -315,6 +315,29 @@ def test_start_gate_requires_sustained_power():
     print("PASS: test_start_gate_requires_sustained_power")
 
 
+def test_start_gate_exposes_run_start_for_backfill():
+    """门控要把"本段连续达标负载的起点"留给调用方——预会话回填的边界就靠它。
+
+    这一步很容易漏：should_start() 原来在返回 True 前直接把 _above_since 清成 None，
+    调用方拿不到起点就只能回填到"放行时刻"，等于没回填。
+    """
+    gate = SessionStartGate()
+    assert gate.last_run_start() is None, "还没放行过，不该有起点"
+
+    assert not gate.should_start(1000.0, 1.0, 5.0)     # 首帧：开始计时
+    assert not gate.should_start(1020.0, 1.0, 5.0)
+    assert gate.last_run_start() is None, "未放行前不得暴露起点"
+    assert gate.should_start(1030.0, 1.0, 5.0) is True
+    assert gate.last_run_start() == 1000.0, gate.last_run_start()
+
+    # 中途掉到门限以下 → 重新计时，放行后起点跟着更新
+    assert not gate.should_start(1100.0, 0.1, 5.0)
+    assert not gate.should_start(1200.0, 1.0, 5.0)
+    assert gate.should_start(1231.0, 1.0, 5.0) is True
+    assert gate.last_run_start() == 1200.0, gate.last_run_start()
+    print("PASS: test_start_gate_exposes_run_start_for_backfill")
+
+
 def test_low_power_devices_can_start_sessions():
     """5V 耳机（0.5W / 1W）必须能开会话；20V 下 1.5W 的"插着不充"不算。"""
     for watts in (0.5, 1.0):

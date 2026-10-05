@@ -87,6 +87,13 @@ class BLEManager:
     # 武装窗口远大于此。切段的隐性代价更高——session_wh 归零 → Wh 限额进度重来；
     # 恢复后的负载若连续不足 START_HOLD_SEC，连新会话都开不出来，那段能量不记录。
     NO_LOAD_DEBOUNCE_SEC = 15.0
+    # 预会话环形缓冲：留住"开会话之前"最近这么久的采样，供开会话时回填。
+    # 起判要求功率连续达标 START_HOLD_SEC=30s 才开会话，那 30s 里设备**已经在取电**，
+    # 但当时既没有会话（能量不积分）、也没有 sid（曲线点不写）——不留缓冲的话每段
+    # 会话的头部固定缺 30s：能量少 0.04~0.54Wh（20Wh 限额的 0.2~2.7%）、曲线从中间
+    # 开始、起点与时长晚 30s、峰值还可能漏掉前段的最高点。
+    # 120s = 30s 门控 + 余量（慢爬升/中途抖动重试）；内存 4 端口 × 120 帧，几十 KB。
+    PRE_SESSION_SEC = 120.0
     # "设备彻底不吸电"要持续这么久，才算"自然结束"并允许自动断电
     # （比会话结束本身保守：自适应充电的短暂停顿不会把端口断掉）
     NO_LOAD_ARM_SEC = 600.0
@@ -176,6 +183,10 @@ class BLEManager:
         self._full_off_fired = {i: False for i in range(1, 5)}   # 上次会话是否已充满断电
         self._permanent_points = {i: deque() for i in range(1, 5)}
         self._permanent_last_point = {i: 0.0 for i in range(1, 5)}
+        # 预会话环形缓冲：未充电时的最近采样，供开会话时回填起点/能量/曲线。
+        # 待补写的点不落在这个字典里，而是随会话起点（闭包）传递——否则"会话秒断
+        # 又立刻重开"时，新会话会把上一段的待补点写进自己的 sid。
+        self._pre_samples = {i: deque() for i in range(1, 5)}
         # Protocol debounce: track consecutive protocol readings per port
         self._proto_buf = {i: [] for i in range(1, 5)}  # port -> [last N protocols]
         self._PROTO_DEBOUNCE_N = 3  # consecutive readings to confirm protocol
@@ -369,13 +380,15 @@ class BLEManager:
     # ── 长期供电端口的会话曲线（内存窗口，不落库） ──
 
     def _append_permanent_point(self, piid: int, voltage: float, current: float,
-                                protocol: str = "") -> None:
+                                protocol: str = "", timestamp: Optional[float] = None) -> None:
         """常供端口的采样点进内存环形窗口：按时间裁剪，超出保留时长即淘汰。
+
+        timestamp 显式传入时用它（预会话回填要把点落在原采样时刻上）；缺省用当前时刻。
 
         能量/峰值/时长是会话级累计（PortEnergyState），与窗口淘汰无关——这正是
         "窗口滑动时被移出窗口的数据仍计入统计"的实现方式。
         """
-        now = time.time()
+        now = time.time() if timestamp is None else timestamp
         if now - self._permanent_last_point[piid] < self.PERMANENT_POINT_MIN_INTERVAL:
             return   # 节流到 ≥1s/点：窗口内存上限 ~3600 点/端口
         self._permanent_points[piid].append((
@@ -883,6 +896,10 @@ class BLEManager:
         power = voltage * current
 
         det.feed(timestamp, voltage, current)
+        # 未充电时的采样进预会话缓冲：其中最后 ~30s 就是"已达起判门限、正在等
+        # START_HOLD_SEC 走完"的那一段，开会话时会被回填（见 _start_session）。
+        if not es.is_charging:
+            self._buffer_pre_session(piid, timestamp, voltage, current, protocol)
 
         if es.is_charging:
             # A) 端口被关掉（用户/限额/倒计时）→ 这是我们自己的动作，无需去抖
@@ -955,19 +972,98 @@ class BLEManager:
         if active and self._port_enabled(piid) and gate.should_start(timestamp, det.p_fast(), voltage):
             self._start_session(piid, timestamp, voltage, current, protocol)
 
+    # ── 预会话缓冲（开会话前那 30s 的采样，用于回填） ──────────────
+
+    def _buffer_pre_session(self, piid: int, timestamp: float, voltage: float,
+                            current: float, protocol: str = "") -> None:
+        """把未充电时的采样放进环形缓冲；按时间裁剪到 PRE_SESSION_SEC。
+
+        时间戳存**原始值**不做取整：取材时用的是门控记下的精确 run_start 与当前帧
+        精确 timestamp，取整会让边界帧的取舍随舍入方向摇摆（首帧被排除 / 当前帧被
+        反过来包含）。电压电流按上报分辨率取整无妨。
+        """
+        buf = self._pre_samples[piid]
+        buf.append((timestamp, round(voltage, 2), round(current, 2),
+                    protocol or ""))
+        cutoff = timestamp - self.PRE_SESSION_SEC
+        while buf and buf[0][0] < cutoff:
+            buf.popleft()
+
+    def _take_pre_session_samples(self, piid: int, run_start: float,
+                                  now: float) -> list:
+        """取出 [run_start, now) 的预会话采样（时间升序）并清空缓冲。
+
+        只取"本段连续达标负载"的范围：抖动/试探负载（没走完 START_HOLD_SEC）根本
+        不会走到这里（_start_session 只在门控放行时调用），所以回填不会把噪声变成会话。
+        """
+        buf = self._pre_samples[piid]
+        out = [s for s in buf if run_start <= s[0] < now]
+        buf.clear()
+        return out
+
+    def _flush_pre_session_points(self, sid, pre) -> None:
+        """把预会话采样批量补写成曲线点（行由调用方按会话传入，避免串写）。
+
+        常供端口不会走到这里（它的点进内存窗口）；占位 sid（记录关闭）<=0 时跳过。
+        """
+        if not pre or not self._history or not sid or sid <= 0:
+            return
+        rows = [(t, v, i, round(v * i, 1), p) for t, v, i, p in pre]
+        loop = asyncio.get_running_loop()
+        task = loop.run_in_executor(None, self._history.record_charge_points, sid, rows)
+        task.add_done_callback(
+            lambda t: _LOGGER.error("Backfill %d points failed: %s", len(rows), t.exception())
+            if t.exception() else None)
+
     def _start_session(self, piid: int, timestamp: float, voltage: float,
                        current: float, protocol: str = "") -> None:
-        """开会话：内存会话生命周期始终完整（记录关闭时用占位 sid）。"""
+        """开会话：内存会话生命周期始终完整（记录关闭时用占位 sid）。
+
+        开会话时会把"门控等待期"（最多 START_HOLD_SEC=30s）的采样回填进本会话：
+        起点、能量、峰值、检测器窗口，以及（拿到 sid 后）曲线点——详见各处注释。
+        """
         es = self._energy_states[piid]
+        gate = self._start_gates[piid]
+        # ① 预会话回填的取材：本段"连续达标负载"从哪一刻开始（门控放行前刚记下的）
+        run_start = gate.last_run_start() or timestamp
+        pre = self._take_pre_session_samples(piid, run_start, timestamp)
         es.is_charging = True
         es.session_wh = 0
-        es.session_start = timestamp
+        # 起点回填到本段负载真正开始的时刻（否则每段会话都晚 START_HOLD_SEC）
+        es.session_start = pre[0][0] if pre else timestamp
         es.max_power = voltage * current
         es.max_current = current
+        if pre:
+            # 峰值必须含预会话窗口的全部帧——包括首帧：起判首帧就可能已经是本段最高点
+            # （之后回落到涓流），而能量回填循环是从 pre[1:] 开始的，首帧会漏掉。
+            # 这里直接取 pre 的最大值，不依赖积分器"间隔正常才更新峰值"的顺带行为。
+            es.max_power = max(es.max_power, max(v * i for _t, v, i, _p in pre))
+            es.max_current = max(es.max_current, max(i for _t, v, i, _p in pre))
         self._no_load_since[piid] = None
         self._no_load_armed[piid] = False
         self._no_load_from_session[piid] = False
-        self._session_dets[piid].reset()
+        det = self._session_dets[piid]
+        det.reset()
+        # ② 检测器预热：先喂回填样本、再喂当前样本，让 p_fast/p_slow/峰值把这段
+        #    算进去（否则峰值可能漏掉前段最高点，阈值 T_low 跟着偏低）
+        for t, v, i, _p in pre:
+            det.feed(t, v, i)
+        det.feed(timestamp, voltage, current)
+        # ③ 能量回填：按时间序梯形积分。先把 last_time 定位到第一帧，避免拿"上一次
+        #    会话遗留的 last_time"去积分（那会把会话之间的空档也算进本会话）。
+        if pre:
+            es.last_time = pre[0][0]
+            es.last_power = pre[0][1] * pre[0][2]
+            # 累计量 total_wh/daily_wh 不能跟着再算一遍：push 路径对每一帧都无条件积分过
+            # （含这段"已在取电但还没开会话"的窗口），回填只该把这段能量补进本会话
+            # （session_wh 已在上面归零）。积分器没有"只加 session_wh"的入口，故先存后还原。
+            total_before, daily_before = es.total_wh, es.daily_wh
+            for t, v, i, _p in pre[1:]:
+                self._energy_integrator.update(es, v, i, t)
+            self._energy_integrator.update(es, voltage, current, timestamp)
+            es.total_wh, es.daily_wh = total_before, daily_before
+            _LOGGER.info("Backfilled %d pre-session samples (%.0fs) into port=%s session",
+                         len(pre), timestamp - pre[0][0], PORT_NAMES.get(piid, piid))
         # 会话起点重新武装限额（always 长期有效靠此持续；once 若已消费则 wh<=0）
         self._limit_fired[piid] = False
         # 充满即停同样按会话重新武装：清挂起/重试/已触发，并丢掉上一会话的内存曲线
@@ -976,15 +1072,26 @@ class BLEManager:
         self._full_off_fired[piid] = False
         self._permanent_points[piid].clear()
         self._permanent_last_point[piid] = 0.0
+        # ④ 曲线回填：常供端口只进内存窗口（它本来就不落 charge_points，别写两份）；
+        #    其余端口等拿到 sid 后在回调里批量入 history 的待写缓冲。
+        db_backfill = None
+        if pre:
+            if piid in self.permanent_ports:
+                # 常供端口不落 charge_points（曲线在内存窗口里），别写第二份
+                for t, v, i, p in pre:
+                    self._append_permanent_point(piid, v, i, p, timestamp=t)
+            elif self.record_sessions:
+                db_backfill = pre      # 等拿到 sid 后补写，随闭包传递
         _LOGGER.info("Session started (port=%s, %.1fW, protocol=%s)",
                      PORT_NAMES.get(piid, piid), voltage * current, protocol or "idle")
         if not self._history:
             return
         loop = asyncio.get_running_loop()
         if self.record_sessions:
-            task = loop.run_in_executor(None, self._history.start_session, piid, protocol)
+            task = loop.run_in_executor(
+                None, self._history.start_session, piid, protocol, es.session_start)
 
-            def _on_session_start(t, p=piid):
+            def _on_session_start(t, p=piid, rows=db_backfill):
                 if t.exception():
                     _LOGGER.error("Start session failed for port %d: %s", p, t.exception())
                     return
@@ -999,6 +1106,8 @@ class BLEManager:
                         self._close_resumed_orphan(p, new_sid)
                         return
                     self._active_sessions[p] = new_sid
+                # sid 到手后再补曲线点（常供端口走内存窗口，这里 rows 为 None）
+                self._flush_pre_session_points(new_sid, rows)
 
             task.add_done_callback(_on_session_start)
         else:

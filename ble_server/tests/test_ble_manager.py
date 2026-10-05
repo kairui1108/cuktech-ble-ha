@@ -2919,3 +2919,241 @@ class TestSessionLifecycle:
         st = mgr.get_charge_limits_state()["c2"]
         assert st["session_sec"] == 0.0
         assert st["avg_power_w"] == 0.0
+
+
+class TestPreSessionBackfill:
+    """预会话环形缓冲 + 回填：会话开头那 30s 的采样不能再丢。
+
+    起判要求功率连续达标 START_HOLD_SEC=30s 才开会话；这 30s 里设备**已经在取电**，
+    但当时没有会话（能量不积分）、也没有 sid（曲线不写）。回填把这三点补上：
+    起点、能量/峰值/检测器窗口、（拿到 sid 后）曲线点。
+    """
+
+    @staticmethod
+    def _mgr_with_history():
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._history.start_session = MagicMock(return_value=1)
+        return mgr
+
+    @pytest.mark.asyncio
+    async def test_backfill_fills_start_energy_peak_and_points(self):
+        mgr = self._mgr_with_history()
+        es, det = mgr._energy_states[1], mgr._session_dets[1]
+        t0 = 1000.0
+        # 前 15s 27W（9V/3A），后 15s 1.2W：门限 0.9W 一直达标 → 第 30s 放行开会话
+        for k in range(15):
+            mgr._manage_session(1, t0 + k, 9.0, 3.0, active=True)
+        for k in range(15, 36):
+            mgr._manage_session(1, t0 + k, 9.0, 1.2 / 9.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True, "连续达标 30s 应开会话"
+        # ① 起点回填到本段负载真正开始处，而不是门控放行那一刻
+        assert es.session_start == pytest.approx(t0), es.session_start
+        # ② 能量含前 30s：≈15s×27W + 15s×1.2W ≈ 0.114Wh
+        assert es.session_wh == pytest.approx(0.114, abs=0.01), es.session_wh
+        # ③ 峰值/窗口预热：检测器峰值取 "p_fast 的历史最大"，回填后才看得到前段 27W
+        assert det.peak_power() == pytest.approx(27.0, abs=0.5), det.peak_power()
+        assert es.max_power == pytest.approx(27.0, abs=0.5), es.max_power
+        # ④ 曲线点：拿到 sid 后批量补写一次（不是逐点开 executor）
+        # DB 行的 start_time 必须同样是回填后的起点，否则 start+duration 会比 end 多一截
+        assert mgr._history.start_session.call_args[0][2] == pytest.approx(t0)
+        assert mgr._history.record_charge_points.call_count == 1
+        sid, rows = mgr._history.record_charge_points.call_args[0]
+        assert sid == 1 and len(rows) == 30, f"sid={sid} rows={len(rows) if rows else 0}"
+        assert rows[0][0] == pytest.approx(t0, abs=0.01), "补写要用原采样时间戳"
+        # 缓冲里存的是 round(...,2)（与充电器上报分辨率一致），所以 1.2/9→0.13
+        assert rows[0][1] == pytest.approx(9.0)
+        assert rows[-1][2] == pytest.approx(0.13, abs=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_short_blip_still_creates_no_session(self):
+        """坑 #2：<30s 的抖动/试探负载不得因为回填而变成会话。"""
+        mgr = self._mgr_with_history()
+        es = mgr._energy_states[1]
+        t0 = 2000.0
+        for k in range(20):                     # 只持续 20s，走不完 START_HOLD_SEC
+            mgr._manage_session(1, t0 + k, 9.0, 1.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is False, "未达门控不得开会话"
+        assert mgr._history.start_session.call_count == 0
+        assert mgr._history.record_charge_points.call_count == 0
+        assert len(mgr._pre_samples[1]) == 20, "抖动样本仍留在滚动缓冲里"
+        assert es.session_wh == 0.0
+
+    @pytest.mark.asyncio
+    async def test_record_sessions_off_backfills_memory_only(self):
+        """坑 #5：关记录时只回填内存（起点/能量/检测器），不写 DB。"""
+        mgr = self._mgr_with_history()
+        mgr.record_sessions = False
+        es = mgr._energy_states[1]
+        t0 = 3000.0
+        for k in range(36):
+            mgr._manage_session(1, t0 + k, 9.0, 1.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True
+        assert es.session_start == pytest.approx(t0), "起点仍要回填"
+        assert es.session_wh > 0, "能量仍要回填"
+        assert mgr._history.start_session.call_count == 0, "关记录不建 DB 行"
+        assert mgr._history.record_charge_points.call_count == 0, "关记录不补曲线点"
+        assert mgr._active_sessions[1] < 0, "占位 sid"
+
+    @pytest.mark.asyncio
+    async def test_permanent_port_backfill_goes_to_memory_window(self):
+        """坑 #4：常供端口不落 charge_points，回填进内存窗口，不写第二份。"""
+        mgr = self._mgr_with_history()
+        mgr.set_permanent_ports(["c1"])
+        es = mgr._energy_states[1]
+        t0 = 4000.0
+        for k in range(36):
+            mgr._manage_session(1, t0 + k, 9.0, 1.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True
+        assert mgr._history.record_charge_points.call_count == 0, "常供端口不补 DB 点"
+        pts = list(mgr._permanent_points[1])
+        assert pts, "预会话采样应进内存窗口"
+        assert pts[0][0] == pytest.approx(t0, abs=1.0), "窗口里的点是原采样时刻"
+        assert es.session_start == pytest.approx(t0), "常供端口同样回填起点"
+
+    @pytest.mark.asyncio
+    async def test_buffer_is_trimmed_to_window_and_consumed(self):
+        """缓冲按 PRE_SESSION_SEC 滚动裁剪；被回填消费后清空。"""
+        mgr = self._mgr_with_history()
+        t0 = 5000.0
+        for k in range(int(mgr.PRE_SESSION_SEC) + 60):    # 远远超过窗口时长
+            mgr._manage_session(1, t0 + k, 9.0, 0.02, active=True)   # 0.18W，不达标
+        span = mgr._pre_samples[1][-1][0] - mgr._pre_samples[1][0][0]
+        assert span <= mgr.PRE_SESSION_SEC + 0.001, f"缓冲未裁剪：跨度 {span}s"
+        assert mgr._energy_states[1].is_charging is False
+        assert mgr._history.start_session.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_backfill_moves_limit_trigger_earlier_by_the_same_energy(self):
+        """回填的能量会让 Wh 限额提前触发，提前量 ≈ 被回填的那段时长。
+
+        9V/1A（9W）+ 0.5Wh 限额：只算开会话之后的能量要 200s；把起判前 30s
+        （30s×9W ≈ 0.0725Wh）回填进来后应提前约 29s。两种口径各跑一遍对比。
+        """
+
+        async def run(backfill_on):
+            mgr = self._mgr_with_history()
+            if not backfill_on:
+                mgr._take_pre_session_samples = lambda *a, **k: []   # 关掉回填
+            mgr.set_charge_limits({"c1": {"wh": 0.5, "mode": "always"}})
+            es = mgr._energy_states[1]
+            t0 = 6000.0
+            gate_ts = None
+            for k in range(400):
+                t = t0 + k
+                mgr._manage_session(1, t, 9.0, 1.0, active=True)
+                if gate_ts is None and es.is_charging:
+                    gate_ts = t                    # 门控放行那一刻（两种口径相同）
+                if es.is_charging:
+                    mgr._energy_integrator.update(es, 9.0, 1.0, t)
+                mgr._enforce_charge_limit(1, t)
+                await asyncio.sleep(0)
+                if mgr._limit_fired[1]:
+                    return t - gate_ts             # 相对"开会话时刻"的触发耗时
+            raise AssertionError("限额未被触发")
+
+        with_bf = await run(True)
+        without_bf = await run(False)
+        assert without_bf == pytest.approx(200.0, abs=3.0), without_bf   # 9W×200s = 0.5Wh
+        assert with_bf == pytest.approx(171.0, abs=3.0), with_bf         # 回填 0.0725Wh
+        assert without_bf - with_bf == pytest.approx(29.0, abs=3.0), "提前量应≈被回填的那段时长"
+
+    @pytest.mark.asyncio
+    async def test_first_session_can_only_backfill_what_this_process_saw(self):
+        """服务刚重启时缓冲是空的：回填只能覆盖"本进程看到的那些帧"。
+
+        设备在进程启动前就已经在充电时，那段历史无从得知——起点回填到本进程
+        见过的最早一帧即止，不报错、不丢会话（这是允许的缺头）。
+        """
+        mgr = self._mgr_with_history()          # 新进程 = 空缓冲
+        es = mgr._energy_states[1]
+        t0 = 7000.0
+        for k in range(36):                     # 进程只见过这 36 帧（设备已在充电）
+            mgr._manage_session(1, t0 + k, 9.0, 1.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True
+        assert es.session_start == pytest.approx(t0), "只能回填到本进程见过的最早一帧"
+        sid, rows = mgr._history.record_charge_points.call_args[0]
+        assert len(rows) == 30, f"缓冲里有多少就回填多少，实际 {len(rows)}"
+        assert rows[0][0] == pytest.approx(t0)
+
+    @pytest.mark.asyncio
+    async def test_backfill_does_not_double_count_lifetime_energy(self):
+        """回填只补会话能量，不能把 total_wh/daily_wh 也再加一遍。
+
+        push 路径对**每一帧**都无条件积分（含这段"已在取电但还没开会话"的窗口），
+        而回填只把 session_wh 归零、没管另两个累计量 → 起判窗口会被算两次。
+        这里按真实 push 路径的顺序（先积分再 _manage_session）复现。
+        """
+        mgr = self._mgr_with_history()
+        es = mgr._energy_states[1]
+        t0 = 3000.0
+        for k in range(15):                     # 前 15s 27W
+            mgr._energy_integrator.update(es, 9.0, 3.0, t0 + k)
+            mgr._manage_session(1, t0 + k, 9.0, 3.0, active=True)
+        for k in range(15, 36):                 # 后 21s 1.2W（门限 0.9W 一直达标）
+            i = 1.2 / 9.0
+            mgr._energy_integrator.update(es, 9.0, i, t0 + k)
+            mgr._manage_session(1, t0 + k, 9.0, i, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True
+        assert es.session_wh == pytest.approx(0.114, abs=0.01), es.session_wh
+        # 双计时 total_wh≈0.229（2 倍）；这里要求起判窗口只算一次。
+        # 残余差值来自回填用的是缓冲里 round(…,2) 的电压电流（≈1e-4Wh 量级），不是双计。
+        assert es.total_wh == pytest.approx(es.session_wh, abs=5e-3), (
+            f"total_wh={es.total_wh:.4f} session_wh={es.session_wh:.4f}")
+        assert es.daily_wh == pytest.approx(es.total_wh, abs=1e-9), es.daily_wh
+
+    @pytest.mark.asyncio
+    async def test_backfill_peak_includes_the_first_run_frame(self):
+        """本段最高点落在起判首帧时，峰值也必须回填。
+
+        能量回填循环从 pre[1:] 开始，首帧只被用作积分基准 → 原先 es.max_power 会
+        停在后面的涓流功率上，与检测器峰值（含首帧）自相矛盾，DB peak_power_w 偏低。
+        """
+        mgr = self._mgr_with_history()
+        es, det = mgr._energy_states[1], mgr._session_dets[1]
+        t0 = 4000.0
+        mgr._manage_session(1, t0, 9.0, 3.0, active=True)       # 27W：最高点就在首帧
+        for k in range(1, 36):
+            mgr._manage_session(1, t0 + k, 9.0, 1.2 / 9.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True
+        assert es.max_power == pytest.approx(27.0, abs=0.5), es.max_power
+        assert es.max_current == pytest.approx(3.0, abs=0.05), es.max_current
+        assert es.max_power == pytest.approx(det.peak_power(), abs=0.5), (
+            f"端口峰值 {es.max_power} 与检测器峰值 {det.peak_power()} 不一致")
+
+    @pytest.mark.asyncio
+    async def test_backfill_boundary_is_exact_not_rounding_dependent(self):
+        """取材边界必须由原始时间戳定，不能随毫秒取整的舍入方向摇摆。
+
+        缓冲原先存 round(ts,3)，而比较用的是门控记下的精确 run_start / 当前帧精确
+        timestamp：舍入向下时首帧（round 后更小）被排除 → 起点晚一帧；当前帧
+        （round 后更小）被反过来包含 → 检测器重复喂、曲线多一行。两种小数各测一遍。
+        """
+        for frac in (0.0004, 0.0006):
+            mgr = self._mgr_with_history()
+            es = mgr._energy_states[1]
+            t0 = 5000.0 + frac
+            for k in range(36):                 # 第 30 帧放行（START_HOLD_SEC=30）
+                mgr._manage_session(1, t0 + k, 9.0, 1.2 / 9.0, active=True)
+            await asyncio.sleep(0.05)
+
+            assert es.is_charging is True, frac
+            assert es.session_start == t0, (frac, es.session_start)
+            sid, rows = mgr._history.record_charge_points.call_args[0]
+            assert len(rows) == 30, (frac, len(rows))
+            assert rows[0][0] == t0, (frac, rows[0][0])
+            assert rows[-1][0] == pytest.approx(t0 + 29), (frac, rows[-1][0])

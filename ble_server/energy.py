@@ -344,6 +344,7 @@ class SessionStartGate:
         self._post_session = False     # 上一次会话刚结束（残留保护中）
         self._restart_w = 0.0
         self._above_since = None
+        self._last_run_start: Optional[float] = None   # 最近一次开会话那段负载的起点
 
     def note_session_end(self, peak_power: float = 0.0) -> None:
         """会话结束：进入"刚结束"状态并抬高重开门限。
@@ -376,6 +377,13 @@ class SessionStartGate:
             self._above_since = timestamp
         if timestamp - self._above_since < self.START_HOLD_SEC:
             return False
+        # 回填边界：本段"连续达标负载"的起点。调用方（BLEManager）用它在开会话时把
+        # 这段门控等待期的采样补进会话——必须在清掉 _above_since 之前存下来。
+        self._last_run_start = self._above_since
         self._above_since = None
         self._post_session = False      # 真的重新开始充电：解除残留保护
         return True
+
+    def last_run_start(self) -> Optional[float]:
+        """最近一次开会话所依据的那段连续达标负载的起点（无则 None，供回填用）。"""
+        return self._last_run_start

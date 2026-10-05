@@ -670,8 +670,13 @@ class PortHistory:
 
     # ── Charge Session Management ──
 
-    def start_session(self, port: int, protocol: str = "") -> int:
-        """Start a new charge session, return session_id."""
+    def start_session(self, port: int, protocol: str = "",
+                      start_time: Optional[float] = None) -> int:
+        """Start a new charge session, return session_id.
+
+        start_time 显式传入时用它（开会话时会把起判前那 30s 回填进本会话，起点必须
+        跟着回填，否则 start_time + duration_sec 会比 end_time 多出一截，历史行自相矛盾）。
+        """
         if not self._conn:
             return 0
         with self._db_lock:
@@ -679,7 +684,8 @@ class PortHistory:
                 cursor = self._conn.execute(
                     """INSERT INTO charge_sessions (port, start_time, protocol)
                        VALUES (?, ?, ?)""",
-                    (port, time.time(), protocol),
+                    (port, time.time() if start_time is None else float(start_time),
+                     protocol),
                 )
                 self._conn.commit()
                 return cursor.lastrowid
@@ -705,6 +711,25 @@ class PortHistory:
             if (len(self._pending_points) >= self.BATCH_SIZE
                     or now - self._last_commit >= self.BATCH_INTERVAL):
                 self._flush_pending()
+
+    def record_charge_points(self, session_id: int, rows) -> int:
+        """批量缓冲会话采样点（补写预会话回填用），返回入队条数。
+
+        与 record_charge_point 共用同一个待写缓冲与提交节奏，区别只在：
+          · 一次拿锁入队多行（回填最长 120 行，别逐行开 executor）；
+          · 时间戳用采样时的真实时间，而不是入队时刻——否则回填的点会全部挤在
+            "开会话"那一秒上，曲线头部被压成一根竖线。
+        rows: 可迭代的 (timestamp, voltage, current, power, protocol)
+        """
+        if not self._conn or not session_id or not rows:
+            return 0
+        queued = [(session_id, float(t), v, i, p, proto) for t, v, i, p, proto in rows]
+        with self._db_lock:
+            self._pending_points.extend(queued)
+            if (len(self._pending_points) >= self.BATCH_SIZE
+                    or time.time() - self._last_commit >= self.BATCH_INTERVAL):
+                self._flush_pending()
+        return len(queued)
 
     def compute_session_avg_vi(self, session_id: int) -> tuple:
         """从本会话采样点计算时间加权均压/均流, 返回 (avg_v, avg_i) 或 (None, None)。
