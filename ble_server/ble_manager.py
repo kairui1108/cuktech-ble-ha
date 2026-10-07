@@ -739,8 +739,12 @@ class BLEManager:
                         self._publish_charge_event(
                             port, db_sid, es, now,
                             ps.voltage, ps.current, duration)
-                    _LOGGER.info("Closing session %s (port %d, %.1fWh, %ds)",
-                                 sid if sid else "n/a", port, es.session_wh, duration)
+                    # 措辞与 _close_session 里那条统一：每次会话闭合只有一种格式，
+                    # 都能用同一个 "reason=" 检索到。这条是关停时的批量清理路径，
+                    # 不走 _close_session，所以自己打一行。
+                    _LOGGER.info("Session %s closed (port=%s, %.1fWh, %ds, reason=%s)",
+                                 sid if sid else "n/a", PORT_NAMES.get(port, port),
+                                 es.session_wh, duration, reason)
                     if db_sid and self._history and self.record_sessions:
                         self._history.end_session(sid, es.session_wh, es.max_power, 0, 0, duration)
 
@@ -926,9 +930,11 @@ class BLEManager:
                 reason = (END_REASON_UNPLUG if voltage < det.VOLTAGE_FLOOR_V
                           else END_REASON_NO_LOAD)
                 sid = self._close_session(piid, timestamp, voltage, current, reason)
-                _LOGGER.info("Session %s ended by no-load (port=%s, %.1fWh, %.1fV, reason=%s)",
+                # 这条只补"电压 + 是拔出还是设备不吸电"的现场值；reason 由
+                # _close_session 里那条统一打（避免同一次闭合出现两条 reason=）
+                _LOGGER.info("Session %s ended by no-load (port=%s, %.1fWh, %.1fV)",
                              sid if sid else "n/a", PORT_NAMES.get(piid, piid),
-                             es.session_wh, voltage, reason)
+                             es.session_wh, voltage)
                 return
             self._no_load_since[piid] = None
             self._no_load_armed[piid] = False
@@ -1163,6 +1169,16 @@ class BLEManager:
                 self._permanent_last_point[piid] = 0.0
         es.last_end_time = timestamp
         duration = int(timestamp - (es.session_start or timestamp))
+        # 结束原因统一在这里落一条日志：所有终止路径都收敛到 _close_session，但调用点
+        # 是分散的（用户/限额关端口、定时器发现拔出、无负载去抖、低功率收敛…），过去
+        # 只有"无负载/低功率"两条分支自带 reason=，其余路径只发充电完成事件、不打原因
+        # ——排查时只能靠相邻的 POST /api/port 反推（实测踩过：网页手动关 C2，日志里
+        # 只剩 "Charge event published"）。was_charging 守卫保证每次真实闭合恰好一条，
+        # 占位清理的二次进入不会重复打。
+        if was_charging:
+            _LOGGER.info("Session %s closed (port=%s, %.1fWh, %ds, reason=%s)",
+                         sid if sid else "n/a", PORT_NAMES.get(piid, piid),
+                         es.session_wh, duration, reason)
         # 仅真实会话（开启记录期间创建的正 sid）可以写库；负 sid 为关闭期间占位
         db_sid = sid if (sid and sid > 0) else 0
 

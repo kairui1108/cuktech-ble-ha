@@ -43,10 +43,12 @@ class TestHandleChart:
     @pytest.fixture
     def server(self, real_history):
         """Create a Server instance with real history."""
+        from collections import OrderedDict
         from ha_server import Server
         s = Server.__new__(Server)
         s.history = real_history
-        s._chart_cache = {}
+        # 与生产 __init__ 同类型：缓存用 OrderedDict（淘汰依赖 move_to_end/popitem）
+        s._chart_cache = OrderedDict()
         s._chart_cache_ttl = 10
         s._chart_cache_max = 50
         return s
@@ -79,6 +81,78 @@ class TestHandleChart:
 
         await server.handle_chart(request)
         assert len(server._chart_cache) == 1
+
+    @pytest.mark.asyncio
+    async def test_chart_long_range_interval_coarsened(self, server):
+        """长区间强制粗化：720h 即便请求 5s 桶也不能生成 MB 级 body。"""
+        request = AsyncMock()
+        request.query = {"hours": "720", "interval": "5"}
+        request.headers = {}
+
+        result = await server.handle_chart(request)
+        body = json.loads(result.body)
+        # 720h / 1800s = 1440 个桶（+1 端点）；未粗化时会接近 51.8 万个点
+        assert len(body["labels"]) <= 1441, f"点数未收敛: {len(body['labels'])}"
+        assert any(k.endswith(":1800") for k in server._chart_cache), \
+            f"缓存键应反映生效后的 interval: {list(server._chart_cache)}"
+
+    @pytest.mark.asyncio
+    async def test_chart_cache_evicts_by_total_bytes(self, server):
+        """缓存总字节封顶：不同参数反复请求也不能无限占用内存。"""
+        from collections import OrderedDict
+        server._chart_cache = OrderedDict()
+        server._chart_cache_max = 50          # 条数上限放宽，只考验字节上限
+        server._chart_cache_max_bytes = 2048  # 极小总量上限
+        server._chart_cache_max_entry_bytes = 10 ** 9
+
+        for hours in ("1", "2", "3", "4"):
+            request = AsyncMock()
+            request.query = {"hours": hours, "interval": "20"}
+            request.headers = {}
+            await server.handle_chart(request)
+
+        total = sum(len(e[2]) for e in server._chart_cache.values())
+        assert len(server._chart_cache) < 4, "超总量上限应淘汰旧条目"
+        assert total <= 2048 or len(server._chart_cache) == 1, total
+
+    @pytest.mark.asyncio
+    async def test_chart_cache_keeps_the_freshly_rebuilt_entry(self, server):
+        """TTL 过期后重算同一个 key：淘汰不得把刚算好的那条删掉。
+
+        OrderedDict 覆盖已存在的键会**保留原位置**，而"队首那条过期→重算写回同一个
+        cache_key"正是常见路径：若不先 move_to_end，超总量触发的 popitem(last=False)
+        会先删掉刚写入的 body，此后同一图表每次请求都未命中（白跑 SQLite + json.dumps）。
+        """
+        from collections import OrderedDict
+        server._chart_cache = OrderedDict()
+        server._chart_cache["1.0:20"] = (0, "stale", b"x" * 4096, 0)   # 队首且已过期
+        server._chart_cache["2.0:20"] = (0, "stale2", b"y" * 4096, 0)
+        server._chart_cache_max = 50
+        server._chart_cache_max_entry_bytes = 10 ** 9
+        server._chart_cache_max_bytes = 5000           # 总量已超上限，必触发淘汰
+
+        request = AsyncMock()
+        request.query = {"hours": "1", "interval": "20"}
+        request.headers = {}
+        await server.handle_chart(request)
+
+        assert "1.0:20" in server._chart_cache, "刚重算的条目被淘汰了"
+        assert "2.0:20" not in server._chart_cache, "应淘汰更旧的那条"
+
+    @pytest.mark.asyncio
+    async def test_chart_oversized_body_not_cached(self, server):
+        """单个超大 body 直接不入缓存（缓存只用于加速，不值得留几 MB）。"""
+        from collections import OrderedDict
+        server._chart_cache = OrderedDict()
+        server._chart_cache_max_entry_bytes = 10   # 任何真实 body 都超过它
+
+        request = AsyncMock()
+        request.query = {"hours": "1", "interval": "20"}
+        request.headers = {}
+        result = await server.handle_chart(request)
+
+        assert result.body, "响应本身必须照常返回"
+        assert len(server._chart_cache) == 0, "超大 body 不应进缓存"
 
     @pytest.mark.asyncio
     async def test_chart_etag_304(self, server):
@@ -165,16 +239,33 @@ class TestHandleLogLevel:
 
     @pytest.mark.asyncio
     async def test_set_log_level(self):
-        from ha_server import Server
-        s = Server.__new__(Server)
+        """POST 会同时改运行时级别并**落盘**：必须落在测试专用配置上。
 
+        conftest 已把 CUKTECH_CONFIG_PATH 指向临时文件（否则这里会覆盖生产
+        ble_server/config.yaml，导致"跑完测试、重启服务就变成 debug"）。
+        """
+        import logging
+        import os
+        from pathlib import Path
+        from ha_server import Server
+
+        s = Server.__new__(Server)
         request = AsyncMock()
         request.method = "POST"
         request.json = AsyncMock(return_value={"level": "debug"})
 
-        result = await s.handle_log_level(request)
+        cfg_path = Path(os.environ["CUKTECH_CONFIG_PATH"])
+        cfg_path.write_text("server:\n  log_level: info\n", encoding="utf-8")
+        root_level = logging.getLogger().level
+        try:
+            result = await s.handle_log_level(request)
+        finally:
+            logging.getLogger().setLevel(root_level)   # 别把测试进程留在 DEBUG
+
         body = json.loads(result.body)
         assert body["ok"] is True
+        # 落盘发生在临时配置上（而不是生产配置）
+        assert "debug" in cfg_path.read_text(encoding="utf-8")
 
     @pytest.mark.asyncio
     async def test_set_invalid_log_level(self):
@@ -187,6 +278,29 @@ class TestHandleLogLevel:
 
         result = await s.handle_log_level(request)
         assert result.status == 400
+
+
+class TestSetupMqttMemoryBounds:
+    """paho 的待确认队列必须封顶：默认无上限，断线期间会无限堆积（实测 1.2KB/条）。"""
+
+    @pytest.mark.asyncio
+    async def test_setup_mqtt_caps_pending_queue(self):
+        from ha_server import (Server, MQTT_MAX_QUEUED_MESSAGES,
+                               MQTT_MAX_INFLIGHT_MESSAGES)
+        s = Server.__new__(Server)
+        s.config = MagicMock()
+        s.config.mqtt.enabled = True
+        s.config.mqtt.username = ""
+        s.config.mqtt.password = ""
+        s.ble = MagicMock()      # setup_mqtt 末尾会把发布器挂到 BLE 层
+
+        with patch("paho.mqtt.client.Client") as MockClient:
+            await s.setup_mqtt()
+
+        MockClient.return_value.max_queued_messages_set.assert_called_once_with(
+            MQTT_MAX_QUEUED_MESSAGES)
+        MockClient.return_value.max_inflight_messages_set.assert_called_once_with(
+            MQTT_MAX_INFLIGHT_MESSAGES)
 
 
 class TestHandleProtocol:

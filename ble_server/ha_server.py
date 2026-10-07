@@ -92,6 +92,41 @@ _sse_log = logging.getLogger("cuktech_sse")
 # ── Request size limit (prevent DoS via large payloads) ──
 MAX_REQUEST_BODY_SIZE = 1024 * 1024  # 1 MB
 
+# ── MQTT 待确认队列上限 ──
+# paho 对 QoS>0 的待确认消息默认 max_queued_messages=0（无上限）：连接"看起来还在"
+# 但 broker 不再回 PUBACK（半开 TCP、NAT 超时、broker 卡住）时，1Hz 的状态发布会
+# 一直堆进 _out_messages。实测每条约 1.2KB → 几小时就能吃掉上百 MB。低频状态主题
+# 已改用 QoS0（QoS0 不入队），这里再给低频的 QoS1 路径一个硬上限兜底。
+MQTT_MAX_QUEUED_MESSAGES = 200
+MQTT_MAX_INFLIGHT_MESSAGES = 20
+
+# ── 图表缓存的内存保护 ──
+# 缓存里存的是**整段 JSON body**：720h@30s 实测 6.6MB，而缓存按"条数"上限 10 条，
+# 最坏情况能吃掉几十 MB。这里改成"条数 + 总字节"双重封顶，并给长区间强制更粗的桶。
+CHART_CACHE_MAX_BYTES = 8 * 1024 * 1024      # 缓存 body 总量上限
+CHART_CACHE_MAX_ENTRY_BYTES = 1024 * 1024    # 单条 body 超过它就不进缓存
+# hours 超过阈值 → interval 下限（UI 自身最长 24h@300s，不受影响）
+_CHART_INTERVAL_FLOORS = ((168, 1800), (72, 600), (24, 300))
+
+
+def _chart_interval_floor(hours: float) -> int:
+    """长区间的桶宽下限：避免构造型查询生成数 MB 的 body。"""
+    for threshold, floor in _CHART_INTERVAL_FLOORS:
+        if hours > threshold:
+            return floor
+    return 5      # ≤24h：沿用请求值（最小 5s）
+
+
+def _chart_cache_bytes(cache) -> int:
+    """缓存里所有 body 的字节总量（条数很少，直接累加即可）。"""
+    total = 0
+    for entry in cache.values():
+        try:
+            total += len(entry[2])
+        except (TypeError, IndexError):
+            continue
+    return total
+
 
 class SSEEmitter:
     """SSE event broadcaster — push events to all connected browser clients."""
@@ -174,6 +209,8 @@ class Server:
         self._chart_cache: OrderedDict = OrderedDict()
         self._chart_cache_ttl = 10
         self._chart_cache_max = 10
+        self._chart_cache_max_bytes = CHART_CACHE_MAX_BYTES
+        self._chart_cache_max_entry_bytes = CHART_CACHE_MAX_ENTRY_BYTES
         self.sse = SSEEmitter()
         self._xiaomi_sessions: dict[str, tuple[Any, asyncio.TimerHandle | None]] = {}  # session_id -> (client, timer)
         self._start_time = time.time()
@@ -342,6 +379,9 @@ class Server:
 
         import paho.mqtt.client as mqtt
         self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        # 见模块常量注释：给待确认队列硬上限，避免断线/半开连接期间无限堆积
+        self.mqtt_client.max_queued_messages_set(MQTT_MAX_QUEUED_MESSAGES)
+        self.mqtt_client.max_inflight_messages_set(MQTT_MAX_INFLIGHT_MESSAGES)
         if self.config.mqtt.username:
             self.mqtt_client.username_pw_set(self.config.mqtt.username, self.config.mqtt.password)
         self.mqtt_client.reconnect_delay_set(min_delay=1, max_delay=60)
@@ -950,6 +990,9 @@ class Server:
             interval = max(int(request.query.get("interval", 30)), 5)
         except (ValueError, TypeError):
             return web.json_response({"ok": False, "error": "invalid interval parameter"}, status=400)
+        # 长区间强制更粗的桶：body 是整段 JSON，720h@30s 会生成 6.6MB（只是把同样的
+        # 点画得更密）。先粗化再算 cache_key，保证缓存键反映真正生效的 interval。
+        interval = max(interval, _chart_interval_floor(hours))
         cache_key = f"{hours}:{interval}"
 
         # Check cache
@@ -1023,10 +1066,22 @@ class Server:
 
         body, etag = await asyncio.to_thread(_build_chart, epochs, all_labels, raw_rows)
 
-        # Update cache: OrderedDict O(1) eviction
-        self._chart_cache[cache_key] = (now, etag, body, now)
-        if len(self._chart_cache) > self._chart_cache_max:
-            self._chart_cache.popitem(last=False)
+        # 更新缓存：条数 + 总字节双重封顶（OrderedDict 按插入序淘汰最旧）。
+        # 单个超大 body 直接不入缓存——缓存是加速用的，不值得为它留几 MB。
+        max_entry = getattr(self, "_chart_cache_max_entry_bytes", CHART_CACHE_MAX_ENTRY_BYTES)
+        max_bytes = getattr(self, "_chart_cache_max_bytes", CHART_CACHE_MAX_BYTES)
+        if len(body) <= max_entry:
+            self._chart_cache[cache_key] = (now, etag, body, now)
+            # 覆盖已存在的键时 OrderedDict 会**保留原位置**，而"TTL 过期后重算同一个
+            # cache_key"正是常见路径：不把它移到队尾，下面的淘汰就可能先删掉刚算好的
+            # 这一条（之后同一图表每次请求都未命中，白跑 SQLite + json.dumps）。
+            self._chart_cache.move_to_end(cache_key)
+            while len(self._chart_cache) > self._chart_cache_max:
+                self._chart_cache.popitem(last=False)
+            # 至少保留刚写入的这一条，避免"单条就超总量上限"时把缓存清空
+            while (len(self._chart_cache) > 1
+                   and _chart_cache_bytes(self._chart_cache) > max_bytes):
+                self._chart_cache.popitem(last=False)
 
         return web.Response(
             body=body,

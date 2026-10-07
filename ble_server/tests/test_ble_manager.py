@@ -1213,6 +1213,70 @@ class TestSessionRecording:
         mgr._history.end_session.assert_not_called()
         mgr._history.delete_session.assert_not_called()
 
+    def test_close_active_sessions_logs_reason(self, caplog):
+        """停机关闭会话时日志必须带 reason=（此前只有探测路径带）。
+
+        除探测路径外，这行是唯一记录"会话为什么结束"的地方：以前只打
+        (port, Wh, 秒)，关停/关闭记录路径的原因只能靠相邻的 "Shutting down..."
+        去猜——与"结束原因必须能从日志读到"的约定不符。
+        """
+        mgr = make_manager()
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = time.time() - 60
+        es.session_wh = 1.5            # ≥0.05 才会走到这条日志
+        es.max_power = 20.0
+
+        with caplog.at_level("INFO"):
+            mgr._close_active_sessions(END_REASON_SHUTDOWN)
+
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("closed" in m and "reason=shutdown" in m for m in msgs), msgs
+
+    def test_no_load_close_logs_reason_exactly_once(self, caplog):
+        """一次无负载闭合只能有一条带 reason= 的记录。
+
+        原因统一由 _close_session 打；无负载分支过去自己也带一个 reason=，
+        同一次闭合出现两条会让人误以为结束了两次。
+        """
+        mgr = make_manager()
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = time.time() - 300
+        es.session_wh = 1.0
+        es.max_power = 20.0
+        # 去抖已满 + 电压仍在协商范围（5.1V）→ NO_LOAD（而不是 UNPLUG）
+        mgr._no_load_since[1] = time.time() - (mgr.NO_LOAD_DEBOUNCE_SEC + 1)
+
+        with caplog.at_level("INFO"):
+            mgr._manage_session(1, time.time(), 5.1, 0.0, active=False)
+
+        hits = [r.getMessage() for r in caplog.records if "reason=" in r.getMessage()]
+        assert len(hits) == 1, hits
+        assert "reason=no_load" in hits[0]
+
+    def test_close_session_logs_reason_for_user_off(self, caplog):
+        """用户/限额关端口这条路径过去完全不打原因。
+
+        实测踩到过：网页手动关 C2（POST /api/port），日志里只剩
+        "Charge event published"，结束原因只能从相邻的访问日志反推。
+        """
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = time.time() - 71
+        es.session_wh = 0.38
+        es.max_power = 26.0
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 42
+
+        with caplog.at_level("INFO"):
+            mgr._close_session(1, time.time(), 20.0, 0.02, END_REASON_USER_OFF)
+
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("reason=port_off" in m for m in msgs), msgs
+
     @pytest.mark.asyncio
     async def test_close_active_sessions_recording_off_skips_db_but_publishes(self):
         """停机关闭 + 记录关闭的占位会话：MQTT 事件照发（session_id=0）、不写库。"""
