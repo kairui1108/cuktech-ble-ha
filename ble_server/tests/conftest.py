@@ -1,5 +1,6 @@
 """Shared fixtures for CUKTECH BLE Server tests."""
 import asyncio
+import os
 import sqlite3
 import tempfile
 import pytest
@@ -8,6 +9,22 @@ from unittest.mock import AsyncMock, patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# ha_server 在 **导入时** 就会按 CUKTECH_LOG_FILE 建立轮转文件处理器；测试期间
+# 必须指向临时文件，否则会把测试日志写进生产日志（/tmp/cuktech_server.log）。
+# 这行必须在任何 `import ha_server` 之前执行。
+os.environ["CUKTECH_LOG_FILE"] = os.path.join(
+    tempfile.gettempdir(), "cuktech_server_test.log")
+
+# 同理（更隐蔽、真出过事）：配置类 handler 会**真的写盘**——`/api/log-level` 的
+# POST 会把级别写回 `_config_path()`，`/api/config`、bemfa modified 回写也一样。
+# 默认路径是 ble_server/config.yaml（**生产配置**），于是"跑一次测试"就把生产的
+# 日志级别改成 debug，下次重启服务就会莫名其妙变成 debug。
+# 这里指向测试专用文件并**先建好**：`_load_yaml_config` 在文件不存在时会回退到
+# `Path.cwd()/config.yaml`，那又打回生产文件了。
+_TEST_CONFIG_PATH = os.path.join(tempfile.gettempdir(), "cuktech_config_test.yaml")
+os.environ["CUKTECH_CONFIG_PATH"] = _TEST_CONFIG_PATH
+Path(_TEST_CONFIG_PATH).write_text("server:\n  log_level: info\n", encoding="utf-8")
 
 from history import PortHistory
 

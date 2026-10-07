@@ -14,6 +14,16 @@ from bemfa_client import (
 )
 
 
+# 少数同步测试需要 Future 对象。显式绑定一个模块级事件循环，避免依赖"当前线程
+# 恰好还留着上一个异步测试的循环"——与其它测试文件同进程、顺序不同时会报
+# 'no current event loop'（既有的顺序依赖脆弱性，非被测代码的问题）。
+_TEST_LOOP = asyncio.new_event_loop()
+
+
+def _test_future():
+    return _TEST_LOOP.create_future()
+
+
 class TestBemfaDevice:
     """Test BemfaDevice topic computation."""
 
@@ -103,12 +113,23 @@ class TestBemfaClient:
         assert client.is_connected is False
 
     def test_publish_state_connected(self, client):
-        """publish_state sends MQTT message when connected."""
+        """publish_state 使用 QoS0：状态幂等+retain，QoS0 不会排进待确认队列。"""
         client._on_connect(MagicMock(), None, None, 0, None)
         client.publish_state("charger_c1", MSG_ON)
         dev = client._devices["charger_c1"]
         client._client.publish.assert_called_with(
-            dev.pub_topic, MSG_ON, qos=1, retain=True)
+            dev.pub_topic, MSG_ON, qos=0, retain=True)
+
+    def test_connect_mqtt_caps_pending_queue(self):
+        """paho 的 QoS>0 待确认队列默认无上限，必须显式封顶。"""
+        from bemfa_client import MAX_QUEUED_MESSAGES, MAX_INFLIGHT_MESSAGES
+        c = BemfaClient("test_uid_12345")
+        with patch("bemfa_client.mqtt.Client") as MockClient:
+            c._connect_mqtt()
+        MockClient.return_value.max_queued_messages_set.assert_called_once_with(
+            MAX_QUEUED_MESSAGES)
+        MockClient.return_value.max_inflight_messages_set.assert_called_once_with(
+            MAX_INFLIGHT_MESSAGES)
 
     def test_publish_state_not_connected(self, client):
         """publish_state does nothing when not connected."""
@@ -134,7 +155,7 @@ class TestBemfaClient:
     def test_on_message_ping(self, client):
         """Ping message resets ping_lost."""
         client._ping_lost = 2
-        client._ping_receive_task = asyncio.Future()
+        client._ping_receive_task = _test_future()
         mock_msg = MagicMock()
         mock_msg.topic = TOPIC_PING
         client._on_message(None, None, mock_msg)
@@ -200,8 +221,8 @@ class TestBemfaClient:
 
     def test_stop_cancels_ping_tasks(self, client):
         """stop() cancels ping tasks and disconnects MQTT."""
-        client._ping_publish_task = asyncio.Future()
-        client._ping_receive_task = asyncio.Future()
+        client._ping_publish_task = _test_future()
+        client._ping_receive_task = _test_future()
         asyncio.run(client.stop())
         assert client._ping_publish_task is None
         assert client._ping_receive_task is None

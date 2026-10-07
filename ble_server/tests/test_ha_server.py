@@ -43,10 +43,12 @@ class TestHandleChart:
     @pytest.fixture
     def server(self, real_history):
         """Create a Server instance with real history."""
+        from collections import OrderedDict
         from ha_server import Server
         s = Server.__new__(Server)
         s.history = real_history
-        s._chart_cache = {}
+        # 与生产 __init__ 同类型：缓存用 OrderedDict（淘汰依赖 move_to_end/popitem）
+        s._chart_cache = OrderedDict()
         s._chart_cache_ttl = 10
         s._chart_cache_max = 50
         return s
@@ -79,6 +81,78 @@ class TestHandleChart:
 
         await server.handle_chart(request)
         assert len(server._chart_cache) == 1
+
+    @pytest.mark.asyncio
+    async def test_chart_long_range_interval_coarsened(self, server):
+        """长区间强制粗化：720h 即便请求 5s 桶也不能生成 MB 级 body。"""
+        request = AsyncMock()
+        request.query = {"hours": "720", "interval": "5"}
+        request.headers = {}
+
+        result = await server.handle_chart(request)
+        body = json.loads(result.body)
+        # 720h / 1800s = 1440 个桶（+1 端点）；未粗化时会接近 51.8 万个点
+        assert len(body["labels"]) <= 1441, f"点数未收敛: {len(body['labels'])}"
+        assert any(k.endswith(":1800") for k in server._chart_cache), \
+            f"缓存键应反映生效后的 interval: {list(server._chart_cache)}"
+
+    @pytest.mark.asyncio
+    async def test_chart_cache_evicts_by_total_bytes(self, server):
+        """缓存总字节封顶：不同参数反复请求也不能无限占用内存。"""
+        from collections import OrderedDict
+        server._chart_cache = OrderedDict()
+        server._chart_cache_max = 50          # 条数上限放宽，只考验字节上限
+        server._chart_cache_max_bytes = 2048  # 极小总量上限
+        server._chart_cache_max_entry_bytes = 10 ** 9
+
+        for hours in ("1", "2", "3", "4"):
+            request = AsyncMock()
+            request.query = {"hours": hours, "interval": "20"}
+            request.headers = {}
+            await server.handle_chart(request)
+
+        total = sum(len(e[2]) for e in server._chart_cache.values())
+        assert len(server._chart_cache) < 4, "超总量上限应淘汰旧条目"
+        assert total <= 2048 or len(server._chart_cache) == 1, total
+
+    @pytest.mark.asyncio
+    async def test_chart_cache_keeps_the_freshly_rebuilt_entry(self, server):
+        """TTL 过期后重算同一个 key：淘汰不得把刚算好的那条删掉。
+
+        OrderedDict 覆盖已存在的键会**保留原位置**，而"队首那条过期→重算写回同一个
+        cache_key"正是常见路径：若不先 move_to_end，超总量触发的 popitem(last=False)
+        会先删掉刚写入的 body，此后同一图表每次请求都未命中（白跑 SQLite + json.dumps）。
+        """
+        from collections import OrderedDict
+        server._chart_cache = OrderedDict()
+        server._chart_cache["1.0:20"] = (0, "stale", b"x" * 4096, 0)   # 队首且已过期
+        server._chart_cache["2.0:20"] = (0, "stale2", b"y" * 4096, 0)
+        server._chart_cache_max = 50
+        server._chart_cache_max_entry_bytes = 10 ** 9
+        server._chart_cache_max_bytes = 5000           # 总量已超上限，必触发淘汰
+
+        request = AsyncMock()
+        request.query = {"hours": "1", "interval": "20"}
+        request.headers = {}
+        await server.handle_chart(request)
+
+        assert "1.0:20" in server._chart_cache, "刚重算的条目被淘汰了"
+        assert "2.0:20" not in server._chart_cache, "应淘汰更旧的那条"
+
+    @pytest.mark.asyncio
+    async def test_chart_oversized_body_not_cached(self, server):
+        """单个超大 body 直接不入缓存（缓存只用于加速，不值得留几 MB）。"""
+        from collections import OrderedDict
+        server._chart_cache = OrderedDict()
+        server._chart_cache_max_entry_bytes = 10   # 任何真实 body 都超过它
+
+        request = AsyncMock()
+        request.query = {"hours": "1", "interval": "20"}
+        request.headers = {}
+        result = await server.handle_chart(request)
+
+        assert result.body, "响应本身必须照常返回"
+        assert len(server._chart_cache) == 0, "超大 body 不应进缓存"
 
     @pytest.mark.asyncio
     async def test_chart_etag_304(self, server):
@@ -165,16 +239,33 @@ class TestHandleLogLevel:
 
     @pytest.mark.asyncio
     async def test_set_log_level(self):
-        from ha_server import Server
-        s = Server.__new__(Server)
+        """POST 会同时改运行时级别并**落盘**：必须落在测试专用配置上。
 
+        conftest 已把 CUKTECH_CONFIG_PATH 指向临时文件（否则这里会覆盖生产
+        ble_server/config.yaml，导致"跑完测试、重启服务就变成 debug"）。
+        """
+        import logging
+        import os
+        from pathlib import Path
+        from ha_server import Server
+
+        s = Server.__new__(Server)
         request = AsyncMock()
         request.method = "POST"
         request.json = AsyncMock(return_value={"level": "debug"})
 
-        result = await s.handle_log_level(request)
+        cfg_path = Path(os.environ["CUKTECH_CONFIG_PATH"])
+        cfg_path.write_text("server:\n  log_level: info\n", encoding="utf-8")
+        root_level = logging.getLogger().level
+        try:
+            result = await s.handle_log_level(request)
+        finally:
+            logging.getLogger().setLevel(root_level)   # 别把测试进程留在 DEBUG
+
         body = json.loads(result.body)
         assert body["ok"] is True
+        # 落盘发生在临时配置上（而不是生产配置）
+        assert "debug" in cfg_path.read_text(encoding="utf-8")
 
     @pytest.mark.asyncio
     async def test_set_invalid_log_level(self):
@@ -187,6 +278,29 @@ class TestHandleLogLevel:
 
         result = await s.handle_log_level(request)
         assert result.status == 400
+
+
+class TestSetupMqttMemoryBounds:
+    """paho 的待确认队列必须封顶：默认无上限，断线期间会无限堆积（实测 1.2KB/条）。"""
+
+    @pytest.mark.asyncio
+    async def test_setup_mqtt_caps_pending_queue(self):
+        from ha_server import (Server, MQTT_MAX_QUEUED_MESSAGES,
+                               MQTT_MAX_INFLIGHT_MESSAGES)
+        s = Server.__new__(Server)
+        s.config = MagicMock()
+        s.config.mqtt.enabled = True
+        s.config.mqtt.username = ""
+        s.config.mqtt.password = ""
+        s.ble = MagicMock()      # setup_mqtt 末尾会把发布器挂到 BLE 层
+
+        with patch("paho.mqtt.client.Client") as MockClient:
+            await s.setup_mqtt()
+
+        MockClient.return_value.max_queued_messages_set.assert_called_once_with(
+            MQTT_MAX_QUEUED_MESSAGES)
+        MockClient.return_value.max_inflight_messages_set.assert_called_once_with(
+            MQTT_MAX_INFLIGHT_MESSAGES)
 
 
 class TestHandleProtocol:
@@ -326,6 +440,9 @@ class TestSessionRecordingAPI:
         s.history = real_history
         s.ble = MagicMock()
         s.ble.record_sessions = True
+        # 端口模式（长期供电/充满即停）：status 会读取，mock 必须给出真实形状
+        s.ble.get_port_modes_state.return_value = {
+            "permanent_ports": [], "full_off_ports": [], "full_off_fired": []}
         s._status_cache_valid = False
         s._status_cache_bytes = None
         return s
@@ -784,3 +901,319 @@ class TestStaticCacheKeys:
         assert "/static/plugin_imgs/logo.png" in keys
         assert "/static/locales/zh-CN.js" in keys
         assert not any("\\" in k for k in keys)
+
+
+class TestRequestTimeoutMiddleware:
+    """请求超时中间件：SSE 是长连接，不能再被超时掐断。"""
+
+    @pytest.mark.asyncio
+    async def test_sse_is_not_wrapped_in_timeout(self, monkeypatch):
+        """SSE 不设超时（原先 120s 会让浏览器每 2 分钟重连一次）。"""
+        import ha_server
+        wrapped = []
+
+        async def fake_wait_for(coro, timeout):
+            wrapped.append(timeout)
+            return await coro
+
+        monkeypatch.setattr(ha_server.asyncio, "wait_for", fake_wait_for)
+        request = MagicMock()
+        request.path = "/api/events"
+        request.method = "GET"
+        handler = AsyncMock(return_value="stream-response")
+
+        result = await ha_server.request_timeout_middleware(request, handler)
+
+        assert result == "stream-response"
+        assert wrapped == [], "SSE 不应被 wait_for 包裹"
+
+    @pytest.mark.asyncio
+    async def test_api_still_has_30s_timeout(self, monkeypatch):
+        """普通 API 仍保留 30s 超时。"""
+        import ha_server
+        wrapped = []
+
+        async def fake_wait_for(coro, timeout):
+            wrapped.append(timeout)
+            return await coro
+
+        monkeypatch.setattr(ha_server.asyncio, "wait_for", fake_wait_for)
+        request = MagicMock()
+        request.path = "/api/status"
+        request.method = "GET"
+        handler = AsyncMock(return_value="ok")
+
+        result = await ha_server.request_timeout_middleware(request, handler)
+
+        assert result == "ok"
+        assert wrapped == [30.0]
+
+    @pytest.mark.asyncio
+    async def test_static_path_has_no_timeout(self, monkeypatch):
+        import ha_server
+        wrapped = []
+
+        async def fake_wait_for(coro, timeout):
+            wrapped.append(timeout)
+            return await coro
+
+        monkeypatch.setattr(ha_server.asyncio, "wait_for", fake_wait_for)
+        request = MagicMock()
+        request.path = "/index.html"
+        request.method = "GET"
+        handler = AsyncMock(return_value="html")
+
+        assert await ha_server.request_timeout_middleware(request, handler) == "html"
+        assert wrapped == []
+
+
+class TestNoAppStateWrites:
+    """后台任务不得写 aiohttp 的 app_（启动后写会触发弃用告警，未来会报错）。"""
+
+    def test_no_task_written_into_app_state(self):
+        import inspect
+        import ha_server
+        src = inspect.getsource(ha_server)
+        assert 'app_["ble_task"]' not in src
+        assert 'app_["backfill_task"]' not in src
+
+    def test_tasks_are_server_attributes(self):
+        import inspect
+        import ha_server
+        enable_src = inspect.getsource(ha_server.Server.handle_enable)
+        assert "self._ble_task" in enable_src
+        assert "app_" not in enable_src, "handle_enable 仍在写 app state"
+
+
+class TestLogRotation:
+    """日志轮转：主日志按大小切割，避免长期运行无限增长。"""
+
+    def test_root_logger_has_rotating_handler(self):
+        import logging
+        import logging.handlers
+        import ha_server   # noqa: F401  确保已导入并完成 handler 安装
+        handlers = logging.getLogger().handlers
+        rolled = [h for h in handlers
+                  if isinstance(h, logging.handlers.RotatingFileHandler)]
+        assert rolled, f"根 logger 缺少轮转文件处理器: {handlers}"
+        h = rolled[0]
+        assert h.maxBytes >= 1024 * 1024
+        assert h.backupCount >= 1
+
+    def test_handlers_not_duplicated_on_reimport(self):
+        import logging
+        import logging.handlers
+        import ha_server
+        before = len(logging.getLogger().handlers)
+        ha_server._setup_logging()      # 重复调用应当幂等
+        assert len(logging.getLogger().handlers) == before
+
+    def test_test_run_does_not_write_production_log(self):
+        """测试期间不得把日志写进生产日志路径。"""
+        import logging
+        import logging.handlers
+        import ha_server
+        for h in logging.getLogger().handlers:
+            if isinstance(h, logging.handlers.RotatingFileHandler):
+                assert "cuktech_server_test" in str(h.baseFilename), \
+                    f"测试日志写到了 {h.baseFilename}"
+
+
+class TestLazyXiaomiImport:
+    """小米云客户端延迟导入：requests/pycryptodome 不随启动常驻（实测省约 6MB）。
+
+    该模块只被 3 个低频 /api/xiaomi/* 端点使用，原先在模块顶层急切导入。
+    """
+
+    def test_ha_server_import_does_not_pull_heavy_deps(self):
+        """在干净子进程里导入 ha_server，不应连带加载 requests / xiaomi_cloud。
+
+        用子进程而非进程内断言：同一 pytest 进程里其它测试可能早已导入过。
+        """
+        import subprocess
+        code = (
+            "import os, sys;"
+            "os.environ['CUKTECH_LOG_FILE']='/tmp/_lazy_xiaomi_probe.log';"
+            "import ha_server;"
+            "print(','.join(m for m in ('requests', 'xiaomi_cloud') if m in sys.modules))"
+        )
+        root = str(Path(__file__).parent.parent)
+        proc = subprocess.run([sys.executable, "-c", code],
+                              capture_output=True, text=True, cwd=root, timeout=120)
+        assert proc.returncode == 0, proc.stderr[-500:]
+        assert proc.stdout.strip() == "", \
+            f"以下模块被急切导入了: {proc.stdout.strip()}"
+
+    def test_loader_returns_client_and_error(self):
+        """按需加载能拿到客户端类与异常类。"""
+        import ha_server
+        pytest.importorskip("requests")
+        client_cls, error_cls = ha_server._load_xiaomi_cloud()
+        assert callable(client_cls)
+        assert isinstance(error_cls, type) and issubclass(error_cls, Exception)
+
+    @pytest.mark.asyncio
+    async def test_login_endpoint_degrades_when_deps_missing(self, monkeypatch):
+        """依赖缺失时返回 503（明确错误），而不是 500 / TypeError。"""
+        import ha_server
+
+        def boom():
+            raise ImportError("no requests")
+
+        monkeypatch.setattr(ha_server, "_load_xiaomi_cloud", boom)
+
+        server = ha_server.Server.__new__(ha_server.Server)
+        server._xiaomi_sessions = {}
+        request = AsyncMock()
+        request.json = AsyncMock(return_value={"server": "cn"})
+
+        resp = await server.handle_xiaomi_login(request)
+        assert resp.status == 503
+        body = json.loads(resp.body)
+        assert body["ok"] is False
+        assert "依赖缺失" in body["error"]
+
+
+class TestPortModesAPI:
+    """/api/port-modes —— 长期供电（常供）/ 充满即停 的读写与互斥。"""
+
+    @pytest.fixture
+    def server(self, real_history):
+        """真 BLEManager（不是 MagicMock）：端口模式状态机本身也要被覆盖。"""
+        from ha_server import Server
+        from ble_manager import BLEManager
+        from state import ChargerState
+        cfg = MagicMock()
+        cfg.server.reconnect_base_delay = 1.0
+        cfg.server.reconnect_max_delay = 300.0
+        s = Server.__new__(Server)
+        s.history = real_history
+        s.ble = BLEManager(mac="AA:BB:CC:DD:EE:FF", token="aabbccddeeff",
+                           state=ChargerState(), config=cfg)
+        s._status_cache_valid = False
+        s._status_cache_bytes = None
+        return s
+
+    def _post(self, server, payload):
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value=payload)
+        return server.handle_port_modes(request)
+
+    @pytest.mark.asyncio
+    async def test_get_defaults_empty(self, server):
+        request = AsyncMock()
+        request.method = "GET"
+        result = await server.handle_port_modes(request)
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert body["permanent_ports"] == [] and body["full_off_ports"] == {}
+
+    @pytest.mark.asyncio
+    async def test_set_permanent_persists(self, server):
+        result = await self._post(server, {"port": "c2", "permanent": True})
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert body["permanent_ports"] == ["c2"]
+        assert server.ble.permanent_ports == {2}
+        assert server.history.get_permanent_ports() == ["c2"], "必须落库（重启后仍生效）"
+
+    @pytest.mark.asyncio
+    async def test_set_full_off_persists_with_mode(self, server):
+        result = await self._post(server, {"port": "c1", "full_off": True, "mode": "always"})
+        body = json.loads(result.body)
+        assert body["ok"] is True
+        assert body["full_off_ports"] == {"c1": "always"}
+        assert server.history.get_full_off() == {"c1": "always"}, "模式一并落库"
+
+    @pytest.mark.asyncio
+    async def test_full_off_default_and_invalid_mode(self, server):
+        # 不带 mode = 与限额一致的默认（once）
+        body = json.loads((await self._post(server, {"port": "c1", "full_off": True})).body)
+        assert body["full_off_ports"] == {"c1": "once"}
+        # 非法 mode 一律拒绝，不能静默归一
+        result = await self._post(server, {"port": "c2", "full_off": True, "mode": "sometimes"})
+        assert result.status == 400
+        assert "mode" in json.loads(result.body)["error"]
+
+    @pytest.mark.asyncio
+    async def test_full_off_rejected_for_permanent_port(self, server):
+        await self._post(server, {"port": "c2", "permanent": True})
+        result = await self._post(server, {"port": "c2", "full_off": True})
+        body = json.loads(result.body)
+        assert result.status == 400
+        assert "full_off" in body["error"]
+        assert server.ble.full_off == {}
+
+    @pytest.mark.asyncio
+    async def test_permanent_clears_full_off_on_same_port(self, server):
+        await self._post(server, {"port": "c2", "full_off": True})
+        result = await self._post(server, {"port": "c2", "permanent": True})
+        body = json.loads(result.body)
+        assert body["permanent_ports"] == ["c2"] and body["full_off_ports"] == {}
+        assert server.history.get_full_off() == {}
+
+    @pytest.mark.asyncio
+    async def test_toggle_off_removes(self, server):
+        await self._post(server, {"port": "c2", "permanent": True})
+        result = await self._post(server, {"port": "c2", "permanent": False})
+        assert json.loads(result.body)["permanent_ports"] == []
+        assert server.history.get_permanent_ports() == []
+
+    @pytest.mark.asyncio
+    async def test_marking_permanent_clears_limit(self, server):
+        """登记长期供电时清掉该口限额并落库（否则"看着设了却永不断电"）。"""
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"port": "c2", "wh": 30, "mode": "always"})
+        await server.handle_charge_limits(request)
+        assert server.ble.get_charge_limits_state()["c2"]["wh"] == 30.0
+
+        await self._post(server, {"port": "c2", "permanent": True})
+        assert server.ble.get_charge_limits_state()["c2"]["wh"] == 0.0
+        assert server.history.get_charge_limits()["c2"]["wh"] == 0.0, "清零要落库"
+
+    @pytest.mark.asyncio
+    async def test_limit_rejected_for_permanent_port(self, server):
+        await self._post(server, {"port": "c2", "permanent": True})
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(return_value={"port": "c2", "wh": 10})
+        result = await server.handle_charge_limits(request)
+        body = json.loads(result.body)
+        assert result.status == 400 and "permanent" in body["error"]
+        assert server.ble.get_charge_limits_state()["c2"]["wh"] == 0.0
+
+        # 清限额（wh=0）仍允许：脚本/历史遗留状态需要能被收敛
+        request.json = AsyncMock(return_value={"port": "c2", "wh": 0})
+        assert (await server.handle_charge_limits(request)).status == 200
+
+    @pytest.mark.asyncio
+    async def test_validation_errors(self, server):
+        assert (await self._post(server, {"port": "c9", "permanent": True})).status == 400
+        assert (await self._post(server, {"permanent": True})).status == 400
+        assert (await self._post(server, {"port": "c1"})).status == 400
+        assert (await self._post(server, {"port": "c1", "permanent": "yes"})).status == 400
+        assert (await self._post(server, {"port": "c1", "full_off": 1})).status == 400
+
+    @pytest.mark.asyncio
+    async def test_bad_json_rejected(self, server):
+        import json as _json
+        request = AsyncMock()
+        request.method = "POST"
+        request.json = AsyncMock(side_effect=_json.JSONDecodeError("bad", "", 0))
+        result = await server.handle_port_modes(request)
+        assert result.status == 400
+
+    @pytest.mark.asyncio
+    async def test_status_includes_port_modes(self, server):
+        await self._post(server, {"port": "c2", "permanent": True})
+        await self._post(server, {"port": "c3", "full_off": True, "mode": "always"})
+        server.state = MagicMock()
+        server.state.to_dict = AsyncMock(return_value={})
+        server.mqtt_client = None
+        request = AsyncMock()
+        result = await server.handle_status(request)
+        body = json.loads(result.body)
+        assert body["permanent_ports"] == ["c2"]
+        assert body["full_off_ports"] == {"c3": "always"}

@@ -111,6 +111,13 @@
     --hover-bg: rgba(255, 255, 255, 0.06);
     --divider: rgba(255, 255, 255, 0.08);
     --track: rgba(128, 128, 128, 0.2);
+    /* 环形占比的底槽（用电统计卡）：比通用 --track 更淡，让提亮后的段自己跳出来 */
+    --ring-track: rgba(128, 128, 128, 0.22);
+    /* 用电统计卡三个 tab 共用的固定高度：切 tab 时卡片不跳。
+       159px = 环/条 8–10px + 间距 10px + 最多 4 行（"按端口"固定 4 行，是最紧的一档）。
+       注意：这个变量以前只在 .energy-pane 里被 var() 引用、全仓从未赋值，
+       等于永远吃 var() 的默认值——现在显式定在这里。 */
+    --energy-pane-h: 159px;
     --chart-grid: rgba(255, 255, 255, 0.05);
     --dot-off: #666;
     --pval-color: #FFF;
@@ -159,12 +166,25 @@ html[data-appearance="light"] {
     --text-sub: #666;
     --text-dim: #888;
 
-    /* 协议色（浅色版）：深一档才够 3:1 的图形对比度（绿 #17a848 白底 3.12:1） */
-    --proto-pd: #17a848;
-    --proto-pps: #1478ad;
-    --proto-ufcs: #a94f06;
-    --proto-scp: #8f6600;
-    --proto-other: #8a8a90;
+    /* 协议色（浅色版）：深色那四档搬到白底上会发灰——原 PD #17a848 相对亮度 0.287
+       已经**贴着图形 3:1 的上限**（白底 3.12:1，3:1 要求亮度 ≤0.30），PPS #1478ad
+       彩度只有 36。也就是说"暗淡"是 3:1 这条上限本身造成的，换色号解决不了，
+       于是这里按"提鲜"重取，并**只为 PD 开一个记录在案的例外**：
+         · PD #00c46a 白底 2.31:1 —— 低于图形 3:1（与 --chart-bar 2.27:1 同一档，
+           见 index_light_contrast_test.js 的"记录例外"块）。可接受的理由：环形里的
+           占比同时由右侧图例（圆点 + 名称 + Wh + 次数·占比）逐项给出，颜色不是唯一
+           信息通道；且 PD 通常是 11px 宽的大段弧，不是靠颜色分辨的小图形。
+         · 其余三档仍守 ≥3:1：PPS #2c63c8 5.64:1 / UFCS #c2620e 4.16:1 / SCP #b08010 3.53:1。
+       深色主题的四档不动（取向见 :root 里 --proto-* 注释）。 */
+    --proto-pd: #00c46a;
+    --proto-pps: #2c63c8;
+    --proto-ufcs: #c2620e;
+    --proto-scp: #b08010;
+    --proto-other: #6f6f76;
+
+    /* 环槽：比通用 --track 更淡。段色提亮后，槽越淡段越跳得出来；
+       把槽压深只会让段与槽的明度接近、对比更差（实测 #17a848 对槽 2.50→1.86）。 */
+    --ring-track: rgba(0, 0, 0, 0.06);
 
     /* 品牌青：取满饱和度又刚好过 AA 的那一档（#00838f 白底 4.52:1），
        原来的 #0d7c8a 偏灰，整页看上去没颜色。 */
@@ -258,7 +278,7 @@ a { color: inherit; text-decoration: none; }
 
 /* 实时数值用等宽数位，刷新时不左右跳 */
 .metric-value, .port-power-value, .port-va, .power-value, .mini-stat-value, .sd-value,
-.usb-pval, .charge-limit-progress, .countdown-current, .charge-limit-status {
+.usb-pval, .charge-limit-progress, .countdown-current {
     font-variant-numeric: tabular-nums;
 }
 
@@ -1012,6 +1032,10 @@ html[data-appearance="light"] .port-icon img { filter: invert(1); }
     gap: 0;
     overflow: hidden;              /* 被翻下去的卡滑出即裁掉，别去掉 */
     touch-action: pan-y;           /* 纵向留给页面滚动，横向手势自己接管 */
+    /* 顶部留出与悬停抬升量等高的空档：overflow: hidden 会连卡片一起裁掉，
+       不预留的话栈顶那张一 hover 就被切掉顶上一条边。
+       padding-bottom 由 index.html 按卡数内联写入，两个长写属性互不影响。 */
+    padding-top: calc(var(--card-lift) * -1);
 }
 .deck > * {
     grid-area: 1 / 1;
@@ -1065,11 +1089,35 @@ html[data-appearance="light"] .port-icon img { filter: invert(1); }
     box-shadow: var(--card-inset-shadow);
     --port-color: var(--accent);
     --port-color-rgb: var(--accent-rgb);
+    /* 抬升走 translate（见下面的 hover 规则），transform/width 是牌堆翻页要的过渡。
+       这一条与 .deck > * 同权重且更靠后，会整个取代后者 —— 所以 transform/width
+       必须原样带过来，漏掉翻页就没有过渡了。 */
+    transition: transform var(--dur-slow) var(--ease), width var(--dur-slow) var(--ease),
+                translate var(--dur) var(--ease), border-color var(--dur) var(--ease),
+                box-shadow var(--dur) var(--ease);
 }
 .charge-limit-item:has(.c1), .countdown-item:has(.c1) { --port-color: var(--port-c1); --port-color-rgb: 255, 122, 0; }
 .charge-limit-item:has(.c2), .countdown-item:has(.c2) { --port-color: var(--port-c2); --port-color-rgb: 70, 180, 255; }
 .charge-limit-item:has(.c3), .countdown-item:has(.c3) { --port-color: var(--port-c3); --port-color-rgb: 137, 216, 243; }
 .charge-limit-item:has(.a),  .countdown-item:has(.a)  { --port-color: var(--port-a);  --port-color-rgb: 255, 210, 75; }
+
+/* ── hover 微浮动：卡片轻轻抬起 ──
+   卡组的站位由 transform: translateY(--depth) 决定（翻页飞出、跟手拖拽也都写这
+   一条），所以抬升**只能**走独立的 translate 属性：两个属性各占一条通道，谁也
+   不覆盖谁。别把这里改成 transform —— 那会顶掉 --depth 的站位，牌堆当场塌。
+   抬多少、描边与投影怎么变沿用全站的 --card-lift / --shadow-lift（与
+   .port-card:hover 同一套语言：深色无投影，靠上浮 + 描边提亮；浅色再补一层
+   投影把白卡托起来）。顶层卡与"脚本没跑起来时的纵向列表"都是同一张卡，一套写
+   法两边都生效。
+   限定能真 hover 的设备：触摸屏点一下会留下"粘住"的 hover 态，卡片回不去。 */
+@media (hover: hover) and (pointer: fine) {
+    .charge-limit-item:hover,
+    .countdown-item:hover {
+        translate: 0 var(--card-lift);
+        border-color: var(--card-border);
+        box-shadow: var(--shadow-lift);
+    }
+}
 
 .charge-limit-header,
 .countdown-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -1086,7 +1134,6 @@ html[data-appearance="light"] .port-icon img { filter: invert(1); }
     border: 1px solid var(--port-color);
 }
 html[data-appearance="light"] .countdown-port::before { border-color: #7A7A7A; }
-.charge-limit-status,
 .countdown-current { font-size: 13px; color: var(--text-dim); }
 
 .charge-limit-bar {
@@ -1143,6 +1190,7 @@ html[data-appearance="light"] .charge-limit-bar-fill { box-shadow: inset 0 0 0 1
        侧栏里只剩 ~41px，留了内边距 "120分" 就会被折成两行 */
     padding: 7px 0;
     white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;   /* 窄栏宁可截断，也不顶出药丸 */
     border-radius: var(--r-chip);
     border: 1px solid var(--card-border);
     background: var(--chip-bg);
@@ -1190,6 +1238,166 @@ html[data-appearance="light"] .charge-limit-bar-fill { box-shadow: inset 0 0 0 1
     border: 1px solid rgba(var(--danger-rgb), 0.3);
 }
 .countdown-toggle-btn.clear:hover { background: rgba(var(--danger-rgb), 0.26); }
+
+/* 「自动」和 5/10/…Wh 预设值同款：等宽、无圆点，开启/触发用端口色与警示色区分
+   （预设值是瞬时按钮没有常驻选中态，这里沿用它们按下时的配色当"已开启"） */
+.countdown-quick-btn.limit-auto.is-on {
+    border-color: var(--port-color);
+    background: rgba(var(--port-color-rgb), 0.25);
+    color: var(--text);
+}
+.countdown-quick-btn.limit-auto.is-fired {
+    border-color: rgba(var(--danger-rgb), 0.6);
+    background: rgba(var(--danger-rgb), 0.18);
+}
+.countdown-quick-btn.limit-auto.is-disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 记录行里的"长期供电"徽标（charge_history.js 两页共用，样式各自定义） */
+/* ── 卡头的"长期供电"开关 ──
+   胶囊徽标样式会被当成状态标签（用户不会去点它），这里做成通用开关：
+   轨道 + 滑块 + 文字。::before 把可点区域撑到触屏尺寸，但**不改变布局高度**
+   （卡高由卡组/网格决定，多 1px 都会把层叠几何顶开）。 */
+.limit-perm-switch {
+    position: relative; display: inline-flex; align-items: center; gap: 6px;
+    padding: 0; border: 0; background: none; cursor: pointer;
+    font: inherit; font-size: 11px; line-height: 1.4; color: var(--text-sub);
+    flex: none; white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+    transition: color var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+}
+.limit-perm-switch::before { content: ""; position: absolute; inset: -11px -8px; }
+.limit-perm-switch-track {
+    position: relative; flex: none;
+    width: 26px; height: 15px; border-radius: 999px;
+    background: rgba(128, 128, 128, 0.28);
+    border: 1px solid var(--card-border);
+    transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.limit-perm-switch-track::after {
+    content: ""; position: absolute; top: 1px; left: 1px;
+    width: 11px; height: 11px; border-radius: 50%;
+    background: var(--text-sub);
+    transition: transform var(--dur) var(--ease), background var(--dur-fast) var(--ease);
+}
+.limit-perm-switch.is-on { color: var(--text); }
+.limit-perm-switch.is-on .limit-perm-switch-track {
+    background: rgba(var(--port-color-rgb), 0.32);
+    border-color: var(--port-color);
+}
+.limit-perm-switch.is-on .limit-perm-switch-track::after {
+    transform: translateX(11px); background: var(--port-color);
+}
+.limit-perm-switch:active .limit-perm-switch-track { transform: scale(0.94); }
+/* 在途：请求发出到回来之间置灰并挡住重复点击（用户看得到"在处理"） */
+.limit-perm-switch[aria-busy="true"] { opacity: 0.5; pointer-events: none; }
+/* 二次确认态：文字变警示色，提示"再点一次" */
+.limit-perm-switch.is-confirm .limit-perm-switch-text { color: var(--warning); font-weight: 600; }
+.limit-perm-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* ── 长期供电端口：这张卡不再有"限额"这回事 ──
+   后端登记长期供电时会清掉该口限额并拒绝再设（API 400），所以限额控件全部收起，
+   只留头部那枚开关 + 这块状态面板。收起用 display:none（不是 visibility 留白）。 */
+.charge-limit-item.is-permanent .countdown-input-group,
+.charge-limit-item.is-permanent .countdown-quick,
+.charge-limit-item.is-permanent .countdown-actions,
+.charge-limit-item.is-permanent .charge-limit-bar,
+.charge-limit-item.is-permanent .charge-limit-progress,
+.charge-limit-item.is-permanent .limit-auto { display: none; }
+/* 卡高恒等于同排最高的那张，收起控件后腾出的空间用"读数"填满——而不是空着，
+   或放一个不随数据变化的装饰圆环。层级靠字号/字重 + 一条发丝线拉开；
+   文字只用 --text / --text-sub（深色 ≈7.4:1、浅色 ≈5.7:1，都过 AA——
+   --text-dim 在浅色下只有 ≈3.5:1，不够承载面板里的说明文字）。 */
+.charge-limit-item.is-permanent { display: flex; flex-direction: column; }
+.charge-limit-item.is-permanent .charge-limit-header { margin-bottom: 4px; }
+.limit-perm-panel { display: none; }
+.charge-limit-item.is-permanent .limit-perm-panel {
+    display: flex; flex-direction: column; justify-content: center;
+    flex: 1; gap: 10px; padding: 2px 0 2px; text-align: left;
+}
+.limit-perm-main { display: flex; flex-direction: column; gap: 2px; }
+/* 主读数 = 本会话平均功率。标签在上、数值在下，与下面两个指标同一套"标签/数值"节奏；
+   用统计值而不是实时功率：实时值每帧都在跳，而"此刻在不在供电"由卡头呼吸点表达。 */
+.limit-perm-avgk { font-size: 11px; color: var(--text-sub); letter-spacing: 0.02em; }
+.limit-perm-power {
+    font-size: 46px; font-weight: 600; line-height: 1.02; letter-spacing: -0.02em;
+    color: var(--text); font-variant-numeric: tabular-nums;
+}
+/* 会话结束后仍显示上一段的平均功率，转次级墨色以示"这不是当下" */
+.limit-perm-power.is-idle { color: var(--text-sub); font-weight: 500; }
+.limit-perm-power .limit-perm-u { font-size: 20px; }
+.limit-perm-u { font-weight: 500; color: var(--text-sub); margin-left: 3px; letter-spacing: 0; }
+.limit-perm-v .limit-perm-u { font-size: 13px; }
+/* 次级指标：标签小、数值大。auto-fit 让"待机时只有一条"也能占满整行不留空洞 */
+.limit-perm-metrics {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 4px 12px;
+    border-top: 1px solid rgba(128, 128, 128, 0.22); padding-top: 12px;
+}
+.limit-perm-metric { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.limit-perm-k { font-size: 11px; color: var(--text-sub); letter-spacing: 0.02em; }
+.limit-perm-v {
+    font-size: 24px; font-weight: 600; color: var(--text);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.limit-perm-note { font-size: 11px; color: var(--text-sub); }
+
+/* ── 卡头端口色点：这一口此刻在供电 → 呼吸（scale + 扩散光环） ──
+   面板里只放统计数字，所以"现在到底在不在输出"全靠这个点。
+   必须只动 ::before 那个圆点：动 .countdown-port 本身会把光环画成围着
+   "● C2" 的矩形（用户看到的就是这个）。 */
+.countdown-port.is-live::before { animation: dot-breathe 2.4s ease-in-out infinite; }
+@keyframes dot-breathe {
+    0%, 100% { transform: scale(1);    box-shadow: 0 0 0 0 rgba(var(--port-color-rgb), 0.55); }
+    50%      { transform: scale(1.18); box-shadow: 0 0 0 5px rgba(var(--port-color-rgb), 0); }
+}
+/* 降低动效偏好：换成静态光环，"在供电"这件事仍然看得见 */
+@media (prefers-reduced-motion: reduce) {
+    .countdown-port.is-live::before {
+        animation: none; box-shadow: 0 0 0 3px rgba(var(--port-color-rgb), 0.30);
+    }
+}
+
+/* ── 端口模式开关（长期供电 / 充满即停） ──
+   挂在限额卡头部（端口名与状态之间），**不新增行**——卡高与改版前完全一致。
+   卡面只有两三个字，解释走 title/aria-label；圆点是状态灯：空心=关、实心=开、
+   警示色=本次已充满断电，不靠颜色也能分辨。
+   文字走 --text-sub（深色 ≈7.4:1、浅色 ≈5.7:1，两套主题都过 AA，不再需要浅色补丁）；
+   开启态的描边/淡染底用端口色，与同一张卡里那枚"自动"芯片、卡头端口名同一套语言。 */
+/* 长期供电开关钉在卡头右端：卡头不再有"未启用/已启用"文字，开关位置因此与
+   是否常供无关（切换时不会左右跳）。margin-left:auto 比 justify-content 更稳——
+   卡头里以后再加/减元素都不会把它挤走。 */
+.limit-modes { display: inline-flex; align-items: center; gap: 4px; flex: none; margin-left: auto; }
+.limit-mode-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 7px; border-radius: 999px;
+    border: 1px solid var(--card-border);
+    background: transparent; color: var(--text-sub);
+    font: inherit; font-size: 10px; line-height: 1.5; cursor: pointer;
+    flex: none; white-space: nowrap;   /* 和 5/10/…Wh 预设同排：自己不被压缩、不换行 */
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease);
+}
+.limit-mode-chip:hover { color: var(--text); }
+.limit-mode-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.limit-mode-chip-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.4; }
+.limit-mode-chip.is-on {
+    color: var(--text);
+    border-color: var(--port-color);
+    background: rgba(var(--port-color-rgb), 0.22);
+}
+.limit-mode-chip.is-on .limit-mode-chip-dot { opacity: 1; }
+.limit-mode-chip.is-fired { border-color: rgba(var(--danger-rgb), 0.55); }
+.limit-mode-chip.is-fired .limit-mode-chip-dot { background: var(--danger); opacity: 1; }
+.limit-mode-chip.is-disabled, .limit-mode-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ── 常供会话"没有曲线"的说明（会话详情浮层，charge_history.js 注入） ──
+   常供曲线只在内存里留 1 小时，界面不再有窗口长度/滑动控件：有曲线就画整段，
+   没曲线就把定高的图表区收起来（那是弹窗里最大的一块空白），只留这行说明。
+   颜色走 --text-sub：--text-dim 在浅色下只有 ≈3.5:1，不够小字 AA。 */
+.sd-no-curve {
+    display: block; margin: 0 0 12px; font-size: 12px; color: var(--text-sub);
+}
 
 /* ── 场景模式卡（phone.html 的 .scene-card 同款：一排圆形图标按钮 + 模式说明） ── */
 .scene-sep { width: 1px; height: 14px; background: var(--divider); align-self: center; }
@@ -1313,29 +1521,24 @@ html[data-appearance="light"] .charge-limit-bar-fill { box-shadow: inset 0 0 0 1
 .energy-pane.is-active {
     display: flex;
     flex-direction: column;
-    height: var(--energy-pane-h, 159px);
+    height: var(--energy-pane-h);
     animation: paneIn var(--dur) var(--ease) both;
 }
+/* 环形 tab（按端口 / 快充协议）：左边一个环承担全部占比，右边是图例行。
+   环已经把占比讲清楚，行内不再画进度条——同一件事画两遍只会让卡片变吵。 */
+.energy-pane.is-active.energy-pane--ring {
+    flex-direction: row;
+    align-items: center;
+    gap: 20px;
+}
+.energy-ring { flex: none; width: 92px; height: 92px; }
+.energy-ring svg { display: block; width: 100%; height: 100%; }
+.energy-ring text { font-variant-numeric: tabular-nums; }
 /* 切 tab 时面板淡入上浮一点，与滑块滑动同一条时间线 */
 @keyframes paneIn {
     from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: none; }
 }
-
-.energy-bar {
-    flex: none;
-    display: flex;
-    height: 8px;
-    border-radius: 4px;
-    overflow: hidden;
-    margin-bottom: 10px;
-    background: var(--track);
-    transition: opacity var(--dur) var(--ease);
-}
-.energy-bar.is-empty { opacity: 0; }
-.energy-bar > div { height: 100%; transition: width var(--dur-slow) var(--ease); }
-/* 相邻分段之间留一条发丝缝：5V / 未识别这类同色段否则会连成一段，看起来少了一项 */
-.energy-bar > div + div { box-shadow: inset 1px 0 0 var(--card-bg); }
 
 /* 行数不足时顶部对齐、多余空间留在下方；万一超出四行仍可滚，但不显示滚动条
    （卡片里出现一条系统滚动条比"内容略挤"更难看） */
@@ -1349,38 +1552,25 @@ html[data-appearance="light"] .charge-limit-bar-fill { box-shadow: inset 0 0 0 1
     scrollbar-width: none;          /* Firefox */
 }
 .energy-rows::-webkit-scrollbar { width: 0; height: 0; display: none; }
-/* 一行五列：端口 / 行内占比条（吃掉中间的空白）/ Wh / 次数 / 占比。
-   之前是四列，名称与数字之间留出一大片空地，等于白扔半张卡宽。 */
+/* 一行三列：名称 / 次数·占比 / 电量。环承担占比后行内只留"读得出数"的三格。
+   后两列都按内容宽（auto）而不是给电量钉一个固定宽：那样会在"次数·占比"与
+   数字之间留出一段几十像素的死空，两行信息被撑开而不是成组。 */
 .energy-row {
     display: grid;
-    grid-template-columns: minmax(64px, auto) minmax(0, 1fr) auto 46px 40px;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 12px;
-    padding: 6px 0;
+    padding: 5px 0;
     border-bottom: 1px solid var(--divider);
     font-variant-numeric: tabular-nums;
 }
-/* 行内条：槽与端口卡负载条同款（浅色下就是一道浅灰，不要深色长条） */
-.energy-track {
-    height: 6px;
-    border-radius: 3px;
-    background: var(--track);
-    overflow: hidden;
-    min-width: 0;
-}
-.energy-fill {
-    display: block;
-    height: 100%;
-    border-radius: 3px;
-    background: var(--port-c2);
-    transition: width var(--dur-slow) var(--ease);
-}
+.energy-meta { font-size: 11.5px; color: var(--text-sub); text-align: right; white-space: nowrap; }
 .energy-row:last-child { border-bottom: none; padding-bottom: 0; }
-/* 该口/该协议本周期没用电：整行压暗，槽也换成浅色——
-   深槽是给"亮填充"垫底的，0% 的行留着一条深色长条只是噪音 */
+/* 该口/该协议本周期没用电：名称与占比一起退一档，但**电量仍是这行最亮的一档**
+   ——原来把 .energy-val 也压到 --text-sub，"数据亮、标签暗"在这里就断了，
+   0% 行和 2% 行看起来一模一样。圆点保留颜色，充当"这是哪一个"的锚点。 */
 .energy-row.is-zero .energy-name,
-.energy-row.is-zero .energy-val { color: var(--text-sub); }
-.energy-row.is-zero .energy-pct { color: var(--text-dim); }
+.energy-row.is-zero .energy-meta { color: var(--text-dim); }
 .energy-name { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; color: var(--text); }
 .energy-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 /* 浅色主题下亮端口色圆点只有 1.4–1.6:1，靠一圈内描边把轮廓撑出来
@@ -1395,10 +1585,8 @@ html[data-appearance="light"] #modalTitle::before { box-shadow: inset 0 0 0 1px 
     background: var(--dot-on);
     animation: dotPulse 1.8s ease-in-out infinite;
 }
-.energy-val { font-size: 15px; font-weight: 600; color: var(--text); }
+.energy-val { font-size: 15px; font-weight: 600; color: var(--text); text-align: right; white-space: nowrap; }
 .energy-val i { margin-left: 2px; font-size: 11px; font-weight: 500; font-style: normal; color: var(--text-dim); }
-.energy-count { font-size: 11.5px; color: var(--text-dim); text-align: right; }
-.energy-pct { font-size: 12px; color: var(--text-sub); text-align: right; }
 .energy-chart { position: relative; flex: 1 1 auto; min-height: 0; }
 
 /* ── 会话详情：以浮层展开 ──
@@ -1651,9 +1839,9 @@ html[data-appearance="light"] .modal-overlay { background: rgba(28, 36, 52, 0.34
     .card-tools .mini-select { flex: 1 1 auto; max-width: none; }
 
     .charge-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    /* 用电统计：窄屏先舍掉"次数"列（名称 / 行内条 / Wh / 占比），面板高度与桌面一致 */
-    .energy-row { grid-template-columns: minmax(56px, auto) minmax(0, 1fr) auto 40px; }
-    .energy-count { display: none; }
+    /* 用电统计：窄屏不再砍列（环 + 名称 + 次数·占比 + Wh 在 326px 内容宽里放得下，
+       实测三格合计约 200px）；只收紧最小宽与间距，避免"Wh"被挤到换行。 */
+    .energy-row { grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
     .sd-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .sd-action { grid-column: 1 / -1; }
 

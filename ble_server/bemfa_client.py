@@ -23,6 +23,12 @@ MQTT_HOST = "bemfa.com"
 MQTT_PORT = 9501
 MQTT_KEEPALIVE = 600
 
+# 待确认队列上限：paho 对 QoS>0 的消息默认无上限排队（收到 PUBACK 前一直留在
+# _out_messages，实测每条约 1.2KB）。本模块的高频状态发布已改为 QoS0（不入队），
+# 这里再给低频 QoS1 路径（如上线时的初始状态）兜一层硬上限。
+MAX_QUEUED_MESSAGES = 200
+MAX_INFLIGHT_MESSAGES = 20
+
 TOPIC_PREFIX = "hass"
 TOPIC_PUBLISH = "{topic}/set"  # publish state here
 TOPIC_PING = f"{TOPIC_PREFIX}ping"
@@ -155,7 +161,10 @@ class BemfaClient:
             if not dev:
                 return
             self._state_cache[dev.topic] = state
-            self._client.publish(dev.pub_topic, state, qos=1, retain=True)
+            # QoS0：状态是幂等 + retain 的，且发布频率可达 1Hz。用 QoS1 时每条都会
+            # 排进 paho 的待确认队列直到 PUBACK，断线/半开连接期间无上限增长；
+            # QoS0 不入队，天然没有这个内存风险（Bemfa 官方 ping 也用 QoS0）。
+            self._client.publish(dev.pub_topic, state, qos=0, retain=True)
 
     # ---- MQTT ----
 
@@ -166,6 +175,9 @@ class BemfaClient:
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
         self._client.on_message = self._on_message
+        # 见模块常量注释：给待确认队列硬上限，避免 QoS1 路径在异常连接下无限堆积
+        self._client.max_queued_messages_set(MAX_QUEUED_MESSAGES)
+        self._client.max_inflight_messages_set(MAX_INFLIGHT_MESSAGES)
 
         try:
             self._client.connect(MQTT_HOST, MQTT_PORT, MQTT_KEEPALIVE)

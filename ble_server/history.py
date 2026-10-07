@@ -12,13 +12,13 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from energy import normalize_charge_limit, DEFAULT_LIMIT_MODE
+    from energy import normalize_charge_limit, DEFAULT_LIMIT_MODE, LIMIT_MODE_ALWAYS
     from state import PORT_NAMES
 except ImportError:
     import os as _os
     import sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    from energy import normalize_charge_limit, DEFAULT_LIMIT_MODE
+    from energy import normalize_charge_limit, DEFAULT_LIMIT_MODE, LIMIT_MODE_ALWAYS
     from state import PORT_NAMES
 
 _LOGGER = logging.getLogger("cuktech_history")
@@ -32,7 +32,14 @@ class PortHistory:
 
     # 批量提交参数：降低高频采样下的写放大（每次 BLE 推送不再单独 COMMIT）
     BATCH_SIZE = 50          # 缓冲行数达到该值即强制提交
-    BATCH_INTERVAL = 1.0     # 距上次提交超过该秒数即强制提交
+    # 距上次提交超过该秒数即强制提交。原先 1.0s，而 port_history 实际只有约
+    # 0.8 行/秒，批量阈值永远达不到 → 变成"每秒一次 commit"（约 3600 次/小时）。
+    # 放宽到 5s 可把提交次数降到约 1/5；读取路径都会先 flush()，不影响可见性。
+    BATCH_INTERVAL = 5.0
+    # WAL 回写下限：WAL 小于它就不做 checkpoint（SQLite 自带 wal_autocheckpoint
+    # =1000 页兜底）。原先每 5 分钟无条件 PASSIVE 回写，WAL 很小时也照样把脏页
+    # 抄回主库，是磁盘写入的主要来源之一。
+    WAL_CHECKPOINT_MIN_BYTES = 4 * 1024 * 1024
     # 能量积分的采样断档上限（秒）：相邻采样点间隔超过它就按它计，防止闲置/掉线的
     # 空档被当成持续输出计入能量（fork 审查指出的"凭空计费"）。
     ENERGY_GAP_CAP_SEC = 30
@@ -48,6 +55,7 @@ class PortHistory:
         self._last_cleanup = 0
         self._last_wal_checkpoint = 0
         self._pending: list[tuple] = []   # 待批量写入的 port_history 行
+        self._pending_points: list[tuple] = []  # 待批量写入的 charge_points 行
         self._last_commit = 0.0
 
     def connect(self):
@@ -60,8 +68,20 @@ class PortHistory:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA wal_autocheckpoint=1000")  # checkpoint every 1000 pages
         self._create_tables()
-        self._reap_orphan_sessions()
+        # 崩溃/强杀遗留的未闭合会话（end_time IS NULL）在这里收尾：按采样点补算
+        # 能量/峰值，结束时刻取最后一个采样点——**不是**整行删掉。删掉会把一整段
+        # 充电的能量、均压均流、时长连同采样点一起丢掉，历史列表里也再看不见。
+        # 只有能量过小的（<0.05Wh，等同没充过）才按常规口径删除，见该方法。
+        # 这是启动清理的**唯一**入口：以前另有一个"直接 DELETE"的 reap，两者同时
+        # 存在时后者（在 connect 里先跑）会把行删光，让这里的收尾永远无事可做。
+        try:
+            self.close_stale_sessions()
+        except Exception as e:      # 兜底遗留失败不该拖垮整个启动
+            _LOGGER.error("Failed to close stale sessions on startup: %s", e)
         self._cleanup_old_data()
+        # 以连接时刻为提交基准：否则 _last_commit=0 会让启动后的第一个采样点
+        # 立刻触发一次 flush（无谓的一次提交）。
+        self._last_commit = time.time()
         _LOGGER.info("History database connected: %s", self.db_path)
 
     def close(self):
@@ -178,6 +198,86 @@ class PortHistory:
         """Persist the charge session recording toggle (DB meta, survives restart)."""
         self.set_meta("session_recording", "true" if enabled else "false")
 
+    # ── 端口模式集合（长期供电 / 充满即停，按端口名持久化） ──
+
+    PERMANENT_PORTS_META_KEY = "permanent_ports"
+    FULL_OFF_PORTS_META_KEY = "full_off_ports"
+
+    @staticmethod
+    def _clean_port_names(names) -> list:
+        """把任意输入归一成合法端口名列表（去重、小写、保持 PORT_NAMES 顺序）。
+
+        meta 脏数据 / 前端输入都不该让调用方崩溃：非法项静默丢弃。
+        """
+        valid = set(PORT_NAMES.values())
+        if isinstance(names, str):
+            names = [names]
+        if not isinstance(names, (list, tuple, set, frozenset)):
+            return []
+        wanted = {str(n).strip().lower() for n in names}
+        return [name for name in PORT_NAMES.values() if name in (wanted & valid)]
+
+    def _get_port_set(self, key: str) -> list:
+        """读取端口名集合（JSON 数组存 meta）；缺失/损坏一律回落空列表。"""
+        raw = self.get_meta(key, "")
+        if not raw:
+            return []
+        try:
+            stored = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            _LOGGER.warning("Port mode meta %s is not valid JSON, falling back to empty", key)
+            return []
+        return self._clean_port_names(stored)
+
+    def _set_port_set(self, key: str, names) -> list:
+        """写入端口名集合，返回归一后的列表（与读取对称，保证往返一致）。"""
+        clean = self._clean_port_names(names)
+        self.set_meta(key, json.dumps(clean))
+        return clean
+
+    def get_permanent_ports(self) -> list:
+        """长期供电设备端口（不写充电曲线点，会话统计照常记录）。"""
+        return self._get_port_set(self.PERMANENT_PORTS_META_KEY)
+
+    def set_permanent_ports(self, names) -> list:
+        return self._set_port_set(self.PERMANENT_PORTS_META_KEY, names)
+
+    def get_full_off(self) -> dict:
+        """充满后自动关闭端口的端口 → 模式（once/always）。
+
+        存储形状是 {端口名: mode}；兼容旧版本的数组形状（当时没有模式，语义等价于
+        always：一直有效直到用户关掉），读到数组时统一升级成 always。
+        """
+        raw = self.get_meta(self.FULL_OFF_PORTS_META_KEY, "")
+        if not raw:
+            return {}
+        try:
+            stored = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            _LOGGER.warning("Port mode meta %s is not valid JSON, falling back to empty",
+                            self.FULL_OFF_PORTS_META_KEY)
+            return {}
+        if isinstance(stored, dict):
+            out = {}
+            for name in self._clean_port_names(list(stored.keys())):
+                _, mode = normalize_charge_limit(0, stored.get(name))
+                out[name] = mode
+            return out
+        # 旧形状：["c1"] → {"c1": "always"}
+        return {name: LIMIT_MODE_ALWAYS for name in self._clean_port_names(stored)}
+
+    def set_full_off(self, entries) -> dict:
+        """写入 {端口名: mode}，返回归一后的字典（与读取对称）。"""
+        if isinstance(entries, (list, tuple, set, frozenset)) or isinstance(entries, str):
+            entries = {name: LIMIT_MODE_ALWAYS for name in self._clean_port_names(entries)}
+        clean = {}
+        if isinstance(entries, dict):
+            for name in self._clean_port_names(list(entries.keys())):
+                _, mode = normalize_charge_limit(0, entries.get(name))
+                clean[name] = mode
+        self.set_meta(self.FULL_OFF_PORTS_META_KEY, json.dumps(clean))
+        return clean
+
     def get_web_language(self) -> str:
         """Web UI language preference (DB meta, default 'auto' = follow system).
 
@@ -245,35 +345,20 @@ class PortHistory:
             clean[name] = {"wh": wh, "mode": mode}
         self.set_meta(self.LIMIT_META_KEY, json.dumps(clean))
 
-    def _checkpoint_wal(self):
-        """Run WAL checkpoint if enough pages have accumulated."""
-        try:
-            self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-        except Exception:
-            pass
+    def _checkpoint_wal(self) -> bool:
+        """WAL 达到阈值才回写主库（按阈值触发，而非无条件周期性回写）。
 
-    def _reap_orphan_sessions(self):
-        """启动时清理崩溃遗留的未结束会话（end_time IS NULL）及其采样点。
-
-        进程崩溃（未走 on_shutdown 的 _close_active_sessions）会留下
-        end_time IS NULL / total_wh=0 的会话行；重启后内存会话状态已丢失，
-        这类行不可能再被 end_session 更新，属于永久孤儿数据——get_sessions
-        按 total_wh>0 过滤使它们永远不可见、也永远不被清理。
-        仅在启动时执行（运行时正常进行中的会话 end_time IS NULL，不可删）。
+        SQLite 另有 wal_autocheckpoint=1000 页兜底；这里只是避免"WAL 还很小时
+        也被强制回写"造成的多余磁盘写入。返回是否真的执行了 checkpoint。
         """
-        if not self._conn:
-            return
         try:
-            self._conn.execute(
-                """DELETE FROM charge_points WHERE session_id IN
-                   (SELECT id FROM charge_sessions WHERE end_time IS NULL)""")
-            removed = self._conn.execute(
-                "DELETE FROM charge_sessions WHERE end_time IS NULL").rowcount
-            self._conn.commit()
-            if removed:
-                _LOGGER.info("Reaped %d orphan charge session(s) from unclean shutdown", removed)
-        except Exception as e:
-            _LOGGER.error("Failed to reap orphan charge sessions: %s", e)
+            wal_path = Path(str(self.db_path) + "-wal")
+            if wal_path.exists() and wal_path.stat().st_size < self.WAL_CHECKPOINT_MIN_BYTES:
+                return False
+            self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            return True
+        except Exception:
+            return False
 
     def _cleanup_old_data(self):
         """Remove data older than retention period (port samples + closed sessions)."""
@@ -297,19 +382,31 @@ class PortHistory:
             self._flush_pending()
 
     def _flush_pending(self):
-        """将缓冲行批量 INSERT 并提交。调用方必须已持有 _db_lock。"""
-        if not self._pending:
+        """将缓冲行批量 INSERT 并提交（port_history 与 charge_points 共用一次提交）。
+
+        调用方必须已持有 _db_lock。
+        """
+        if not self._pending and not self._pending_points:
             return
         try:
-            self._conn.executemany(
-                """INSERT INTO port_history (timestamp, port, voltage, current, power, active, protocol)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                self._pending,
-            )
-            self._pending.clear()
+            if self._pending:
+                self._conn.executemany(
+                    """INSERT INTO port_history (timestamp, port, voltage, current, power, active, protocol)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    self._pending,
+                )
+                self._pending.clear()
+            if self._pending_points:
+                self._conn.executemany(
+                    """INSERT INTO charge_points (session_id, timestamp, voltage, current, power, protocol)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    self._pending_points,
+                )
+                self._pending_points.clear()
             self._conn.commit()
             self._last_commit = time.time()
-            # 周期性清理/checkpoint 仍挂在提交路径上，但只按时间间隔触发（每 1h / 5min）
+            # 周期性清理/checkpoint 挂在提交路径上，只按时间间隔触发（每 1h / 5min）；
+            # checkpoint 本身还会再判一次 WAL 阈值（见 _checkpoint_wal）。
             if self._last_commit - self._last_cleanup > 3600:
                 self._cleanup_old_data()
                 self._last_cleanup = self._last_commit
@@ -319,6 +416,7 @@ class PortHistory:
         except Exception as e:
             _LOGGER.error("Failed to record port data: %s", e)
             self._pending.clear()
+            self._pending_points.clear()
             try:
                 self._conn.rollback()
             except Exception:
@@ -572,8 +670,13 @@ class PortHistory:
 
     # ── Charge Session Management ──
 
-    def start_session(self, port: int, protocol: str = "") -> int:
-        """Start a new charge session, return session_id."""
+    def start_session(self, port: int, protocol: str = "",
+                      start_time: Optional[float] = None) -> int:
+        """Start a new charge session, return session_id.
+
+        start_time 显式传入时用它（开会话时会把起判前那 30s 回填进本会话，起点必须
+        跟着回填，否则 start_time + duration_sec 会比 end_time 多出一截，历史行自相矛盾）。
+        """
         if not self._conn:
             return 0
         with self._db_lock:
@@ -581,7 +684,8 @@ class PortHistory:
                 cursor = self._conn.execute(
                     """INSERT INTO charge_sessions (port, start_time, protocol)
                        VALUES (?, ?, ?)""",
-                    (port, time.time(), protocol),
+                    (port, time.time() if start_time is None else float(start_time),
+                     protocol),
                 )
                 self._conn.commit()
                 return cursor.lastrowid
@@ -591,19 +695,41 @@ class PortHistory:
 
     def record_charge_point(self, session_id: int, voltage: float,
                             current: float, power: float, protocol: str = ""):
-        """Record a single data point for a charge session."""
+        """缓冲一条会话采样点；攒够 BATCH_SIZE 或超过 BATCH_INTERVAL 才批量落盘。
+
+        原先每点一次 INSERT + COMMIT（充电时约 0.8 点/秒 → 每秒一次 fsync），
+        是磁盘写入放大的主要来源。现与 port_history 共用缓冲与同一次提交。
+        读取路径（get_session_points / compute_session_avg_vi / end_session）
+        都会先 flush()，保证"写入后立即读取可见"。
+        """
         if not self._conn or not session_id:
             return
+        row = (session_id, time.time(), voltage, current, power, protocol)
         with self._db_lock:
-            try:
-                self._conn.execute(
-                    """INSERT INTO charge_points (session_id, timestamp, voltage, current, power, protocol)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (session_id, time.time(), voltage, current, power, protocol),
-                )
-                self._conn.commit()
-            except Exception as e:
-                _LOGGER.error("Failed to record charge point: %s", e)
+            self._pending_points.append(row)
+            now = time.time()
+            if (len(self._pending_points) >= self.BATCH_SIZE
+                    or now - self._last_commit >= self.BATCH_INTERVAL):
+                self._flush_pending()
+
+    def record_charge_points(self, session_id: int, rows) -> int:
+        """批量缓冲会话采样点（补写预会话回填用），返回入队条数。
+
+        与 record_charge_point 共用同一个待写缓冲与提交节奏，区别只在：
+          · 一次拿锁入队多行（回填最长 120 行，别逐行开 executor）；
+          · 时间戳用采样时的真实时间，而不是入队时刻——否则回填的点会全部挤在
+            "开会话"那一秒上，曲线头部被压成一根竖线。
+        rows: 可迭代的 (timestamp, voltage, current, power, protocol)
+        """
+        if not self._conn or not session_id or not rows:
+            return 0
+        queued = [(session_id, float(t), v, i, p, proto) for t, v, i, p, proto in rows]
+        with self._db_lock:
+            self._pending_points.extend(queued)
+            if (len(self._pending_points) >= self.BATCH_SIZE
+                    or time.time() - self._last_commit >= self.BATCH_INTERVAL):
+                self._flush_pending()
+        return len(queued)
 
     def compute_session_avg_vi(self, session_id: int) -> tuple:
         """从本会话采样点计算时间加权均压/均流, 返回 (avg_v, avg_i) 或 (None, None)。
@@ -614,6 +740,8 @@ class PortHistory:
         """
         if not self._conn or not session_id:
             return None, None
+        # 先把缓冲中的采样点落盘，否则会漏掉最近几秒的点，均值偏低
+        self.flush()
         try:
             # 与写路径共用同一把锁：本方法会被 end_session / 启动回填在
             # executor 线程上调用，与 record_charge_point 的写并发访问同一条
@@ -693,11 +821,13 @@ class PortHistory:
         return fixed
 
     def end_session(self, session_id: int, total_wh: float, peak_power_w: float,
-                    avg_voltage: float, avg_current: float, duration_sec: int):
+                    avg_voltage: float, avg_current: float, duration_sec: int,
+                    end_time: Optional[float] = None):
         """End a charge session with final stats.
 
         avg_voltage/avg_current 传入的是闭合瞬间的瞬时值(通常已归零), 仅作为
         "没有采样点"时的回落; 有采样点时一律用采样点的时间加权均值重算。
+        end_time 缺省为当前时刻；收尾遗留会话时传"最后一个采样点"更诚实。
         """
         if not self._conn or not session_id:
             return
@@ -713,7 +843,8 @@ class PortHistory:
                        peak_power_w = ?, avg_voltage = ?, avg_current = ?,
                        duration_sec = ?
                        WHERE id = ?""",
-                    (time.time(), round(total_wh, 4), round(avg_power, 2),
+                    (end_time if end_time is not None else time.time(),
+                     round(total_wh, 4), round(avg_power, 2),
                      round(peak_power_w, 2), round(avg_voltage, 2),
                      round(avg_current, 2), duration_sec, session_id),
                 )
@@ -721,12 +852,89 @@ class PortHistory:
             except Exception as e:
                 _LOGGER.error("Failed to end session: %s", e)
 
+    def compute_session_totals(self, session_id: int) -> tuple:
+        """按采样点现算本次会话的 (能量 Wh, 峰值功率 W)。
+
+        会话进行中 charge_sessions.total_wh / peak_power_w 还是 0（只在
+        end_session 时才写），所以收尾遗留会话不能信这两列，得按点现算——
+        与前端曲线的梯形积分同一口径，断档超限的区间不参与。
+        """
+        if not self._conn or not session_id:
+            return 0.0, 0.0
+        with self._db_lock:
+            self._flush_pending()
+            rows = self._conn.execute(
+                """SELECT timestamp, power FROM charge_points
+                   WHERE session_id = ? ORDER BY timestamp""",
+                (session_id,)).fetchall()
+        pts = [(r["timestamp"], r["power"] or 0.0) for r in rows]
+        if not pts:
+            return 0.0, 0.0
+        peak = max(p for _, p in pts)
+        if len(pts) < 2:
+            return 0.0, peak
+        wh = 0.0
+        for (t0, p0), (t1, p1) in zip(pts, pts[1:]):
+            dt = t1 - t0
+            if dt <= 0 or dt > self.AVG_VI_GAP_CAP_SEC:
+                continue
+            wh += (p0 + p1) / 2.0 * dt / 3600.0
+        return wh, peak
+
+    def close_stale_sessions(self) -> int:
+        """收尾上一次进程遗留的未闭合会话（end_time IS NULL），返回处理条数。
+
+        正常关机时 BLEManager._close_active_sessions 会把它们写完整；只有被强杀
+        /崩溃才会留下这种行——列表会永远把它们当"充电中"。能量与峰值按采样点
+        现算（进行中的行这两列还是 0），结束时刻取最后一个采样点（没有点就退回
+        start_time）；能量过小的按常规口径删除，避免留下 0Wh 空行。
+
+        启动清理的唯一入口是 connect()（运行中不能调用：那时 end_time IS NULL
+        就是"正在充电"的正常状态）。
+        """
+        if not self._conn:
+            return 0
+        with self._db_lock:
+            self._flush_pending()
+            rows = self._conn.execute(
+                """SELECT id, start_time, total_wh, peak_power_w
+                   FROM charge_sessions WHERE end_time IS NULL""").fetchall()
+        closed = 0
+        for row in rows:
+            sid = row["id"]
+            with self._db_lock:
+                last = self._conn.execute(
+                    "SELECT MAX(timestamp) AS ts FROM charge_points WHERE session_id = ?",
+                    (sid,)).fetchone()
+            start_ts = row["start_time"] or time.time()
+            end_ts = (last["ts"] if last and last["ts"] else None) or start_ts
+            if end_ts < start_ts:
+                end_ts = start_ts
+            total_wh = row["total_wh"] or 0.0
+            peak = row["peak_power_w"] or 0.0
+            if total_wh <= 0 or peak <= 0:
+                calc_wh, calc_peak = self.compute_session_totals(sid)
+                total_wh = total_wh or calc_wh
+                peak = peak or calc_peak
+            if total_wh < 0.05:      # 与 _close_session 同一门槛：没有能量的行不留
+                self.delete_session(sid)
+            else:
+                self.end_session(sid, total_wh, peak, 0.0, 0.0,
+                                 int(end_ts - start_ts), end_time=end_ts)
+            closed += 1
+        if closed:
+            _LOGGER.info("Closed %d stale session(s) left open by a previous run", closed)
+        return closed
+
     def delete_session(self, session_id: int):
         """Delete a session and its points (for 0Wh sessions)."""
         if not self._conn or not session_id:
             return
         with self._db_lock:
             try:
+                # 缓冲中的点要先落盘再删，否则删除之后 flush 会把它们又插回来。
+                # （_flush_pending 会清空缓冲，所以删完无需再过滤 _pending_points）
+                self._flush_pending()
                 self._conn.execute("DELETE FROM charge_points WHERE session_id = ?", (session_id,))
                 self._conn.execute("DELETE FROM charge_sessions WHERE id = ?", (session_id,))
                 self._conn.commit()
@@ -777,16 +985,40 @@ class PortHistory:
 
         return [dict(row) for row in rows], total
 
+    def get_session(self, session_id: int) -> Optional[dict]:
+        """单个会话行（详情浮层用）。
+
+        长期供电会话不保存曲线点，但会话统计照常落库，因此详情要能单独取回这一行。
+        """
+        if not self._conn:
+            return None
+        # flush + 查询必须同一把锁内完成：本方法与 get_session_points 一样会被
+        # handle_session_points 在 executor 线程上调用，与 record_charge_point 的
+        # 写并发访问同一条 sqlite 连接（check_same_thread=False）。只锁住 flush
+        # 的话，紧接着的 SELECT 仍可能读到写事务的中间态。
+        with self._db_lock:
+            self._flush_pending()   # 缓冲中的点要先落盘，否则详情取不到最近几秒
+            row = self._conn.execute(
+                """SELECT id, port, start_time, end_time, total_wh, avg_power_w,
+                          peak_power_w, avg_voltage, avg_current, duration_sec, protocol
+                   FROM charge_sessions WHERE id = ?""",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def get_session_points(self, session_id: int) -> list[dict]:
         """Get all data points for a charge session."""
         if not self._conn:
             return []
-        rows = self._conn.execute(
-            """SELECT timestamp, voltage, current, power, protocol
-               FROM charge_points WHERE session_id = ?
-               ORDER BY timestamp""",
-            (session_id,),
-        ).fetchall()
+        # 同上：flush 与 SELECT 必须在同一把锁内，否则能读到写事务中间态。
+        with self._db_lock:
+            self._flush_pending()   # 缓冲中的点要先落盘，否则详情图会缺最近几秒
+            rows = self._conn.execute(
+                """SELECT timestamp, voltage, current, power, protocol
+                   FROM charge_points WHERE session_id = ?
+                   ORDER BY timestamp""",
+                (session_id,),
+            ).fetchall()
         return [dict(row) for row in rows]
 
     @staticmethod

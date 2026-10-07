@@ -232,22 +232,24 @@
                 for (const [id, name] of Object.entries(PORT_MAP)) {
                     const key = PORT_KEY_MAP[id];
                     html += `
-                        <div class="charge-limit-item">
+                        <div class="charge-limit-item" id="limit-card-${key}">
                             <div class="charge-limit-header">
                                 <span class="countdown-port ${key}">${name}</span>
-                                <span class="charge-limit-status" id="limit-status-${key}">${I18N.t('chargeLimit.off')}</span>
+                                ${CL.modeChipsHtml(key)}
                             </div>
+                            <div class="limit-perm-panel" id="limit-perm-${key}"></div>
                             <div class="charge-limit-bar"><div class="charge-limit-bar-fill" id="limit-bar-${key}"></div></div>
                             <div class="charge-limit-progress" id="limit-progress-${key}"></div>
                             <div class="countdown-input-group">
                                 <input type="number" class="countdown-input" id="limit-wh-${key}" min="0" max="1000" step="1" placeholder="${I18N.t('chargeLimit.placeholder')}">
-                                <select class="charge-limit-mode" id="limit-mode-${key}">
+                                <select class="charge-limit-mode" id="limit-mode-${key}" onchange="limitModeTouched('${key}')">
                                     <option value="once">${I18N.t('chargeLimit.once')}</option>
                                     <option value="always">${I18N.t('chargeLimit.always')}</option>
                                 </select>
                             </div>
                             <div class="countdown-quick">
                                 ${CL.QUICK_WH.map(w => `<button class="countdown-quick-btn" onclick="setChargeLimitQuick('${key}', ${w})">${w}${I18N.t('chargeLimit.unit')}</button>`).join('')}
+                                ${CL.chipHtml(key, 'full_off', 'countdown-quick-btn')}
                             </div>
                             <div class="countdown-actions">
                                 <button class="countdown-toggle-btn set" id="limit-btn-${key}" onclick="applyChargeLimit('${key}')">${I18N.t('chargeLimit.set')}</button>
@@ -262,6 +264,9 @@
         }
 
         // 只刷新状态/进度与按钮，不重建 DOM（避免打断正在输入的输入框）
+        // 用户在没有能量限额时显式存过"限额模式"的端口：模式下拉此时以它为准
+        // （否则恒被"充满即停"的模式盖掉，见 updateChargeLimitUI 的 saved）
+        const limitModeSaved = {};
         function updateChargeLimitUI() {
             if (typeof ChargeLimit === 'undefined') return;
             const CL = ChargeLimit;
@@ -269,11 +274,8 @@
                 const key = PORT_KEY_MAP[id];
                 const e = CL.entryFor(key);
 
-                const statusEl = document.getElementById(`limit-status-${key}`);
-                if (statusEl) {
-                    statusEl.textContent = CL.statusText(key);
-                    statusEl.style.color = e.wh > 0 ? 'var(--accent-ink)' : 'var(--text-dim)';
-                }
+                // "已配置"= 有能量限额 / 充满即停 / 长期供电：进度条与状态点共用同一判定
+                const armed = CL.isArmed(key);
 
                 const progressEl = document.getElementById(`limit-progress-${key}`);
                 if (progressEl) {
@@ -285,7 +287,7 @@
                 const barEl = document.getElementById(`limit-bar-${key}`);
                 if (barEl) {
                     barEl.style.width = CL.progressPct(key) + '%';
-                    barEl.style.background = e.wh > 0 ? 'var(--port-' + key + ')' : 'transparent';
+                    barEl.style.background = armed ? 'var(--port-' + key + ')' : 'transparent';
                 }
 
                 // 不覆盖用户正在编辑的输入框
@@ -293,16 +295,84 @@
                 if (inputEl && document.activeElement !== inputEl) {
                     inputEl.value = e.wh > 0 ? e.wh : '';
                 }
+                // 模式下拉：用户改过但还没保存时不能被 5s 轮询覆盖回旧值，只有
+                // "后端值追上了当前选择"（保存成功）才解除保护。
                 const modeEl = document.getElementById(`limit-mode-${key}`);
-                if (modeEl && !modeEl.dataset.touched) {
-                    modeEl.value = e.mode || 'once';
+                if (modeEl) {
+                    // 模式下拉的"真值"：有能量限额时是限额的模式；没有限额时显示
+                    // "自动"的模式——否则开了自动、刷新后又被打回限额的旧模式。
+                    // 用户显式存过限额模式时以它为准：否则开了"充满即停"后，
+                    // 下拉恒显示 full_off 的模式，刚存好的限额模式会被立刻弹回。
+                    const saved = (e.wh > 0 || limitModeSaved[key]
+                                   ? e.mode
+                                   : (CL.fullOffMode(key) || e.mode)) || 'once';
+                    if (modeEl.dataset.touched) {
+                        if (modeEl.value === saved) modeEl.dataset.touched = '';
+                    } else {
+                        modeEl.value = saved;
+                    }
                 }
+
+                updatePortModeUI(CL, key);
+            }
+        }
+
+        // 两枚端口模式开关（常供 / 充满即停）：只切 class 与 aria，不重建 DOM。
+        // 常供开启时"充满即停"置灰——互斥由后端强制，前端只做可见性提示。
+        // 状态编码沿用指示点那套：圆点空心=关、实心=开、警示色=本次已充满断电。
+        function updatePortModeUI(CL, key) {
+            const perm = CL.isPermanent(key);
+            const full = CL.isFullOff(key);
+            const fired = CL.fullOffFired(key);
+            const permBtn = document.getElementById(`mode-permanent-${key}`);
+            const fullBtn = document.getElementById(`mode-full_off-${key}`);
+            // 长期供电：整张卡收起限额控件，只留"已充多少"与这枚开关（见 index.css）
+            const card = document.getElementById(`limit-card-${key}`);
+            if (card) card.classList.toggle('is-permanent', perm);
+            // 卡头那个端口色点：这一口此刻真的在供电 → 呼吸动效。面板里只放统计值，
+            // "现在在不在供电"就由这个点表达（比一行"供电中"更省地方也更直观）。
+            // 注意：本函数作用域里没有外层循环的 entry 变量，必须自己 entryFor(key)。
+            // 写成裸 e 会抛 ReferenceError 并中断整段 updateChargeLimitUI ——
+            // is-permanent 已经打上、面板却没填，卡片就变成"只有标题的空卡"。
+            const nameEl = card && card.querySelector('.countdown-port');
+            if (nameEl) nameEl.classList.toggle('is-live', !!CL.entryFor(key).is_charging);
+            const panel = document.getElementById(`limit-perm-${key}`);
+            if (panel) {
+                if (perm) {
+                    // 只在内容真的变了才重建：本函数被 5s 轮询/SSE 全量调用，
+                    // 每帧 innerHTML 重建会持续销毁并重建 ring 与统计节点。
+                    const html = CL.permanentPanelHtml(key);
+                    if (panel.dataset.html !== html) {
+                        panel.dataset.html = html;
+                        panel.innerHTML = html;
+                    }
+                } else if (panel.innerHTML) {
+                    panel.innerHTML = '';
+                    panel.dataset.html = '';
+                }
+            }
+            if (permBtn) {
+                permBtn.classList.toggle('is-on', perm);
+                permBtn.setAttribute('aria-checked', perm ? 'true' : 'false');
+                permBtn.title = perm ? I18N.t('chargeLimit.permanentOff') : I18N.t('chargeLimit.permanentHint');
+            }
+            if (fullBtn) {
+                fullBtn.classList.toggle('is-on', full);
+                fullBtn.classList.toggle('is-fired', full && fired);
+                fullBtn.setAttribute('aria-checked', full ? 'true' : 'false');
+                fullBtn.disabled = perm;
+                fullBtn.classList.toggle('is-disabled', perm);
+                const fMode = CL.fullOffMode(key) === CL.MODE_ALWAYS
+                    ? I18N.t('chargeLimit.always') : I18N.t('chargeLimit.once');
+                fullBtn.title = perm ? I18N.t('chargeLimit.permanentConflict')
+                    : (full ? fMode + ' · ' : '')
+                      + (fired ? I18N.t('chargeLimit.fullOffFired') : I18N.t('chargeLimit.fullOffHint'));
             }
         }
 
         async function refreshChargeLimit() {
             if (typeof ChargeLimit === 'undefined') return;
-            await ChargeLimit.fetchLimits();
+            await Promise.all([ChargeLimit.fetchLimits(), ChargeLimit.fetchPortModes()]);
             updateChargeLimitUI();
         }
 
@@ -312,11 +382,50 @@
             applyChargeLimit(port);
         }
 
+        // 用户动了模式下拉：置保护位，等保存成功（或后端值追上）再放开
+        function limitModeTouched(port) {
+            const el = document.getElementById(`limit-mode-${port}`);
+            if (el) el.dataset.touched = '1';
+        }
+
         async function applyChargeLimit(port) {
             const input = document.getElementById(`limit-wh-${port}`);
             const modeEl = document.getElementById(`limit-mode-${port}`);
             const wh = ChargeLimit.parseWhInput(input ? input.value : '');
             if (wh === null) {
+                // 只改了模式（没填阈值）：存模式即可——当前本来就没有限额，wh=0
+                // 不改变限额值，只是让这个偏好落库、不再被轮询打回。
+                const entry = ChargeLimit.entryFor(port);
+                const mode = modeEl ? modeEl.value : null;
+                // 没有能量限额时下拉显示的是"充满即停"的模式，此时存限额的 mode
+                // 会被下一次轮询弹回去（用户只看到"模式已保存"然后回滚）。
+                // 直接走端口模式接口，改的就是下拉真正代表的那个值。
+                if (modeEl && !(entry.wh > 0) && ChargeLimit.isFullOff(port)
+                        && mode && mode !== ChargeLimit.fullOffMode(port)) {
+                    modeEl.dataset.touched = '1';
+                    const r = await ChargeLimit.savePortMode(port, 'full_off', true, mode);
+                    modeEl.dataset.touched = '';
+                    if (r.error !== 'pending') {
+                        showToast(r.ok ? I18N.t('chargeLimit.modeSaved')
+                                       : I18N.t('chargeLimit.saveFailed', { msg: r.error }));
+                    }
+                    updateChargeLimitUI();
+                    return;
+                }
+                if (modeEl && !(entry.wh > 0) && !ChargeLimit.isFullOff(port)
+                        && mode !== (entry.mode || 'once')) {
+                    modeEl.dataset.touched = '1';
+                    const r = await ChargeLimit.saveLimit(port, 0, mode);
+                    // 同端口已有请求在途时 saveLimit 返回 state（无 ok/error）：
+                    // 不是失败，不该弹提示，也不能解除保护位。
+                    if (!r || r.ok === undefined) return;
+                    modeEl.dataset.touched = '';
+                    if (r.ok) limitModeSaved[port] = true;
+                    showToast(r.ok ? I18N.t('chargeLimit.modeSaved')
+                                   : I18N.t('chargeLimit.saveFailed', { msg: r.error }));
+                    updateChargeLimitUI();
+                    return;
+                }
                 showToast(I18N.t('chargeLimit.saveFailed', { msg: I18N.t('chargeLimit.placeholder') }));
                 return;
             }
@@ -741,29 +850,51 @@
             if (energyHourlyLoaded) fetchEnergyHourly();
         }
 
-        // 一行 = 圆点 + 名称 + 行内占比条 + Wh + 次数 + 占比。
-        // 行内条是关键：四列版把名称和数字顶到两端，中间几百像素全是空的，
-        // 看着"密度不够"。条直接吃掉中间，占比还能和数字互相校验。
+        // 一行三格：圆点+名称 / 次数·占比 / 电量。环已经承担了占比，行内不再画进度条
+        // （同一件事画两遍正是这张卡原来"吵"的主因）；电量单独右对齐成一列，便于扫读。
         function energyRow(label, color, wh, count, share, isActive) {
             const live = isActive ? '<i class="energy-live"></i>' : '';
             const cls = wh > 0 ? 'energy-row' : 'energy-row is-zero';
             const pct = Math.round(share * 100);
             return `<div class="${cls}">
                 <span class="energy-name"><i class="energy-dot" style="background:${color}"></i>${label}${live}</span>
-                <span class="energy-track"><i class="energy-fill" style="width:${pct}%;background:${color}"></i></span>
+                <span class="energy-meta">${I18N.t('energy.count', { count: count || 0 })} · ${pct}%</span>
                 <span class="energy-val">${wh.toFixed(1)}<i>Wh</i></span>
-                <span class="energy-count">${I18N.t('energy.count', { count: count || 0 })}</span>
-                <span class="energy-pct">${pct}%</span>
             </div>`;
         }
 
-        function renderEnergyBar(bar, items) {
-            if (!bar) return;
+        // 环形占比：SVG 画弧。段与段之间留 2.5px 缝（相邻段色相接近时不会连成一片）；
+        // 圆心放"主导项占比 + 名称"——卡头已经有合计值，这里不重复它。
+        const RING_SIZE = 92, RING_STROKE = 11, RING_GAP = 2.5;
+        function renderEnergyRing(el, items) {
+            if (!el) return;
             const total = items.reduce((a, x) => a + x.wh, 0);
             const parts = items.filter(x => x.wh > 0);
-            bar.innerHTML = (total > 0 && parts.length)
-                ? parts.map(x => `<div style="width:${(x.wh / total * 100).toFixed(1)}%;background:${x.color}"></div>`).join('')
-                : '';
+            if (!(total > 0) || !parts.length) { el.innerHTML = ''; return; }
+            const r = (RING_SIZE - RING_STROKE) / 2;
+            const c = 2 * Math.PI * r;
+            const mid = RING_SIZE / 2;
+            let travelled = 0;
+            const arcs = parts.map(x => {
+                const share = x.wh / total;
+                const len = Math.max(c * share - RING_GAP, 0.6);
+                const arc = `<circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="${x.color}"
+                    stroke-width="${RING_STROKE}"
+                    stroke-dasharray="${len.toFixed(2)} ${(c - len).toFixed(2)}"
+                    stroke-dashoffset="${(-travelled).toFixed(2)}"></circle>`;
+                travelled += c * share;
+                return arc;
+            }).join('');
+            const dom = parts.reduce((a, b) => (b.wh > a.wh ? b : a));
+            el.innerHTML = `<svg viewBox="0 0 ${RING_SIZE} ${RING_SIZE}" aria-hidden="true">
+                <circle cx="${mid}" cy="${mid}" r="${r}" fill="none"
+                        stroke="var(--ring-track)" stroke-width="${RING_STROKE}"></circle>
+                ${arcs}
+                <text x="${mid}" y="${mid}" text-anchor="middle" dominant-baseline="central"
+                      font-size="19" font-weight="600" fill="var(--text)">${Math.round(dom.wh / total * 100)}%</text>
+                <text x="${mid}" y="${mid + 18}" text-anchor="middle" font-size="10"
+                      fill="var(--text-dim)">${dom.label}</text>
+            </svg>`;
         }
 
         function renderEnergy() {
@@ -784,7 +915,7 @@
                 return { label: p.label, color: `var(--port-${p.key})`,
                          wh: e.wh || 0, count: e.count || 0, active: !!e.is_active };
             });
-            renderEnergyBar(document.getElementById('energyPortBar'), portItems);
+            renderEnergyRing(document.getElementById('energyPortRing'), portItems);
             const portRows = document.getElementById('energyPortRows');
             if (portRows) {
                 const sum = portItems.reduce((a, x) => a + x.wh, 0);
@@ -800,7 +931,7 @@
                 color: energyProtoColor(p.protocol),
                 wh: p.wh || 0, count: p.count || 0, active: !!p.is_active,
             }));
-            renderEnergyBar(document.getElementById('energyProtoBar'), protoItems);
+            renderEnergyRing(document.getElementById('energyProtoRing'), protoItems);
             const protoRows = document.getElementById('energyProtoRows');
             if (protoRows) {
                 const sum = protoItems.reduce((a, x) => a + x.wh, 0);
@@ -1447,18 +1578,37 @@
         })();
 
         function initApp() {
-            try {
-                initChart();
-                fetchChartData();
-                initSSE();
-                fetchBemfaStatus();
-                renderChargeLimit();
-                refreshChargeLimit();
-                initSegmentedControls();
-                initEnergyCard();
-                // 限额进度（本会话已充 Wh）不在 /api/status 里，独立轮询刷新
-                setInterval(refreshChargeLimit, 5000);
-                // 安全兜底：每 30s 轮询 /api/status 校正因 SSE 队列丢事件导致的连接状态偏差
+            // 分步独立执行：任何一步抛错都不该让后面的步骤全部不跑。
+            // 这里踩过一次：一个 ReferenceError 直接跳到 catch，refreshChargeLimit()
+            // 没执行 → 前端永远不知道哪个口是常供（开关一直显示关闭、点了像没反应），
+            // 而且只有 console 里有一行错误，界面看着"就是坏了"。
+            var failed = [];
+            function step(name, fn) {
+                try { fn(); } catch (e) { failed.push(name); console.error('Init step failed:', name, e); }
+            }
+            step('initChart', initChart);
+            step('fetchChartData', fetchChartData);
+            step('initSSE', initSSE);
+            step('fetchBemfaStatus', fetchBemfaStatus);
+            step('renderChargeLimit', renderChargeLimit);
+            step('refreshChargeLimit', refreshChargeLimit);
+            step('initSegmentedControls', initSegmentedControls);
+            step('initEnergyCard', initEnergyCard);
+            // 限额/端口模式（常供、充满即停）的提示条与共享模块打通
+            step('chargeLimitWiring', function () {
+                if (typeof ChargeLimit !== 'undefined' && ChargeLimit.setNotifier) {
+                    ChargeLimit.setNotifier(showToast);
+                    // "充满即停"点击时用的模式 = 卡面上那个 once/always 下拉
+                    ChargeLimit.setModeReader((port) => {
+                        const el = document.getElementById(`limit-mode-${port}`);
+                        return el ? el.value : null;
+                    });
+                }
+            });
+            // 限额进度（本会话已充 Wh）不在 /api/status 里，独立轮询刷新
+            step('refreshTimer', function () { setInterval(refreshChargeLimit, 5000); });
+            // 安全兜底：每 30s 轮询 /api/status 校正因 SSE 队列丢事件导致的连接状态偏差
+            step('statusTimer', function () {
                 setInterval(async () => {
                     try {
                         const res = await fetch(`${API_BASE}/api/status`);
@@ -1469,10 +1619,12 @@
                         }
                     } catch (e) {}
                 }, 30000);
-            } catch (e) {
-                console.error('Init error:', e);
-                // Fallback to polling if SSE fails
-                pollStatus();
+            });
+            if (failed.length) {
+                // 别静默：局部初始化失败意味着界面某些部分不工作，得让用户知道可以刷新
+                console.error('Init incomplete, failed steps:', failed.join(', '));
+                try { showToast(I18N.t('common.initPartial')); } catch (e) {}
+                try { pollStatus(); } catch (e) {}
             }
         }
 

@@ -6,6 +6,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PID_FILE="/tmp/cuktech_ble_server.pid"
 LOG_FILE="/tmp/cuktech_server.log"
+# 控制台输出（stdout/stderr）单独一个文件：主日志由 ha_server 的
+# RotatingFileHandler 负责按大小切割，两个写入者不能写同一个文件。
+CONSOLE_LOG="${LOG_FILE%.log}.console.log"
 VENV_DIR="$SCRIPT_DIR/.venv"
 PYTHON="$VENV_DIR/bin/python"
 SERVER="$SCRIPT_DIR/ha_server.py"
@@ -162,7 +165,11 @@ do_start() {
 
     echo "Starting CUKTECH BLE Server..."
     cd "$SCRIPT_DIR"
-    nohup "$PYTHON" -u "$SERVER" >> "$LOG_FILE" 2>&1 &
+    # 主日志交给 ha_server 的 RotatingFileHandler（按 20MB 切割、保留 5 份）；
+    # 这里只把 stdout/stderr 落到 console 文件，用于保留"日志系统就绪前"的
+    # 启动期异常（导入错误、解释器告警等）。
+    export CUKTECH_LOG_FILE="$LOG_FILE"
+    nohup "$PYTHON" -u "$SERVER" >> "$CONSOLE_LOG" 2>&1 &
     local pid=$!
     echo $pid > "$PID_FILE"
     sleep 1
@@ -171,7 +178,10 @@ do_start() {
         echo "Server started (PID: $pid, Log: $LOG_FILE)"
         return 0
     else
-        echo "Server failed to start. Check log: $LOG_FILE"
+        echo "Server failed to start."
+        echo "  main log    : $LOG_FILE"
+        echo "  console log : $CONSOLE_LOG"
+        [ -f "$CONSOLE_LOG" ] && tail -20 "$CONSOLE_LOG"
         rm -f "$PID_FILE"
         return 1
     fi
@@ -236,6 +246,9 @@ do_restart() {
 do_log() {
     if [ -f "$LOG_FILE" ]; then
         tail -${1:-50} "$LOG_FILE"
+    elif [ -f "$CONSOLE_LOG" ]; then
+        echo "(主日志不存在，显示控制台日志)"
+        tail -${1:-50} "$CONSOLE_LOG"
     else
         echo "No log file found"
     fi
@@ -243,10 +256,15 @@ do_log() {
 
 do_clear_log() {
     echo "Clearing service log..."
-    if [ -f "$LOG_FILE" ]; then
-        > "$LOG_FILE"
-        echo "  ✓ Cleared $LOG_FILE"
-    else
+    local cleared=0
+    for f in "$LOG_FILE" "$CONSOLE_LOG" "$LOG_FILE".*; do
+        if [ -f "$f" ]; then
+            > "$f"
+            echo "  ✓ Cleared $f"
+            cleared=1
+        fi
+    done
+    if [ "$cleared" -eq 0 ]; then
         echo "  No log file found"
     fi
 }

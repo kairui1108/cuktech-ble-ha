@@ -274,6 +274,12 @@ class TestChargeLimits:
         assert set(limits) == {"c1", "c2", "c3", "a"}
         assert limits["c1"]["wh"] == 5.0
 
+    def test_legacy_array_meta_upgrades_to_always(self, history):
+        """旧版本把"充满即停"存成数组（没有模式），读到要升级成 always。"""
+        from history import PortHistory
+        history.set_meta(PortHistory.FULL_OFF_PORTS_META_KEY, '["c2"]')
+        assert history.get_full_off() == {"c2": "always"}
+
     def test_persists_across_reconnect(self, temp_db):
         from history import PortHistory
 
@@ -339,22 +345,54 @@ class TestSessionCleanup:
         sessions, _ = history.get_sessions(port=1, period="all")
         assert any(s["id"] == sid for s in sessions)
 
-    def test_connect_reaps_orphan_sessions(self, temp_db):
-        """崩溃遗留的未结束会话（end_time IS NULL）在下次启动 connect 时被清理。"""
+    def test_connect_closes_orphan_sessions(self, temp_db):
+        """崩溃遗留的未结束会话（end_time IS NULL）在下次启动 connect 时收尾。
+
+        收尾＝按采样点补算能量/峰值、结束时刻取最后一个采样点，会话与曲线都留着；
+        只有能量过小（<0.05Wh，等同没充过）的才按常规口径删除。以前这里是另一套
+        "直接 DELETE"的清理，会把一整段充电的数据丢掉，而且它先跑，让收尾永远
+        无事可做。
+        """
         from history import PortHistory
 
         h1 = PortHistory(db_path=temp_db)
         h1.connect()
-        sid = h1.start_session(1, protocol="PD")
-        h1.record_charge_point(sid, 20.0, 2.5, 50.0, "PD")
-        # 不调用 end_session，模拟进程崩溃
-        h1.close()
+        t0 = time.time() - 600
+        # ① 有能量的孤儿：10 段 × 60s × 9W ≈ 1.5Wh
+        sid_wh = h1.start_session(1, protocol="PD")
+        # ② 只有一个采样点的孤儿：梯形积分不出能量
+        sid_empty = h1.start_session(3, protocol="PD")
+        with h1._db_lock:
+            h1._conn.execute("UPDATE charge_sessions SET start_time = ? WHERE id = ?",
+                             (t0, sid_wh))
+            for k in range(11):
+                h1._conn.execute(
+                    """INSERT INTO charge_points
+                       (session_id, timestamp, voltage, current, power, protocol)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (sid_wh, t0 + k * 60, 9.0, 1.0, 9.0, "PD"))
+            h1._conn.execute(
+                """INSERT INTO charge_points
+                   (session_id, timestamp, voltage, current, power, protocol)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (sid_empty, t0, 9.0, 1.0, 9.0, "PD"))
+            h1._conn.commit()
+        h1.close()      # 不调用 end_session，模拟进程崩溃
 
         h2 = PortHistory(db_path=temp_db)
-        h2.connect()  # 应回收孤儿会话
-        assert h2.get_session_points(sid) == []
+        h2.connect()    # 应在这里收尾
+
+        kept = h2.get_session(sid_wh)
+        assert kept is not None, "有能量的遗留会话必须被收尾，而不是删掉"
+        assert kept["end_time"] is not None
+        assert abs(kept["end_time"] - (t0 + 600)) < 1.0, "结束时刻取最后一个采样点"
+        assert kept["total_wh"] == pytest.approx(1.5, abs=0.05), "能量按采样点现算"
+        assert h2.get_session_points(sid_wh), "采样点要留着（曲线还在）"
         sessions, _ = h2.get_sessions(port=1, period="all")
-        assert len(sessions) == 0
+        assert [s["id"] for s in sessions] == [sid_wh]
+
+        assert h2.get_session(sid_empty) is None, "没有能量的孤儿按常规口径删除"
+        assert h2.get_session_points(sid_empty) == []
         h2.close()
 
 
@@ -442,3 +480,112 @@ class TestEnergyGapCap:
         # 不封顶会积出 40W × 1h = 40Wh; 封顶后 ≈ 40W × 30s ≈ 0.33Wh
         assert stats.get("energy_wh", 0) < 1.0, \
             f"断档未被封顶: {stats.get('energy_wh')}"
+
+
+class TestWriteAmplification:
+    """写放大优化：charge_points 批量提交 + WAL 按阈值 checkpoint。"""
+
+    def _count_points(self, history, sid):
+        return history._conn.execute(
+            "SELECT COUNT(*) FROM charge_points WHERE session_id = ?", (sid,)
+        ).fetchone()[0]
+
+    def test_charge_point_is_buffered_until_flush(self, history):
+        """采样点先入缓冲，不逐点提交（原先每点一次 INSERT+COMMIT）。"""
+        sid = history.start_session(1, protocol="PD")
+        history.record_charge_point(sid, 20.0, 1.0, 20.0, "PD")
+        assert self._count_points(history, sid) == 0, "不应立即落盘"
+        history.flush()
+        assert self._count_points(history, sid) == 1
+
+    def test_get_session_points_flushes_buffer(self, history):
+        """读取路径要先把缓冲落盘，否则详情图缺最近几秒。"""
+        sid = history.start_session(1, protocol="PD")
+        history.record_charge_point(sid, 20.0, 1.0, 20.0, "PD")
+        pts = history.get_session_points(sid)
+        assert len(pts) == 1
+        assert pts[0]["voltage"] == pytest.approx(20.0)
+
+    def test_compute_avg_sees_buffered_point(self, history):
+        """均压/均流重算前会 flush，缓冲中的点不能被漏掉。"""
+        sid = history.start_session(1, protocol="PD")
+        history.record_charge_point(sid, 19.5, 2.0, 39.0, "PD")
+        avg_v, avg_i = history.compute_session_avg_vi(sid)
+        assert avg_v == pytest.approx(19.5, abs=0.01)
+        assert avg_i == pytest.approx(2.0, abs=0.01)
+
+    def test_end_session_flushes_then_computes(self, history):
+        """会话闭合时缓冲点必须先落盘再重算均值（否则均值偏低）。"""
+        sid = history.start_session(1, protocol="PD")
+        history.record_charge_point(sid, 20.0, 1.5, 30.0, "PD")
+        history.end_session(sid, 1.0, 30.0, 0.0, 0.0, 600)
+        row = history._conn.execute(
+            "SELECT avg_voltage, avg_current FROM charge_sessions WHERE id = ?", (sid,)
+        ).fetchone()
+        assert row["avg_voltage"] == pytest.approx(20.0, abs=0.01)
+        assert row["avg_current"] == pytest.approx(1.5, abs=0.01)
+
+    def test_wal_checkpoint_skipped_when_wal_small(self, history):
+        """WAL 未达阈值时不做 checkpoint（避免无谓的脏页回写）。"""
+        assert history._checkpoint_wal() is False
+
+    def test_batch_interval_relaxed(self, history):
+        """提交间隔不得退回 1s —— 那是"每秒一次 commit"的根源。"""
+        from history import PortHistory
+        assert PortHistory.BATCH_INTERVAL >= 5.0
+
+    def test_checkpoint_threshold_is_reasonable(self):
+        from history import PortHistory
+        assert PortHistory.WAL_CHECKPOINT_MIN_BYTES >= 1024 * 1024
+
+
+class TestPortModeMeta:
+    """端口模式（长期供电 / 充满即停）的 meta 读写。"""
+
+    def test_defaults_empty(self, history):
+        assert history.get_permanent_ports() == []
+        assert history.get_full_off() == {}
+
+    def test_round_trip_and_normalization(self, history):
+        """大小写归一、去重、未知端口丢弃，输出顺序跟 PORT_NAMES（c1/c2/c3/a）。"""
+        history.set_permanent_ports(["C2", "c2", "a", "bogus", None, 3])
+        assert history.get_permanent_ports() == ["c2", "a"]
+        history.set_full_off({"c3": "always", "c1": "once", "bogus": "once"})
+        assert history.get_full_off() == {"c1": "once", "c3": "always"}, "非法端口丢弃，模式保留"
+
+    def test_garbage_input_becomes_empty(self, history):
+        history.set_permanent_ports("c1")
+        assert history.get_permanent_ports() == ["c1"], "单个字符串按一个端口处理"
+        history.set_full_off(["c1"])
+        assert history.get_full_off() == {"c1": "always"}, "列表形式按 always 处理"
+        history.set_full_off({"c1": "sometimes"})
+        assert history.get_full_off() == {"c1": "once"}, "非法模式回落默认（once）"
+
+    def test_corrupt_meta_falls_back_to_empty(self, history):
+        from history import PortHistory
+        history.set_meta(PortHistory.PERMANENT_PORTS_META_KEY, "{not json")
+        assert history.get_permanent_ports() == []
+        history.set_meta(PortHistory.PERMANENT_PORTS_META_KEY, '{"c1": true}')
+        assert history.get_permanent_ports() == []
+
+    def test_legacy_array_meta_upgrades_to_always(self, history):
+        """旧版本把"充满即停"存成数组（没有模式），读到要升级成 always。"""
+        from history import PortHistory
+        history.set_meta(PortHistory.FULL_OFF_PORTS_META_KEY, '["c2"]')
+        assert history.get_full_off() == {"c2": "always"}
+
+    def test_persists_across_reconnect(self, temp_db):
+        from history import PortHistory
+        h1 = PortHistory(db_path=temp_db, retention_days=2)
+        h1.connect()
+        h1.set_permanent_ports(["c2"])
+        h1.set_full_off({"c1": "always"})
+        h1.close()
+
+        h2 = PortHistory(db_path=temp_db, retention_days=2)
+        h2.connect()
+        try:
+            assert h2.get_permanent_ports() == ["c2"]
+            assert h2.get_full_off() == {"c1": "always"}
+        finally:
+            h2.close()

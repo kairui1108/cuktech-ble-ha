@@ -11,9 +11,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from ble_manager import BLEManager, set_status_cache_invalidator, _invalidate
 from ble_manager import (END_REASON_USER_OFF, END_REASON_UNPLUG, END_REASON_LOW_POWER,
-                         END_REASON_LINK_LOSS, END_REASON_SHUTDOWN, END_REASON_UNKNOWN,
-                         PORT_IDS)
+                         END_REASON_NO_LOAD, END_REASON_LINK_LOSS, END_REASON_SHUTDOWN,
+                         END_REASON_UNKNOWN, PORT_IDS)
 from state import ChargerState, PORT_NAMES, PORT_BITS, PORT_DEFAULT
+
+
+class _RestartRequested(Exception):
+    """模拟服务层重启处理器：execv / _exit 都不会正常返回，用异常表示"映像被替换"。"""
+
+
+class _ProcessExited(Exception):
+    """模拟 os._exit：立刻终止进程（测试里用异常代替，否则会杀掉 pytest）。"""
 
 
 def make_config():
@@ -27,6 +35,15 @@ def make_config():
     config.topic_settings = "cuktech/charger/settings"
     config.topic_port = "cuktech/charger/port"
     return config
+
+
+def _prime_start_gate(mgr, port=1, seconds=31.0):
+    """让"会话开始门限"的持续时间条件立刻满足（测试用）。
+
+    真实实现要求功率连续保持 START_HOLD_SEC（30s）才开会话；单帧推不动它，
+    所以这里把计时起点往前挪，专注验证会话开始之后的行为。
+    """
+    mgr._start_gates[port]._above_since = time.time() - seconds
 
 
 def make_manager():
@@ -726,6 +743,53 @@ class TestAuthFailureRetry:
         assert mgr._force_disconnect_bluetooth.call_count >= 1
         assert call_count == 2
 
+    @pytest.mark.asyncio
+    async def test_auth_stuck_restarts_via_registered_handler(self):
+        """连续 auth 失败到上限：必须走服务层注册的重启处理器（Linux 下即 execv 自愈）。
+
+        回归：这条分支原来直接 os._exit(1)，注释写着"外部进程管理器会自动重启"——
+        而本机既没有 systemd 单元、crontab 里的 ensure_server.sh 也指向不存在的路径，
+        结果 15 次失败后进程退出、服务停机 3 小时 25 分。现在 Linux 通过处理器
+        os.execv，不需要任何外部守护。
+        """
+        mgr = make_manager()
+        mgr.AUTH_STUCK_NOTIFY_SEC = 0        # 别真等那 2 秒
+        mgr._auth_fail_count = mgr.MAX_AUTH_FAILURES
+        calls = []
+
+        async def handler():
+            calls.append("restart")
+            raise _RestartRequested()        # execv 不返回：用它模拟"映像被替换"
+
+        mgr.set_restart_handler(handler)
+        with patch("ble_manager.os._exit") as exit_mock:
+            with pytest.raises(_RestartRequested):
+                await mgr._recover_from_auth_stuck()
+        assert calls == ["restart"], "必须调用注册的重启处理器"
+        exit_mock.assert_not_called()        # 处理器没返回 → 不该再走 os._exit
+
+    @pytest.mark.asyncio
+    async def test_auth_stuck_without_handler_exits_for_supervisor(self):
+        """没有处理器时退回 os._exit(1)：那条路必须有外部管理器，否则起不来。"""
+        mgr = make_manager()
+        mgr.AUTH_STUCK_NOTIFY_SEC = 0
+        mgr._auth_fail_count = mgr.MAX_AUTH_FAILURES
+        with patch("ble_manager.os._exit", side_effect=_ProcessExited) as exit_mock:
+            with pytest.raises(_ProcessExited):
+                await mgr._recover_from_auth_stuck()
+        exit_mock.assert_called_once_with(1)
+
+    def test_ha_server_registers_restart_handler(self):
+        """服务层必须注册自愈重启处理器。
+
+        这行 wiring 没法用行为测试覆盖（要跑 on_startup 就得起整套 BLE/MQTT/HTTP），
+        所以直接盯源码文本——它正是"停机 3 小时 25 分"那次事故的修复点：不注册就
+        等于退回"退出等外部管理器"，而本机没有管理器。
+        """
+        src = (Path(__file__).parent.parent / "ha_server.py").read_text(encoding="utf-8")
+        assert "s.ble.set_restart_handler(s._restart)" in src, "ha_server 必须注册重启处理器"
+        assert "async def _restart(self)" in src, "_restart 必须仍是异步方法（处理器按协程调用）"
+
 
 class TestMultiframeBoundary:
     """Test multi-frame data edge cases."""
@@ -1148,6 +1212,70 @@ class TestSessionRecording:
         mgr._sse_emitter.emit.assert_not_called()
         mgr._history.end_session.assert_not_called()
         mgr._history.delete_session.assert_not_called()
+
+    def test_close_active_sessions_logs_reason(self, caplog):
+        """停机关闭会话时日志必须带 reason=（此前只有探测路径带）。
+
+        除探测路径外，这行是唯一记录"会话为什么结束"的地方：以前只打
+        (port, Wh, 秒)，关停/关闭记录路径的原因只能靠相邻的 "Shutting down..."
+        去猜——与"结束原因必须能从日志读到"的约定不符。
+        """
+        mgr = make_manager()
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = time.time() - 60
+        es.session_wh = 1.5            # ≥0.05 才会走到这条日志
+        es.max_power = 20.0
+
+        with caplog.at_level("INFO"):
+            mgr._close_active_sessions(END_REASON_SHUTDOWN)
+
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("closed" in m and "reason=shutdown" in m for m in msgs), msgs
+
+    def test_no_load_close_logs_reason_exactly_once(self, caplog):
+        """一次无负载闭合只能有一条带 reason= 的记录。
+
+        原因统一由 _close_session 打；无负载分支过去自己也带一个 reason=，
+        同一次闭合出现两条会让人误以为结束了两次。
+        """
+        mgr = make_manager()
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = time.time() - 300
+        es.session_wh = 1.0
+        es.max_power = 20.0
+        # 去抖已满 + 电压仍在协商范围（5.1V）→ NO_LOAD（而不是 UNPLUG）
+        mgr._no_load_since[1] = time.time() - (mgr.NO_LOAD_DEBOUNCE_SEC + 1)
+
+        with caplog.at_level("INFO"):
+            mgr._manage_session(1, time.time(), 5.1, 0.0, active=False)
+
+        hits = [r.getMessage() for r in caplog.records if "reason=" in r.getMessage()]
+        assert len(hits) == 1, hits
+        assert "reason=no_load" in hits[0]
+
+    def test_close_session_logs_reason_for_user_off(self, caplog):
+        """用户/限额关端口这条路径过去完全不打原因。
+
+        实测踩到过：网页手动关 C2（POST /api/port），日志里只剩
+        "Charge event published"，结束原因只能从相邻的访问日志反推。
+        """
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_start = time.time() - 71
+        es.session_wh = 0.38
+        es.max_power = 26.0
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 42
+
+        with caplog.at_level("INFO"):
+            mgr._close_session(1, time.time(), 20.0, 0.02, END_REASON_USER_OFF)
+
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("reason=port_off" in m for m in msgs), msgs
 
     @pytest.mark.asyncio
     async def test_close_active_sessions_recording_off_skips_db_but_publishes(self):
@@ -1653,6 +1781,7 @@ class TestSessionActivePredicate:
         # push 建会话（sid 永不写入）
         mgr.ctrl.decrypt = MagicMock(return_value=bytes(
             [0, 0, 0, 0, 0x04, 0, 0, 1, 0, 0x0a, 25, 201]))
+        _prime_start_gate(mgr)
         await mgr._handle_inline_data(bytes([0, 0, 0x02, 4]) + b'\x00' * 10)
         assert mgr._energy_states[1].is_charging is True
         assert mgr._active_sessions == {}
@@ -1763,3 +1892,1332 @@ class TestAuthBackoff:
         assert BLEManager._should_restart_process(14) is False
         assert BLEManager._should_restart_process(15) is True
         assert BLEManager._should_restart_process(100) is True
+
+
+class TestPermanentPortPoints:
+    """长期供电端口：曲线点不落库（改存内存窗口），会话行与耗能统计照常。"""
+
+    def _session(self, mgr, port=2, sid=7, wh=5.0):
+        with mgr._sess_lock:
+            mgr._active_sessions[port] = sid
+        es = mgr._energy_states[port]
+        es.is_charging = True
+        es.session_wh = wh
+        es.session_start = 1000.0
+        es.max_power = 33.0
+        return es
+
+    def test_port_names_normalized_and_deduped(self):
+        mgr = make_manager()
+        mgr.set_permanent_ports(["C2", "c2", "a", "zzz", 3, None])
+        assert mgr.permanent_ports == {2, 4}   # 大小写归一 + 去重，非法项丢弃
+        assert mgr.get_port_modes_state()["permanent_ports"] == ["c2", "a"]
+
+    def test_garbage_input_clears_modes(self):
+        mgr = make_manager()
+        mgr.set_permanent_ports(["c1"])
+        mgr.set_permanent_ports(None)
+        assert mgr.permanent_ports == set()
+
+    def test_modes_are_mutually_exclusive(self):
+        """常供与充满即停互斥：先即停后常供 → 该口即停被清掉，别的口不动。"""
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always", "c2": "once"})
+        mgr.set_permanent_ports(["c2"])
+        assert mgr.full_off == {1: "always"}
+        mgr.set_full_off({"c2": "always"})       # 已是长期供电端口：再设即停也不生效
+        assert 2 not in mgr.full_off
+
+    @pytest.mark.asyncio
+    async def test_point_not_written_for_permanent_port(self):
+        """常供端口：采样点不进 DB，但进内存窗口（详情浮层要用）。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.set_permanent_ports(["c2"])
+        self._session(mgr, port=2)
+
+        assert mgr._record_charge_point(2, 20.0, 1.5, "PD") is False
+        await asyncio.sleep(0.05)
+        mgr._history.record_charge_point.assert_not_called()
+        assert len(mgr._permanent_points[2]) == 1
+        point = mgr._permanent_points[2][0]
+        assert point[1:4] == (20.0, 1.5, 30.0)
+
+    @pytest.mark.asyncio
+    async def test_point_written_for_normal_port(self):
+        """对照组：非常供端口照旧落库（常供门控不能影响普通端口）。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        self._session(mgr, port=1, sid=11)
+
+        assert mgr._record_charge_point(1, 20.0, 2.0, "PD") is True
+        await asyncio.sleep(0.05)
+        mgr._history.record_charge_point.assert_called_once_with(
+            11, 20.0, 2.0, 40.0, "PD")
+        assert len(mgr._permanent_points[1]) == 0
+
+    def test_point_throttled_to_one_per_second(self):
+        """节流：同一秒内的重复推送只留一个点（窗口内存有上限）。"""
+        mgr = make_manager()
+        mgr.set_permanent_ports(["c2"])
+        self._session(mgr, port=2)
+        for _ in range(5):
+            mgr._append_permanent_point(2, 20.0, 1.0, "PD")
+        assert len(mgr._permanent_points[2]) == 1
+
+    def test_ring_drops_points_older_than_retain_window(self):
+        mgr = make_manager()
+        mgr.set_permanent_ports(["c2"])
+        now = time.time()
+        mgr._permanent_points[2].append(
+            (now - BLEManager.PERMANENT_RETAIN_SEC - 10, 20.0, 1.0, 20.0, "PD"))
+        mgr._permanent_last_point[2] = 0.0
+        mgr._append_permanent_point(2, 20.0, 1.0, "PD")
+        assert len(mgr._permanent_points[2]) == 1
+        assert mgr._permanent_points[2][0][0] > now - 5
+
+    def test_window_returns_points_and_whole_session_stats(self):
+        """窗口只裁剪曲线；统计恒为整个会话（与窗口/淘汰无关）。"""
+        mgr = make_manager()
+        mgr.set_permanent_ports(["c2"])
+        es = self._session(mgr, port=2, sid=7, wh=12.5)
+        now = time.time()
+        mgr._permanent_points[2].extend([
+            (now - 1800, 20.0, 1.0, 20.0, "PD"),
+            (now - 300, 20.0, 1.5, 30.0, "PD"),
+            (now - 60, 20.0, 2.0, 40.0, "PD"),
+        ])
+
+        win = mgr.get_permanent_session_window(7, window_sec=600)
+        assert [p["power"] for p in win["points"]] == [30.0, 40.0]
+        assert win["window"]["count"] == 2 and win["window"]["total_points"] == 3
+        assert win["permanent"] is True
+        assert win["stats"]["total_wh"] == 12.5          # 会话级累计，不受窗口影响
+        assert win["stats"]["peak_power_w"] == 33.0
+        assert win["stats"]["session_id"] == 7
+
+    def test_window_respects_to_timestamp(self):
+        """to 参数把窗口整体左移（滑动查看历史窗口）。"""
+        mgr = make_manager()
+        mgr.set_permanent_ports(["c2"])
+        self._session(mgr, port=2, sid=7)
+        now = time.time()
+        mgr._permanent_points[2].extend([
+            (now - 1200, 20.0, 1.0, 20.0, "PD"),
+            (now - 600, 20.0, 1.5, 30.0, "PD"),
+            (now - 30, 20.0, 2.0, 40.0, "PD"),
+        ])
+        win = mgr.get_permanent_session_window(7, window_sec=300, to_ts=now - 600)
+        assert [p["power"] for p in win["points"]] == [30.0]
+        assert win["window"]["to"] == pytest.approx(now - 600, abs=2)
+
+    def test_window_none_for_normal_or_unknown_session(self):
+        """非常供端口 / 非活跃会话：返回 None，调用方回落 DB 曲线。"""
+        mgr = make_manager()
+        self._session(mgr, port=2, sid=7)
+        assert mgr.get_permanent_session_window(7) is None      # 未标记常供
+        mgr.set_permanent_ports(["c2"])
+        assert mgr.get_permanent_session_window(999) is None    # 会话不活跃
+        assert mgr.get_permanent_session_window(None) is None
+
+    @pytest.mark.asyncio
+    async def test_close_session_releases_window(self):
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.set_permanent_ports(["c2"])
+        self._session(mgr, port=2, sid=7, wh=3.0)
+        mgr._append_permanent_point(2, 20.0, 1.0, "PD")
+        assert len(mgr._permanent_points[2]) == 1
+
+        mgr._close_session(2, time.time(), 20.0, 1.0, END_REASON_UNPLUG)
+        await asyncio.sleep(0.05)
+        assert len(mgr._permanent_points[2]) == 0, "会话结束后释放内存窗口"
+
+
+class TestFullOff:
+    """充满即停：会话被"自动判定结束"（low_power）时关闭端口，含重试与复位。"""
+
+    def _charging(self, mgr, port=1, wh=5.0, sid=42):
+        with mgr._sess_lock:
+            mgr._active_sessions[port] = sid
+        es = mgr._energy_states[port]
+        es.is_charging = True
+        es.session_wh = wh
+        es.session_start = 1000.0
+        mgr.state.ports[port].active = True
+        return es
+
+    def _queued(self, mgr):
+        out = []
+        while not mgr.cmd_queue.empty():
+            out.append(mgr.cmd_queue.get_nowait()[1])
+        return out
+
+    @pytest.mark.asyncio
+    async def test_auto_session_end_enqueues_port_off(self):
+        """会话自动结束（low_power）→ 武装并断端口。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.set_full_off({"c1": "always"})
+        self._charging(mgr, wh=8.0)
+
+        mgr._close_session(1, 2000.0, 20.0, 0.05, END_REASON_LOW_POWER)
+        await asyncio.sleep(0.05)
+        assert ("c1", "off") in self._queued(mgr)
+        assert mgr._full_off_pending[1] == 2000.0
+
+    @pytest.mark.asyncio
+    async def test_disabled_port_not_enqueued(self):
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        self._charging(mgr, wh=8.0)
+        mgr._close_session(1, 2000.0, 20.0, 0.05, END_REASON_LOW_POWER)
+        await asyncio.sleep(0.05)
+        assert self._queued(mgr) == []
+        assert mgr._full_off_pending[1] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_other_end_reasons_not_enqueued(self):
+        """只有"自动结束"（low_power）才断电：拔插/用户关端口/链路中断/关机都不触发。"""
+        for reason in (END_REASON_UNPLUG, END_REASON_USER_OFF,
+                       END_REASON_LINK_LOSS, END_REASON_SHUTDOWN, END_REASON_UNKNOWN):
+            mgr = make_manager()
+            mgr._history = MagicMock()
+            mgr.set_full_off({"c1": "always"})
+            self._charging(mgr, wh=8.0)
+            mgr._close_session(1, 2000.0, 20.0, 0.05, reason)
+            await asyncio.sleep(0.05)
+            assert self._queued(mgr) == [], f"reason={reason} 不应断电"
+
+    @pytest.mark.asyncio
+    async def test_below_min_energy_not_enqueued(self):
+        """能量过小（瞬时低功率/刚插上就涓流）不触发，避免误断。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.set_full_off({"c1": "always"})
+        self._charging(mgr, wh=BLEManager.FULL_OFF_MIN_WH - 0.1)
+        mgr._close_session(1, 2000.0, 20.0, 0.02, END_REASON_LOW_POWER)
+        await asyncio.sleep(0.05)
+        assert self._queued(mgr) == []
+
+    def test_confirmed_when_port_reads_inactive(self):
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        mgr._full_off_pending[1] = 1000.0
+        mgr.state.ports[1].active = False
+        mgr._enforce_full_off(1, 1001.0)
+        assert mgr._full_off_pending[1] == 0.0
+        assert mgr._full_off_fired[1] is True
+
+    def test_retries_within_window_then_gives_up(self):
+        """端口仍 active：按 FULL_OFF_RETRY_SEC 重试，超上限放弃并清挂起。"""
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        mgr.state.ports[1].active = True
+        mgr._full_off_pending[1] = 1000.0
+        mgr._full_off_last_try[1] = 1000.0
+
+        mgr._enforce_full_off(1, 1005.0)          # 窗口内：不重复入队
+        assert mgr.cmd_queue.empty()
+        mgr._enforce_full_off(1, 1016.0)          # 超过窗口：重试
+        assert mgr.cmd_queue.qsize() == 1
+
+        for i in range(BLEManager.FULL_OFF_MAX_ATTEMPTS + 2):
+            mgr._enforce_full_off(1, 1032.0 + i * 20)
+            mgr.cmd_queue.get_nowait() if not mgr.cmd_queue.empty() else None
+        assert mgr._full_off_pending[1] == 0.0, "超上限后不再挂起"
+        assert mgr._full_off_attempts[1] >= BLEManager.FULL_OFF_MAX_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_new_session_rearms_full_off(self):
+        """新会话起点复位挂起/重试/已触发状态（与限额重新武装同一处）。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.client = MagicMock()
+        mgr.ctrl.client.write_gatt_char = AsyncMock()
+        mgr.ctrl.decrypt = MagicMock(return_value=bytes(
+            [0, 0, 0, 0, 0x04, 0, 0, 1, 0, 0x0a, 25, 201]))   # 20.1V 2.5A
+        mgr.set_mqtt_publisher(MagicMock())
+        mgr.set_full_off({"c1": "always"})
+        mgr._full_off_pending[1] = 1234.0
+        mgr._full_off_attempts[1] = 3
+        mgr._full_off_fired[1] = True
+        es = mgr._energy_states[1]
+        es.is_charging = False
+
+        _prime_start_gate(mgr)
+        data = bytes([0, 0, 0x02, 4]) + b'\x00' * 10
+        await mgr._handle_inline_data(data)
+
+        assert mgr._full_off_pending[1] == 0.0
+        assert mgr._full_off_attempts[1] == 0
+        assert mgr._full_off_fired[1] is False
+        assert self._queued(mgr) == [], "新会话开始不应误触发断电"
+
+
+class TestPermanentPortDisablesLimit:
+    """长期供电端口不参与限额断电（后端登记时清零 + 判定兜底）。"""
+
+    def test_marking_permanent_zeroes_limit(self):
+        mgr = make_manager()
+        mgr.set_charge_limits({"c2": {"wh": 30.0, "mode": "always"}})
+        mgr.set_permanent_ports(["c2"])
+        state = mgr.get_charge_limits_state()
+        assert state["c2"]["wh"] == 0.0
+        assert state["c2"]["mode"] == "always", "模式保留，只清阈值"
+
+    def test_enforce_skips_permanent_port(self):
+        mgr = make_manager()
+        mgr.set_permanent_ports(["c1"])
+        mgr._charge_limits[1] = 30.0          # 绕过 API 直接塞一个阈值
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_wh = 99.0
+        mgr._enforce_charge_limit(1, 2000.0)
+        assert mgr.cmd_queue.empty(), "长期供电端口不应被限额断掉"
+
+    def test_is_permanent_name(self):
+        mgr = make_manager()
+        mgr.set_permanent_ports(["c2"])
+        assert mgr.is_permanent_name("c2") is True
+        assert mgr.is_permanent_name(" C2 ") is True
+        assert mgr.is_permanent_name("c1") is False
+        assert mgr.is_permanent_name("nope") is False
+
+    def test_once_mode_consumed_on_confirmation(self):
+        """once：断电确认后即消费（与限额 once 同语义），且"已触发"标记一并清掉。
+
+        标记只是"本次会话断过电"的瞬时信息。消费后功能已经回到"未启用"，标记
+        再留着就会让卡片长期显示自相矛盾的「未启用 · 已触发」，状态点也一直停在
+        警示色（实测就是这个现象）。能量限额的 _limit_fired 同样在会话闭合时复位。
+        """
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.set_full_off({"c1": "once"})
+        mgr.state.ports[1].active = False
+        mgr._full_off_pending[1] = 1000.0
+        mgr._enforce_full_off(1, 1001.0)
+        assert 1 not in mgr.full_off, "once 命中即消费"
+        assert mgr._full_off_fired[1] is False, "消费后不得再挂「已触发」（否则界面自相矛盾）"
+        assert mgr.get_port_modes_state()["full_off_fired"] == [], "对外状态里也不该再出现"
+        assert mgr.get_port_modes_state()["full_off_ports"] == {}
+
+    @pytest.mark.asyncio
+    async def test_always_mode_kept_on_confirmation(self):
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.set_full_off({"c1": "always"})
+        mgr.state.ports[1].active = False
+        mgr._full_off_pending[1] = 1000.0
+        mgr._enforce_full_off(1, 1001.0)
+        assert mgr.full_off == {1: "always"}, "always：下次充电继续生效"
+        # always 功能仍生效，「已启用 · 已触发」是有意义的信息，留到下次会话起点
+        assert mgr._full_off_fired[1] is True
+        assert mgr.get_port_modes_state()["full_off_fired"] == ["c1"]
+        mgr._start_session(1, 2000.0, 20.0, 1.0, "PD")
+        assert mgr._full_off_fired[1] is False, "新会话起点复位"
+
+    def test_list_input_uses_default_mode(self):
+        mgr = make_manager()
+        mgr.set_full_off(["c1"])
+        assert mgr.full_off == {1: BLEManager.FULL_OFF_DEFAULT_MODE}
+
+    def test_disabling_clears_fired_flag(self):
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        mgr._full_off_fired[1] = True
+        mgr.set_full_off({})
+        assert mgr._full_off_fired[1] is False, "关掉即停后不再挂旧状态"
+
+
+class TestSessionLifecycle:
+    """会话边界：时间窗+功率、无负载去抖、原因区分、结束后防 churn。
+
+    对应旧实现的六个缺陷：单帧早断 / 帧数≠时间 / 电流阈值与电压耦合 /
+    回升不重置 / 原因语义混用 / 结束后门限副作用。
+    """
+
+    def _charging(self, mgr, port=1, wh=10.0, peak=50.0):
+        es = mgr._energy_states[port]
+        es.is_charging = True
+        es.session_wh = wh
+        es.session_start = time.time() - 3600
+        es.max_power = peak
+        mgr.state.ports[port].active = True
+        return es
+
+    def _queued(self, mgr):
+        out = []
+        while not mgr.cmd_queue.empty():
+            out.append(mgr.cmd_queue.get_nowait()[1])
+        return out
+
+    def _spy_close(self, mgr):
+        spy = MagicMock(wraps=mgr._close_session)
+        mgr._close_session = spy
+        return spy
+
+    # ── ① 单帧无负载绝不能结束会话 ──
+
+    def test_single_no_load_frame_does_not_end_session(self):
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr)
+        spy = self._spy_close(mgr)
+
+        mgr._manage_session(1, 1000.0, 0.0, 0.0, active=False)   # 推送间隙/瞬时不上报
+        mgr._manage_session(1, 1002.0, 0.0, 0.0, active=False)   # 还在去抖窗口内
+        assert es.is_charging is True, "单帧无负载不得结束会话（旧实现的元凶）"
+        spy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_load_ends_after_debounce(self):
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr)
+        spy = self._spy_close(mgr)
+
+        mgr._manage_session(1, 1000.0, 20.0, 0.0, active=False)
+        mgr._manage_session(1, 1000.0 + mgr.NO_LOAD_DEBOUNCE_SEC + 0.5,
+                            20.0, 0.0, active=False)
+        await asyncio.sleep(0.05)
+        spy.assert_called_once()
+        assert spy.call_args[0][4] == END_REASON_NO_LOAD, "电压仍在协商 → 设备不吸电（自然结束）"
+        assert es.is_charging is False
+
+    @pytest.mark.asyncio
+    async def test_no_load_with_collapsed_voltage_is_unplug(self):
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        self._charging(mgr)
+        spy = self._spy_close(mgr)
+
+        mgr._manage_session(1, 1000.0, 0.0, 0.0, active=False)
+        mgr._manage_session(1, 1000.0 + mgr.NO_LOAD_DEBOUNCE_SEC + 0.5,
+                            0.0, 0.0, active=False)
+        await asyncio.sleep(0.05)
+        assert spy.call_args[0][4] == END_REASON_UNPLUG, "电压塌掉 → 拔出"
+
+    @pytest.mark.asyncio
+    async def test_short_current_dropout_does_not_split_session(self):
+        """充电中短暂断流（PD 重协商/档位切换、固件握手）不得把会话切成两段。
+
+        回放实测：I=0 只持续 5s 就收尾的话，断流后立刻按 45W 重开，一条会话变成
+        两条——session_wh 归零，Wh 限额进度跟着归零重来，历史里还多一行碎片。
+        去抖现在是 15s（见 test_debounce_window_matches_measured_pauses），远小于
+        120s/600s 的断电武装窗口。
+        """
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr, wh=8.0, peak=45.0)
+        spy = self._spy_close(mgr)
+
+        t0 = 1000.0
+        for k in range(5):                       # 5s 零电流（V 仍在协商范围内）
+            mgr._manage_session(1, t0 + k, 20.0, 0.0, active=True)
+        await asyncio.sleep(0.05)
+        spy.assert_not_called()
+        assert es.is_charging is True, "5s 断流不得结束会话"
+
+        # 恢复供电后仍是同一条会话（不重开、能量不清零）
+        mgr._manage_session(1, t0 + 6, 20.0, 2.25, active=True)
+        await asyncio.sleep(0.05)
+        spy.assert_not_called()
+        assert es.is_charging is True
+        assert es.session_wh == pytest.approx(8.0), "会话能量不因断流被清零"
+
+    @pytest.mark.asyncio
+    async def test_long_zero_current_still_ends_as_no_load(self):
+        """断流超过（放宽后的）去抖窗口仍要收尾：15s 是放宽，不是取消。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr, wh=8.0, peak=45.0)
+        spy = self._spy_close(mgr)
+
+        t0 = 2000.0
+        for k in range(int(mgr.NO_LOAD_DEBOUNCE_SEC) + 1):
+            mgr._manage_session(1, t0 + k, 20.0, 0.0, active=True)
+        await asyncio.sleep(0.05)
+        spy.assert_called_once()
+        assert spy.call_args[0][4] == END_REASON_NO_LOAD, "电压仍在 → 设备不吸电（自然结束）"
+        assert es.is_charging is False
+
+    @pytest.mark.asyncio
+    async def test_debounce_window_matches_measured_pauses(self):
+        """去抖定在 15s 是实测结论，不是拍脑袋：12s 必须吸收、20s 必须收尾。
+
+        数据（2 天 1Hz 的 port_history，仅统计落在会话区间内的零电流段）：
+          C1 86 次"暂停后恢复"：最长 14s，≥3s 32 次、≥8s 2 次、≥15s 0 次；
+          C3 9 次最长 4s；USB-A 3 次最长 8s。
+        3s 会把 34 次停顿判成会话结束（session_wh 归零 → Wh 限额进度重来），
+        8s 仍剩 2 次，15s 归零。这条把窗口两端都钉住，避免有人随手调小/调大。
+        """
+        assert BLEManager.NO_LOAD_DEBOUNCE_SEC == 15.0, \
+            f"去抖窗口应为 15s（实测结论），实际 {BLEManager.NO_LOAD_DEBOUNCE_SEC}"
+
+        # 12s 零电流（实测最长 14s 的同类停顿）→ 必须吸收
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr, wh=8.0, peak=45.0)
+        spy = self._spy_close(mgr)
+        for k in range(12):
+            mgr._manage_session(1, 3000.0 + k, 20.0, 0.0, active=True)
+        await asyncio.sleep(0.05)
+        spy.assert_not_called()
+        assert es.is_charging is True, "12s 停顿不得结束会话"
+
+        # 20s 零电流 → 必须收尾（设备真的不取电了）
+        mgr2 = make_manager()
+        mgr2._history = MagicMock()
+        es2 = self._charging(mgr2, wh=8.0, peak=45.0)
+        spy2 = self._spy_close(mgr2)
+        for k in range(20):
+            mgr2._manage_session(1, 4000.0 + k, 20.0, 0.0, active=True)
+        await asyncio.sleep(0.05)
+        spy2.assert_called_once()
+        assert spy2.call_args[0][4] == END_REASON_NO_LOAD
+        assert es2.is_charging is False
+
+    @pytest.mark.asyncio
+    async def test_port_disabled_ends_immediately(self):
+        """端口被关（用户/限额）是我们自己的动作：不去抖，立即以 USER_OFF 结束。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        self._charging(mgr)
+        mgr.state.settings["16"] = 0x0E          # C1 位清零
+        spy = self._spy_close(mgr)
+
+        mgr._manage_session(1, 1000.0, 0.0, 0.0, active=False)
+        await asyncio.sleep(0.05)
+        assert spy.call_args[0][4] == END_REASON_USER_OFF
+
+    @pytest.mark.asyncio
+    async def test_low_power_convergence_ends_and_arms(self):
+        """低功率收敛（时间窗判定）结束 → 武装自动断电。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.set_full_off({"c1": "always"})
+        es = self._charging(mgr, wh=20.0)
+        det = mgr._session_dets[1]
+        now = time.time()
+        # 先充一段（建立 p_base），再喂 11 分钟 1.5W 残留
+        for k in range(0, 300):
+            mgr._manage_session(1, now - 1200 + k, 20.0, 3.0, active=True)   # 60W
+        for k in range(0, 11 * 60):
+            mgr._manage_session(1, now - 660 + k, 20.0, 0.015, active=True)  # 0.3W（逼近 0）
+        await asyncio.sleep(0.05)
+        assert es.is_charging is False, "连续 10 分钟收敛应结束会话"
+        assert mgr._full_off_pending[1] > 0, "自动断电应已武装"
+        assert ("c1", "off") in self._queued(mgr)
+        del det
+
+    # ── ⑤ 原因语义：只有"自然结束"才武装自动断电 ──
+
+    @pytest.mark.asyncio
+    async def test_unplug_and_user_off_do_not_arm(self):
+        for active, voltage, expect in ((False, 0.0, None),
+                                        (False, 20.0, END_REASON_NO_LOAD)):
+            mgr = make_manager()
+            mgr._history = MagicMock()
+            mgr.set_full_off({"c1": "always"})
+            self._charging(mgr)
+            spy = self._spy_close(mgr)
+            mgr._manage_session(1, 1000.0, voltage, 0.0, active=active)
+            mgr._manage_session(1, 1000.0 + mgr.NO_LOAD_DEBOUNCE_SEC + 0.5,
+                                voltage, 0.0, active=active)
+            await asyncio.sleep(0.05)
+            assert spy.call_args[0][4] == (expect or END_REASON_UNPLUG)
+            assert mgr._full_off_pending[1] == 0.0, "拔出/无负载不得立即武装（要等持续观察）"
+
+    def test_no_load_arms_only_after_long_hold(self):
+        """设备彻底不吸电（电压仍在）：持续 NO_LOAD_ARM_SEC 才武装。"""
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        es = mgr._energy_states[1]
+        es.is_charging = False
+        es.session_wh = 5.0        # 会话能量（no_load 路径不看它，仅作背景）
+        t0 = 1000.0
+        mgr._manage_session(1, t0, 20.0, 0.0, active=False)          # 起计时
+        mgr._manage_session(1, t0 + 60, 20.0, 0.0, active=False)     # 1 分钟：不武装
+        assert mgr._full_off_pending[1] == 0.0
+        mgr._manage_session(1, t0 + mgr.NO_LOAD_ARM_SEC + 1, 20.0, 0.0, active=False)
+        assert mgr._full_off_pending[1] == t0 + mgr.NO_LOAD_ARM_SEC + 1
+        assert ("c1", "off") in self._queued(mgr)
+
+    def test_no_load_arm_ignores_session_energy(self):
+        """no_load 路径不看会话能量：时间窗就是证据。
+
+        设备充满后常会周期性冒几秒的小会话（实测 10.2Wh 大会话后跟了一个
+        7 秒 0Wh 会话），若沿用 FULL_OFF_MIN_WH 门槛，`es.session_wh` 会被
+        覆盖成 0，自动断电就再也武装不起来。
+        """
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        es = mgr._energy_states[1]
+        es.is_charging = False
+        es.session_wh = 0.0        # 最近一次会话几乎没有能量
+        t0 = 1000.0
+        mgr._manage_session(1, t0, 20.0, 0.0, active=False)
+        mgr._manage_session(1, t0 + mgr.NO_LOAD_ARM_SEC + 1, 20.0, 0.0, active=False)
+        assert mgr._full_off_pending[1] > 0, "连续确认没在充电就该武装，与能量无关"
+        assert ("c1", "off") in self._queued(mgr)
+
+    def test_unplug_does_not_arm_no_load(self):
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        mgr._energy_states[1].is_charging = False
+        mgr._manage_session(1, 1000.0, 0.0, 0.0, active=False)
+        mgr._manage_session(1, 1000.0 + mgr.NO_LOAD_ARM_SEC + 1, 0.0, 0.0, active=False)
+        assert mgr._full_off_pending[1] == 0.0, "拔出不该触发自动断电"
+
+    # ── ⑥ 结束后防 churn：残留功耗不得重开会话 ──
+
+    @pytest.mark.asyncio
+    async def test_residual_power_does_not_restart_session(self):
+        """会话刚结束后，端口上的"小尾巴"不得开新会话（两种典型残留）。"""
+        # ① PD 口：60W 会话结束后设备仍以小电流维持（20V/0.075A = 1.5W）
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        t0 = time.time()
+        mgr._start_gates[1].note_session_end(peak_power=60.0)
+        for k in range(0, 900, 5):
+            mgr._manage_session(1, t0 + k, 20.1, 0.075, active=True)
+        await asyncio.sleep(0.05)
+        assert mgr._energy_states[1].is_charging is False, "PD 口 1.5W 残留不得开新会话"
+
+        # ② 5V 口：耳机充满后 0.25W 残留（旧实现按 0.1A 电流判，容易反复重开）
+        mgr2 = make_manager()
+        mgr2._history = MagicMock()
+        mgr2._start_gates[2].note_session_end(peak_power=1.0)
+        for k in range(0, 900, 5):
+            mgr2._manage_session(2, t0 + k, 5.0, 0.05, active=True)
+        await asyncio.sleep(0.05)
+        assert mgr2._energy_states[2].is_charging is False, "5V 口 0.25W 残留不得开新会话"
+
+    @pytest.mark.asyncio
+    async def test_clear_restart_starts_new_session(self):
+        """静默期内明显重新充电（≥5W 且持续 30s）→ 正常开新会话。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        t0 = time.time()
+        mgr._start_gates[1].note_session_end(peak_power=60.0)
+        for k in range(0, 40):
+            mgr._manage_session(1, t0 + k, 20.0, 0.6, active=True)     # 12W
+        await asyncio.sleep(0.05)
+        assert mgr._energy_states[1].is_charging is True, "真正重新充电应当开新会话"
+
+    def test_start_threshold_follows_voltage_not_fixed_power(self):
+        """开始门限 = max(0.5W, 0.1A×电压)：5V 下 0.5W（耳机也开得起来）、
+        20V 下 2W（与旧规则等价），而不是一个固定的功率地板。"""
+        gate = make_manager()._start_gates[1]
+        assert gate.base_threshold_w(5.0) == 0.5
+        assert gate.base_threshold_w(20.0) == 2.0
+        # 会话刚结束后进入残留保护：大功率会话 → 重开门限抬到 2×T_low=5W
+        gate.note_session_end(peak_power=60.0)
+        assert gate.threshold_now(20.0) == 2.0      # max(基础 2.0W, 2×T_low 1.0W)
+        # 拔出（空载）解除保护
+        gate.note_no_load()
+        assert gate.threshold_now(20.0) == 2.0
+
+    # ── ⑦ 两条采样路径都要写曲线点 ──
+
+    async def test_timer_path_records_charge_points(self):
+        """C3/USB-A 全靠 1s 定时器驱动：定时器不写采样点就没有曲线，
+        end_session 的均压/均流也会退化成 0（旧实现在定时器里写过，重构时漏掉）。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.record_sessions = True
+        es = mgr._energy_states[3]
+        es.is_charging = True
+        es.session_wh = 1.0
+        es.session_start = time.time() - 600
+        es.last_time = None                      # 从未收到推送 → 定时器代表真实状态
+        with mgr._sess_lock:
+            mgr._active_sessions[3] = 77
+        mgr.state.ports[3].active = True
+        mgr.state.ports[3].voltage = 9.0
+        mgr.state.ports[3].current = 1.5
+        mgr.state.ports[3].protocol = "QC"
+
+        # 直接复刻定时器分支的判定（该分支在体内，不便整体驱动）
+        ps = mgr.state.ports[3]
+        now = time.time()
+        idle = (es.last_time is None or (now - es.last_time) > mgr.SAMPLE_FRESH_SEC)
+        assert idle, "无推送 → 定时器应当接管采样"
+        mgr._manage_session(3, now, ps.voltage, ps.current,
+                            active=ps.active, protocol=ps.protocol)
+        assert mgr._history and es.is_charging and 3 in mgr._active_sessions
+        assert (ps.current > 0 or 3 in mgr.permanent_ports), "定时器写点条件成立"
+        mgr._record_charge_point(3, ps.voltage, ps.current, ps.protocol)
+        await asyncio.sleep(0.05)
+        mgr._history.record_charge_point.assert_called_once_with(77, 9.0, 1.5, 13.5, "QC")
+
+    async def test_timer_path_records_points_for_permanent_port_at_zero_amp(self):
+        """常供端口在 0A 时也要写（走内存窗口，自带 1s 节流），否则曲线断档。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.set_permanent_ports(["c3"])
+        es = mgr._energy_states[3]
+        es.is_charging = True
+        with mgr._sess_lock:
+            mgr._active_sessions[3] = 78
+        mgr.state.ports[3].voltage = 5.0
+        mgr.state.ports[3].current = 0.0
+        assert 3 in mgr.permanent_ports, "常供端口豁免 current>0 限制"
+        mgr._record_charge_point(3, 5.0, 0.0, "")
+        assert len(mgr._permanent_points[3]) == 1, "0A 也是有效曲线点（内存窗口）"
+
+    # ── ⑧ 关闭"充满即停"/改为常供：必须撤销尚未确认的断电 ──
+
+    def test_marking_permanent_cancels_pending_full_off(self):
+        """改为长期供电时若已有挂起的自动断电，必须一并撤销——否则刚声明常供的
+        端口会被在途的 off 命令断掉（_enforce_full_off 只看 _full_off_pending）。"""
+        mgr = make_manager()
+        mgr.set_full_off({"c2": "always"})
+        mgr._full_off_pending[2] = 5000.0
+        mgr._full_off_attempts[2] = 2
+        mgr._full_off_fired[2] = True
+
+        mgr.set_permanent_ports(["c2"])
+        assert 2 not in mgr.full_off, "互斥：常供端口不带即停"
+        assert mgr._full_off_pending[2] == 0.0, "挂起的断电必须撤销"
+        assert mgr._full_off_attempts[2] == 0
+        assert mgr._full_off_fired[2] is False
+        # 挂起撤销后 _enforce_full_off 不得再入队关断命令
+        mgr.state.ports[2].active = False
+        mgr._enforce_full_off(2, 5100.0)
+        assert mgr.cmd_queue.empty(), "撤销后不得再断这个端口"
+
+    def test_disabling_full_off_cancels_pending(self):
+        """关掉"充满即停"时未确认的断电同样要撤销：否则用户关了功能，端口仍被断。"""
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        mgr._full_off_pending[1] = 5000.0
+        mgr._full_off_attempts[1] = 1
+
+        mgr.set_full_off([])
+        assert mgr.is_full_off(1) is False
+        assert mgr._full_off_pending[1] == 0.0, "关闭功能必须撤销在途断电"
+        assert mgr._full_off_attempts[1] == 0
+        mgr.state.ports[1].active = False
+        mgr._enforce_full_off(1, 5100.0)
+        assert mgr.cmd_queue.empty()
+
+    # ── ⑨ D 分支：判据是电流不是 active（插着不充正是 active=True） ──
+
+    def test_no_load_arm_uses_power_not_active_flag(self):
+        """active = in_use or V>0 or I>0：只要电压还在它就是 True。
+
+        用 active 过滤会让"插着不充"这个本功能真正想覆盖的场景永远进不了
+        D 分支（那正是 active=True、current=0）。判据必须是功率，不是 active。
+        """
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        es = mgr._energy_states[1]
+        es.is_charging = False
+        es.session_wh = 5.0
+        t0 = 1000.0
+        # 20V 协商中、电流为 0 → active=True，但仍应计入"不吸电"时长
+        mgr._manage_session(1, t0, 20.0, 0.0, active=True)
+        mgr._manage_session(1, t0 + mgr.NO_LOAD_ARM_SEC + 1, 20.0, 0.0, active=True)
+        assert mgr._full_off_pending[1] == t0 + mgr.NO_LOAD_ARM_SEC + 1, (
+            "插着不充（active=True, I=0）持续够久仍应武装")
+        assert ("c1", "off") in self._queued(mgr)
+
+    def test_no_load_arm_timer_cleared_when_real_charging_resumes(self):
+        """真正重新充电（功率明显高于涓流）要清掉计时，防止半截时长被接着用。"""
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        es = mgr._energy_states[1]
+        es.is_charging = False
+        es.session_wh = 5.0
+        t0 = 1000.0
+        mgr._manage_session(1, t0, 20.0, 0.0, active=True)          # 起计时
+        mgr._manage_session(1, t0 + 300, 20.0, 1.0, active=True)    # 又开始取电
+        assert mgr._no_load_since.get(1) is None, "恢复取电要清掉计时"
+        mgr._manage_session(1, t0 + 320, 20.0, 0.0, active=True)    # 重新起计时
+        assert mgr._no_load_since[1] == t0 + 320
+        assert mgr._full_off_pending[1] == 0.0, "计时被打断就不该立刻武装"
+
+    def test_enqueue_failure_keeps_pending_for_retry(self):
+        """入队失败不能清掉 pending：清了就没有重试了。"""
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        mgr._enqueue_port_off = lambda piid: False      # 模拟队列满
+        es = mgr._energy_states[1]
+        es.is_charging = False
+        es.session_wh = 5.0
+        mgr._maybe_arm_full_off(1, 1000.0, reason="no_load")
+        assert mgr._full_off_pending[1] == 1000.0, "pending 保留，由 _enforce_full_off 重试"
+        # 重试：到点后 _enforce_full_off 会再入队一次
+        mgr.state.ports[1].active = True
+        mgr._enforce_full_off(1, 1000.0 + mgr.FULL_OFF_RETRY_SEC + 1)
+        assert mgr._full_off_pending[1] == 1000.0, "重试失败也保留（直到超上限）"
+        assert mgr._full_off_attempts[1] == 1
+
+    async def test_permanent_window_accumulates_with_recording_off(self):
+        """常供端口不落 charge_points，与 record_sessions 无关：记录关闭时
+        （sid 是负值占位）内存窗口仍要继续积累，否则详情浮层会空白。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.record_sessions = False
+        mgr.set_permanent_ports(["c1"])
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = -1        # 记录关闭 → 占位负 sid
+
+        assert mgr._record_charge_point(1, 20.0, 1.5, "PD") is False
+        assert len(mgr._permanent_points[1]) == 1, "记录关闭时内存窗口仍应积累"
+        await asyncio.sleep(0.05)
+        mgr._history.record_charge_point.assert_not_called(), "常供端口不落库"
+
+    async def test_permanent_window_scoped_to_active_session(self):
+        """常供分支只在会话进行中生效：会话已结束时不再往窗口里塞点，
+        而是照常走普通落库路径（此时该端口已被取消常供，曲线该进 DB）。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.set_permanent_ports(["c1"])
+        mgr._energy_states[1].is_charging = False      # 会话已结束
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 42
+
+        assert mgr._record_charge_point(1, 20.0, 1.5, "PD") is True, "已结束 → 走普通落库"
+        assert len(mgr._permanent_points[1]) == 0, "内存窗口不再积累"
+        await asyncio.sleep(0.05)
+        mgr._history.record_charge_point.assert_called_once_with(42, 20.0, 1.5, 30.0, "PD")
+
+    def test_no_load_since_preseeded_for_all_ports(self):
+        """_no_load_since 四个口都预置为 None，且 None 必须被当成"尚未起计时"。
+
+        用 setdefault 的话，预置的 None 会被当成已有值返回，计时永远起步不了
+        （首个无负载样本白记一次，去抖被拉长一个采样间隔）。
+        """
+        mgr = make_manager()
+        for piid in range(1, 5):
+            assert piid in mgr._no_load_since, f"端口 {piid} 未预置"
+            assert mgr._no_load_since[piid] is None
+        mgr.set_full_off({"c1": "always"})
+        es = mgr._energy_states[1]
+        es.is_charging = False
+        es.session_wh = 5.0
+        t0 = 1000.0
+        mgr._manage_session(1, t0, 20.0, 0.0, active=True)
+        assert mgr._no_load_since[1] == t0, "None 必须被当作'尚未起计时'（不能 setdefault）"
+
+    # ── ⑩ 拔出后固件不再推送：会话必须还能被定时器/主动重读收尾 ──
+
+    def test_open_session_is_sampled_even_at_zero_reading(self):
+        """定时器不得因为"读数 0V/0A"就跳过这一口。
+
+        拔出后固件不再推送该口，而"无负载"结束判定要靠连续样本走完
+        NO_LOAD_DEBOUNCE_SEC：一跳过，去抖永远走不完，会话就永久挂在活跃状态
+        （真机现象：c1 拔出很久仍显示充电中）。没有会话时仍按老规则跳过。
+        """
+        mgr = make_manager()
+        ps = mgr.state.ports[1]
+        ps.voltage = 0.0
+        ps.current = 0.0
+
+        assert mgr._should_sample_port(1, ps) is False, "无会话 + 读数 0 → 跳过（省空转）"
+        assert mgr._should_sample_port(1, None) is False
+
+        mgr._energy_states[1].is_charging = True
+        assert mgr._should_sample_port(1, ps) is True, "会话还开着 → 必须继续采样"
+
+        # 只有 sid 没有内存态（start_session 竞态窗口）同样不能跳过
+        mgr._energy_states[1].is_charging = False
+        with mgr._sess_lock:
+            mgr._active_sessions[1] = 99
+        assert mgr._should_sample_port(1, ps) is True
+        # 有读数就照常采样
+        with mgr._sess_lock:
+            mgr._active_sessions.pop(1, None)
+        ps.voltage = 5.0
+        assert mgr._should_sample_port(1, ps) is True
+
+    def test_empty_port_releases_residual_start_protection(self):
+        """空口（电压塌掉）必须解除"刚结束"的残留保护。
+
+        残留保护把重开门限抬到 max(0.4W, 2×T_low)（最高 1.0W），而 5V 口上
+        0.5~1W 的小设备正好卡在这条线下面。释放只能发生在采样判定里：读数全零
+        又没有会话的端口本来会被跳过，_manage_session 跑不到，note_no_load()
+        永远不被调用——于是"这个口充过大功率设备"会永久挡住后续的小功率设备
+        （基线是会话结束后 60s 门限就回落）。
+        """
+        mgr = make_manager()
+        ps = mgr.state.ports[1]
+        gate = mgr._start_gates[1]
+
+        gate.note_session_end(peak_power=90.0)
+        assert gate.threshold_now(5.0) == pytest.approx(1.2), "90W 会话后重开门限抬到 2×T_low=1.2W"
+
+        ps.voltage = 0.0
+        ps.current = 0.0
+        assert mgr._should_sample_port(1, ps) is False, "空口仍按老规矩跳过（省空转）"
+        assert gate.threshold_now(5.0) == pytest.approx(0.5), "空口应解除残留保护"
+
+        # 还有电压、只是不取电（设备插着，满电维持）→ 保护必须留着
+        gate.note_session_end(peak_power=90.0)
+        ps.voltage = 20.0
+        ps.current = 0.0
+        assert mgr._should_sample_port(1, ps) is True
+        assert gate.threshold_now(5.0) == pytest.approx(1.2), "设备还插着不得解除保护"
+
+    @pytest.mark.asyncio
+    async def test_low_power_device_starts_after_unplug(self):
+        """拔出收尾后重新插上 5V/0.7W 的小设备，必须开得出新会话。
+
+        回归场景：会话以 UNPLUG 结束时曾把重开门限抬到 1.0W 并永久保留，
+        0.7W 的耳机再也开不出会话——充电照旧，但界面、能耗统计、限额与
+        充满即停全部失效。
+        """
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr, wh=8.0, peak=90.0)
+        mgr.state.ports[1].voltage = 0.0
+        mgr.state.ports[1].current = 0.0
+        mgr.state.ports[1].active = False
+
+        t0 = 1000.0
+        mgr._manage_session(1, t0, 0.0, 0.0, active=False)              # 拔出那一帧
+        mgr._manage_session(1, t0 + mgr.NO_LOAD_DEBOUNCE_SEC + 1.0,     # 去抖走完 → 收尾
+                            0.0, 0.0, active=False)
+        await asyncio.sleep(0.05)
+        assert es.is_charging is False
+        assert mgr._start_gates[1].threshold_now(5.0) == pytest.approx(0.5), \
+            "以拔出的方式结束，不得留下抬高后的重开门限"
+
+        # 重新插入 5V/0.7W（低于残留保护线、高于基础门限 0.5W）
+        assert mgr._should_sample_port(1, mgr.state.ports[1]) is False
+        for k in range(35):
+            mgr._manage_session(1, t0 + 100 + k, 5.0, 0.14, active=True)
+        assert es.is_charging is True, "0.7W 的小设备应当开得出会话"
+
+    @pytest.mark.asyncio
+    async def test_full_device_keeps_residual_protection(self):
+        """满电维持（no_load 结束）后不得解除保护：残留功耗不许开新会话。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr, wh=8.0, peak=90.0)
+        mgr.state.ports[1].voltage = 20.0
+        mgr.state.ports[1].current = 0.0
+        mgr.state.ports[1].active = True
+
+        t0 = 2000.0
+        mgr._manage_session(1, t0, 20.0, 0.0, active=True)              # 设备还在，只是不吸电
+        mgr._manage_session(1, t0 + mgr.NO_LOAD_DEBOUNCE_SEC + 1.0,
+                            20.0, 0.0, active=True)
+        await asyncio.sleep(0.05)
+        assert es.is_charging is False
+        assert mgr._start_gates[1].threshold_now(5.0) == pytest.approx(1.2), \
+            "满电维持结束仍要保留残留保护（涓流不许开新会话）"
+
+    @pytest.mark.asyncio
+    async def test_unplug_push_then_no_more_pushes_still_closes(self):
+        """拔出推送只来一帧、之后再无推送：定时器续上后续样本，会话按期收尾。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = self._charging(mgr, wh=7.8)
+        mgr.state.ports[1].voltage = 0.0
+        mgr.state.ports[1].current = 0.0
+        mgr.state.ports[1].active = False
+        spy = self._spy_close(mgr)
+
+        t0 = 1000.0
+        mgr._manage_session(1, t0, 0.0, 0.0, active=False)      # 唯一一帧拔出推送
+        spy.assert_not_called()
+        assert es.is_charging is True, "去抖窗口内不得结束"
+
+        # 固件不再推送 → 定时器接管（修复前这里会被 0V/0A 过滤掉，永远收不到尾）
+        assert mgr._should_sample_port(1, mgr.state.ports[1]) is True
+        mgr._manage_session(1, t0 + mgr.NO_LOAD_DEBOUNCE_SEC + 1.0,
+                            0.0, 0.0, active=False)
+        await asyncio.sleep(0.05)
+        spy.assert_called_once()
+        assert spy.call_args[0][4] == END_REASON_UNPLUG, "电压塌掉 → 拔出"
+        assert es.is_charging is False
+
+    @pytest.mark.asyncio
+    async def test_verify_port_closes_session_when_reading_already_zero(self):
+        """主动重读到的 0V/0A 与本地状态相同时，也要把还开着的会话收掉。
+
+        原实现只在"读数发生变化"时才顺带关会话：拔出帧已经把 0V/0A 写进状态、
+        只是没关会话时，重读永远认为"没变化"，会话就一直挂着。
+        """
+        mgr = make_manager()
+        mgr._mqtt_publish = MagicMock()
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_wh = 7.8
+        # 本地状态已经是 0V/0A（拔出帧写过），重读结果不会产生"变化"
+        mgr.state.ports[1].voltage = 0.0
+        mgr.state.ports[1].current = 0.0
+        mgr.state.ports[1].active = False
+        mgr.ctrl = MagicMock()
+        mgr.ctrl.send_miot_command = AsyncMock(return_value={
+            "value": 0,
+            "raw": bytes([0x11, 0x20, 0x01, 0x00, 0x03, 0x01, 0x02, 0x01,
+                          0x00, 0x00, 0x00, 0x04, 0x05, 0x00, 0x00, 0x00, 0x00])})
+
+        await mgr._handle_verify_port(1, None)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is False, "读数没变也要关掉还开着的会话"
+
+    # ── ⑪ 涓流脉冲不得重置自动断电的确认窗口（真机 c1 就是卡在这里） ──
+
+    def test_pulsing_tail_does_not_reset_arm_window(self):
+        """满电设备的涓流尾巴是 0.0A / 0.1A 交替（≈0.5W），不是充电。
+
+        旧实现按"电流>0 就重置窗口"，于是每次冒 0.1A 都把计时清零，窗口永远
+        走不完 —— 会话结束了端口却一直不关，`full_off` 也一直不被消费。
+        """
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        es = mgr._energy_states[1]
+        es.is_charging = False
+        es.session_wh = 10.0
+        mgr._no_load_from_session[1] = True      # 会话刚以 no_load 结束
+        t0 = 1000.0
+        for k in range(0, int(mgr.NO_LOAD_ARM_SESSION_SEC) + 10):
+            cur = 0.1 if (k % 3 == 0) else 0.0   # 周期性冒 0.1A（0.51W）
+            mgr._manage_session(1, t0 + k, 5.1, cur, active=True)
+        assert mgr._full_off_pending[1] > 0, "涓流脉冲不得重置窗口（旧实现永远等不到）"
+        assert ("c1", "off") in self._queued(mgr), "并真的发出关端口命令"
+
+    @pytest.mark.asyncio
+    async def test_no_load_end_with_pulsing_tail_switches_port_off(self):
+        """端到端：会话以 no_load 结束 + 之后持续涓流脉冲 → 端口仍会被关闭。
+
+        这是用户在 c1 的实测路径：充满后电流塌到涓流、会话结束，随后设备周期性
+        冒 0.1A。修复前 D 分支的窗口被这些脉冲反复清零，端口一直不关。
+        """
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.set_full_off({"c1": "once"})
+        es = self._charging(mgr, wh=10.2)
+        t0 = 1000.0
+
+        # 电流塌到 0 并持续过去抖窗口 → 以 no_load 结束会话
+        mgr._manage_session(1, t0, 5.1, 0.0, active=True)
+        mgr._manage_session(1, t0 + mgr.NO_LOAD_DEBOUNCE_SEC + 1, 5.1, 0.0, active=True)
+        await asyncio.sleep(0.05)
+        assert es.is_charging is False, "会话应当已结束"
+        assert mgr._no_load_from_session[1] is True, "记住这是'会话刚结束的停止取电'"
+
+        # 之后设备仍周期性冒 0.1A：窗口必须继续累积，且用短窗口（会话刚结束）
+        for k in range(1, int(mgr.NO_LOAD_ARM_SESSION_SEC) + 15):
+            cur = 0.1 if (k % 3 == 0) else 0.0
+            mgr._manage_session(1, t0 + 5 + k, 5.1, cur, active=True)
+        assert mgr._full_off_pending[1] > 0, "涓流尾巴下也要武装自动断电"
+        assert ("c1", "off") in self._queued(mgr)
+
+    def test_arm_window_shorter_after_session_end_than_from_scratch(self):
+        """会话刚结束用短窗口（已有整段充电作证据）；从未充过电的口仍用长窗口。"""
+        assert make_manager().NO_LOAD_ARM_SESSION_SEC < make_manager().NO_LOAD_ARM_SEC
+
+        def _arm_at(window_flag):
+            mgr = make_manager()
+            mgr.set_full_off({"c1": "always"})
+            es = mgr._energy_states[1]
+            es.is_charging = False
+            es.session_wh = 10.0
+            mgr._no_load_from_session[1] = window_flag
+            t0 = 1000.0
+            for k in range(0, int(mgr.NO_LOAD_ARM_SEC) + 5):
+                mgr._manage_session(1, t0 + k, 5.1, 0.0, active=True)
+                if mgr._full_off_pending[1]:
+                    return k
+            return None
+
+        after_session = _arm_at(True)
+        from_scratch = _arm_at(False)
+        assert after_session == int(make_manager().NO_LOAD_ARM_SESSION_SEC)
+        assert from_scratch == int(make_manager().NO_LOAD_ARM_SEC)
+        assert after_session < from_scratch
+
+    def test_always_mode_rearms_after_a_new_session(self):
+        """always 模式下武装标记必须在新会话起点复位。
+
+        否则第一次断电确认后 `_no_load_armed` 一直为 True，D 分支的守卫
+        `not _no_load_armed` 永远不成立 —— 下一次充满再也不会自动断电。
+        """
+        mgr = make_manager()
+        mgr.set_full_off({"c1": "always"})
+        mgr._no_load_armed[1] = True             # 上一次已经武装/确认过
+        mgr._no_load_from_session[1] = True
+        mgr._energy_states[1].is_charging = True
+
+        mgr._start_session(1, 1000.0, 5.1, 1.0, "PD")   # 用户又插上开始充电
+
+        assert mgr._no_load_armed[1] is False, "新会话必须复位武装标记"
+        assert mgr._no_load_from_session[1] is False
+        assert mgr._no_load_since.get(1) is None
+
+    # ── ⑫ 常供卡要的是统计值：会话时长与平均功率 ──
+
+    def test_limits_state_exposes_session_avg_and_sec(self):
+        """avg_power_w / session_sec 由服务端算：会话进行中按"到现在"，
+        结束后按"结束时刻 − 起点"（不会随挂钟继续变大，平均值因此不漂）。"""
+        mgr = make_manager()
+        es = mgr._energy_states[1]
+        es.is_charging = True
+        es.session_wh = 12.0
+        now = time.time()
+        es.session_start = now - 3600          # 已充 1 小时
+        st = mgr.get_charge_limits_state()["c1"]
+        assert 3590 <= st["session_sec"] <= 3610
+        assert 11.9 <= st["avg_power_w"] <= 12.1, st["avg_power_w"]
+
+        # 会话结束：时长冻结在 last_end_time，不再随挂钟增长
+        es.is_charging = False
+        es.last_end_time = es.session_start + 1800   # 实际只充了 30 分钟
+        st = mgr.get_charge_limits_state()["c1"]
+        assert st["session_sec"] == 1800.0
+        assert st["avg_power_w"] == 24.0, st["avg_power_w"]
+
+    def test_limits_state_no_session_reports_zero(self):
+        mgr = make_manager()
+        st = mgr.get_charge_limits_state()["c2"]
+        assert st["session_sec"] == 0.0
+        assert st["avg_power_w"] == 0.0
+
+
+class TestPreSessionBackfill:
+    """预会话环形缓冲 + 回填：会话开头那 30s 的采样不能再丢。
+
+    起判要求功率连续达标 START_HOLD_SEC=30s 才开会话；这 30s 里设备**已经在取电**，
+    但当时没有会话（能量不积分）、也没有 sid（曲线不写）。回填把这三点补上：
+    起点、能量/峰值/检测器窗口、（拿到 sid 后）曲线点。
+    """
+
+    @staticmethod
+    def _mgr_with_history():
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr._history.start_session = MagicMock(return_value=1)
+        return mgr
+
+    @pytest.mark.asyncio
+    async def test_backfill_fills_start_energy_peak_and_points(self):
+        mgr = self._mgr_with_history()
+        es, det = mgr._energy_states[1], mgr._session_dets[1]
+        t0 = 1000.0
+        # 前 15s 27W（9V/3A），后 15s 1.2W：门限 0.9W 一直达标 → 第 30s 放行开会话
+        for k in range(15):
+            mgr._manage_session(1, t0 + k, 9.0, 3.0, active=True)
+        for k in range(15, 36):
+            mgr._manage_session(1, t0 + k, 9.0, 1.2 / 9.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True, "连续达标 30s 应开会话"
+        # ① 起点回填到本段负载真正开始处，而不是门控放行那一刻
+        assert es.session_start == pytest.approx(t0), es.session_start
+        # ② 能量含前 30s：≈15s×27W + 15s×1.2W ≈ 0.114Wh
+        assert es.session_wh == pytest.approx(0.114, abs=0.01), es.session_wh
+        # ③ 峰值/窗口预热：检测器峰值取 "p_fast 的历史最大"，回填后才看得到前段 27W
+        assert det.peak_power() == pytest.approx(27.0, abs=0.5), det.peak_power()
+        assert es.max_power == pytest.approx(27.0, abs=0.5), es.max_power
+        # ④ 曲线点：拿到 sid 后批量补写一次（不是逐点开 executor）
+        # DB 行的 start_time 必须同样是回填后的起点，否则 start+duration 会比 end 多一截
+        assert mgr._history.start_session.call_args[0][2] == pytest.approx(t0)
+        assert mgr._history.record_charge_points.call_count == 1
+        sid, rows = mgr._history.record_charge_points.call_args[0]
+        assert sid == 1 and len(rows) == 30, f"sid={sid} rows={len(rows) if rows else 0}"
+        assert rows[0][0] == pytest.approx(t0, abs=0.01), "补写要用原采样时间戳"
+        # 缓冲里存的是 round(...,2)（与充电器上报分辨率一致），所以 1.2/9→0.13
+        assert rows[0][1] == pytest.approx(9.0)
+        assert rows[-1][2] == pytest.approx(0.13, abs=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_short_blip_still_creates_no_session(self):
+        """坑 #2：<30s 的抖动/试探负载不得因为回填而变成会话。"""
+        mgr = self._mgr_with_history()
+        es = mgr._energy_states[1]
+        t0 = 2000.0
+        for k in range(20):                     # 只持续 20s，走不完 START_HOLD_SEC
+            mgr._manage_session(1, t0 + k, 9.0, 1.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is False, "未达门控不得开会话"
+        assert mgr._history.start_session.call_count == 0
+        assert mgr._history.record_charge_points.call_count == 0
+        assert len(mgr._pre_samples[1]) == 20, "抖动样本仍留在滚动缓冲里"
+        assert es.session_wh == 0.0
+
+    @pytest.mark.asyncio
+    async def test_record_sessions_off_backfills_memory_only(self):
+        """坑 #5：关记录时只回填内存（起点/能量/检测器），不写 DB。"""
+        mgr = self._mgr_with_history()
+        mgr.record_sessions = False
+        es = mgr._energy_states[1]
+        t0 = 3000.0
+        for k in range(36):
+            mgr._manage_session(1, t0 + k, 9.0, 1.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True
+        assert es.session_start == pytest.approx(t0), "起点仍要回填"
+        assert es.session_wh > 0, "能量仍要回填"
+        assert mgr._history.start_session.call_count == 0, "关记录不建 DB 行"
+        assert mgr._history.record_charge_points.call_count == 0, "关记录不补曲线点"
+        assert mgr._active_sessions[1] < 0, "占位 sid"
+
+    @pytest.mark.asyncio
+    async def test_permanent_port_backfill_goes_to_memory_window(self):
+        """坑 #4：常供端口不落 charge_points，回填进内存窗口，不写第二份。"""
+        mgr = self._mgr_with_history()
+        mgr.set_permanent_ports(["c1"])
+        es = mgr._energy_states[1]
+        t0 = 4000.0
+        for k in range(36):
+            mgr._manage_session(1, t0 + k, 9.0, 1.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True
+        assert mgr._history.record_charge_points.call_count == 0, "常供端口不补 DB 点"
+        pts = list(mgr._permanent_points[1])
+        assert pts, "预会话采样应进内存窗口"
+        assert pts[0][0] == pytest.approx(t0, abs=1.0), "窗口里的点是原采样时刻"
+        assert es.session_start == pytest.approx(t0), "常供端口同样回填起点"
+
+    @pytest.mark.asyncio
+    async def test_buffer_is_trimmed_to_window_and_consumed(self):
+        """缓冲按 PRE_SESSION_SEC 滚动裁剪；被回填消费后清空。"""
+        mgr = self._mgr_with_history()
+        t0 = 5000.0
+        for k in range(int(mgr.PRE_SESSION_SEC) + 60):    # 远远超过窗口时长
+            mgr._manage_session(1, t0 + k, 9.0, 0.02, active=True)   # 0.18W，不达标
+        span = mgr._pre_samples[1][-1][0] - mgr._pre_samples[1][0][0]
+        assert span <= mgr.PRE_SESSION_SEC + 0.001, f"缓冲未裁剪：跨度 {span}s"
+        assert mgr._energy_states[1].is_charging is False
+        assert mgr._history.start_session.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_backfill_moves_limit_trigger_earlier_by_the_same_energy(self):
+        """回填的能量会让 Wh 限额提前触发，提前量 ≈ 被回填的那段时长。
+
+        9V/1A（9W）+ 0.5Wh 限额：只算开会话之后的能量要 200s；把起判前 30s
+        （30s×9W ≈ 0.0725Wh）回填进来后应提前约 29s。两种口径各跑一遍对比。
+        """
+
+        async def run(backfill_on):
+            mgr = self._mgr_with_history()
+            if not backfill_on:
+                mgr._take_pre_session_samples = lambda *a, **k: []   # 关掉回填
+            mgr.set_charge_limits({"c1": {"wh": 0.5, "mode": "always"}})
+            es = mgr._energy_states[1]
+            t0 = 6000.0
+            gate_ts = None
+            for k in range(400):
+                t = t0 + k
+                mgr._manage_session(1, t, 9.0, 1.0, active=True)
+                if gate_ts is None and es.is_charging:
+                    gate_ts = t                    # 门控放行那一刻（两种口径相同）
+                if es.is_charging:
+                    mgr._energy_integrator.update(es, 9.0, 1.0, t)
+                mgr._enforce_charge_limit(1, t)
+                await asyncio.sleep(0)
+                if mgr._limit_fired[1]:
+                    return t - gate_ts             # 相对"开会话时刻"的触发耗时
+            raise AssertionError("限额未被触发")
+
+        with_bf = await run(True)
+        without_bf = await run(False)
+        assert without_bf == pytest.approx(200.0, abs=3.0), without_bf   # 9W×200s = 0.5Wh
+        assert with_bf == pytest.approx(171.0, abs=3.0), with_bf         # 回填 0.0725Wh
+        assert without_bf - with_bf == pytest.approx(29.0, abs=3.0), "提前量应≈被回填的那段时长"
+
+    @pytest.mark.asyncio
+    async def test_first_session_can_only_backfill_what_this_process_saw(self):
+        """服务刚重启时缓冲是空的：回填只能覆盖"本进程看到的那些帧"。
+
+        设备在进程启动前就已经在充电时，那段历史无从得知——起点回填到本进程
+        见过的最早一帧即止，不报错、不丢会话（这是允许的缺头）。
+        """
+        mgr = self._mgr_with_history()          # 新进程 = 空缓冲
+        es = mgr._energy_states[1]
+        t0 = 7000.0
+        for k in range(36):                     # 进程只见过这 36 帧（设备已在充电）
+            mgr._manage_session(1, t0 + k, 9.0, 1.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True
+        assert es.session_start == pytest.approx(t0), "只能回填到本进程见过的最早一帧"
+        sid, rows = mgr._history.record_charge_points.call_args[0]
+        assert len(rows) == 30, f"缓冲里有多少就回填多少，实际 {len(rows)}"
+        assert rows[0][0] == pytest.approx(t0)
+
+    @pytest.mark.asyncio
+    async def test_backfill_does_not_double_count_lifetime_energy(self):
+        """回填只补会话能量，不能把 total_wh/daily_wh 也再加一遍。
+
+        push 路径对**每一帧**都无条件积分（含这段"已在取电但还没开会话"的窗口），
+        而回填只把 session_wh 归零、没管另两个累计量 → 起判窗口会被算两次。
+        这里按真实 push 路径的顺序（先积分再 _manage_session）复现。
+        """
+        mgr = self._mgr_with_history()
+        es = mgr._energy_states[1]
+        t0 = 3000.0
+        for k in range(15):                     # 前 15s 27W
+            mgr._energy_integrator.update(es, 9.0, 3.0, t0 + k)
+            mgr._manage_session(1, t0 + k, 9.0, 3.0, active=True)
+        for k in range(15, 36):                 # 后 21s 1.2W（门限 0.9W 一直达标）
+            i = 1.2 / 9.0
+            mgr._energy_integrator.update(es, 9.0, i, t0 + k)
+            mgr._manage_session(1, t0 + k, 9.0, i, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True
+        assert es.session_wh == pytest.approx(0.114, abs=0.01), es.session_wh
+        # 双计时 total_wh≈0.229（2 倍）；这里要求起判窗口只算一次。
+        # 残余差值来自回填用的是缓冲里 round(…,2) 的电压电流（≈1e-4Wh 量级），不是双计。
+        assert es.total_wh == pytest.approx(es.session_wh, abs=5e-3), (
+            f"total_wh={es.total_wh:.4f} session_wh={es.session_wh:.4f}")
+        assert es.daily_wh == pytest.approx(es.total_wh, abs=1e-9), es.daily_wh
+
+    @pytest.mark.asyncio
+    async def test_backfill_peak_includes_the_first_run_frame(self):
+        """本段最高点落在起判首帧时，峰值也必须回填。
+
+        能量回填循环从 pre[1:] 开始，首帧只被用作积分基准 → 原先 es.max_power 会
+        停在后面的涓流功率上，与检测器峰值（含首帧）自相矛盾，DB peak_power_w 偏低。
+        """
+        mgr = self._mgr_with_history()
+        es, det = mgr._energy_states[1], mgr._session_dets[1]
+        t0 = 4000.0
+        mgr._manage_session(1, t0, 9.0, 3.0, active=True)       # 27W：最高点就在首帧
+        for k in range(1, 36):
+            mgr._manage_session(1, t0 + k, 9.0, 1.2 / 9.0, active=True)
+        await asyncio.sleep(0.05)
+
+        assert es.is_charging is True
+        assert es.max_power == pytest.approx(27.0, abs=0.5), es.max_power
+        assert es.max_current == pytest.approx(3.0, abs=0.05), es.max_current
+        assert es.max_power == pytest.approx(det.peak_power(), abs=0.5), (
+            f"端口峰值 {es.max_power} 与检测器峰值 {det.peak_power()} 不一致")
+
+    @pytest.mark.asyncio
+    async def test_backfill_boundary_is_exact_not_rounding_dependent(self):
+        """取材边界必须由原始时间戳定，不能随毫秒取整的舍入方向摇摆。
+
+        缓冲原先存 round(ts,3)，而比较用的是门控记下的精确 run_start / 当前帧精确
+        timestamp：舍入向下时首帧（round 后更小）被排除 → 起点晚一帧；当前帧
+        （round 后更小）被反过来包含 → 检测器重复喂、曲线多一行。两种小数各测一遍。
+        """
+        for frac in (0.0004, 0.0006):
+            mgr = self._mgr_with_history()
+            es = mgr._energy_states[1]
+            t0 = 5000.0 + frac
+            for k in range(36):                 # 第 30 帧放行（START_HOLD_SEC=30）
+                mgr._manage_session(1, t0 + k, 9.0, 1.2 / 9.0, active=True)
+            await asyncio.sleep(0.05)
+
+            assert es.is_charging is True, frac
+            assert es.session_start == t0, (frac, es.session_start)
+            sid, rows = mgr._history.record_charge_points.call_args[0]
+            assert len(rows) == 30, (frac, len(rows))
+            assert rows[0][0] == t0, (frac, rows[0][0])
+            assert rows[-1][0] == pytest.approx(t0 + 29), (frac, rows[-1][0])

@@ -43,6 +43,11 @@ def server_with_sessions(history_with_sessions):
     s.history = history_with_sessions
     s.ble = MagicMock()
     s.ble.get_live_session_data = MagicMock(return_value={})
+    # 端口模式：无长供端口时窗口查询必返回 None（mock 默认值会污染 JSON 序列化）
+    s.ble.permanent_ports = set()
+    # /points 的缺省窗口取自内存保留时长（界面已无窗口控件，缺省=能给的都给了）
+    s.ble.PERMANENT_RETAIN_SEC = 3600
+    s.ble.get_permanent_session_window = MagicMock(return_value=None)
     s.ble.state = MagicMock()
     s.ble.state.ports = {}
     s.config = MagicMock()
@@ -213,6 +218,31 @@ class TestHandleSessionPoints:
         assert body["points"] == []
 
     @pytest.mark.asyncio
+    async def test_session_points_permanent_flag_is_authoritative_and_bidirectional(
+            self, server_with_sessions):
+        """permanent 标记服务端权威且必须双向给出（含 false）。
+
+        前端只"见到 true 才置位"的话，端口中途退出常供后详情浮层会一直挂着
+        "长期供电"标题与"没有曲线"提示——所以 DB 回落分支也要回答这个问题。
+        """
+        from aiohttp import web
+        sid = server_with_sessions.history.start_session(1)
+        server_with_sessions.history.end_session(sid, 1.0, 30.0, 10.0, 3.0, 600)
+
+        request = AsyncMock()
+        request.match_info = {"id": str(sid)}
+        request.query = {}
+        server_with_sessions.ble.permanent_ports = set()
+        body = json.loads((await server_with_sessions.handle_session_points(request)).body)
+        assert body["permanent"] is False, "非常供会话必须显式给出 false"
+
+        server_with_sessions.ble.permanent_ports = {1}
+        body = json.loads((await server_with_sessions.handle_session_points(request)).body)
+        assert body["permanent"] is True, "常供会话给出 true"
+
+        server_with_sessions.ble.permanent_ports = set()
+
+    @pytest.mark.asyncio
     async def test_session_points_downsample(self, server_with_sessions):
         """downsample parameter causes LTTB reduction."""
         # Add many points to make downsampling meaningful
@@ -335,3 +365,156 @@ class TestHandleEnergyStats:
         body = json.loads(result.body)
         assert body["total_wh"] == 0
         assert body["session_count"] == 0
+
+
+class TestPermanentSessions:
+    """长期供电端口在会话接口里的行为（标记 + 内存滑动窗口）。"""
+
+    @pytest.mark.asyncio
+    async def test_permanent_flag_on_active_row(self, server_with_sessions):
+        """常供端口的活跃会话照常出现在列表里（能量/统计要计入），并带 permanent 标记。"""
+        server_with_sessions.ble.permanent_ports = {1}
+        server_with_sessions.ble.get_live_session_data = MagicMock(
+            return_value={
+                1: {"session_id": 1, "session_wh": 2.0, "max_power": 60.0,
+                    "start_time": time.time() - 900, "permanent": True},
+            })
+        request = AsyncMock()
+        request.query = {"period": "all", "limit": "10"}
+        result = await server_with_sessions.handle_sessions(request)
+        body = json.loads(result.body)
+        s1 = next(s for s in body["sessions"] if s["id"] == 1)
+        assert s1["permanent"] is True
+        assert s1["is_active"] is True
+
+    @pytest.mark.asyncio
+    async def test_inactive_history_row_not_marked(self, server_with_sessions):
+        """历史行不标常供：老会话是标记常供之前录的，曲线本来就在库里，
+        标成常供会让详情看起来像"曲线丢了"。"""
+        server_with_sessions.ble.permanent_ports = {1}
+        request = AsyncMock()
+        request.query = {"period": "all", "limit": "10"}
+        result = await server_with_sessions.handle_sessions(request)
+        body = json.loads(result.body)
+        for s in body["sessions"]:
+            if not s["is_active"]:
+                assert s["permanent"] is False
+
+    @pytest.mark.asyncio
+    async def test_points_flag_no_curve_when_empty(self, server_with_sessions):
+        """没有采样点（常供会话）时显式告诉前端"是没存曲线"，别让它像加载失败。"""
+        sid = server_with_sessions.history.start_session(3)
+        server_with_sessions.history.end_session(sid, 0.5, 5.0, 5.0, 1.0, 600)
+        request = AsyncMock()
+        request.match_info = {"id": str(sid)}
+        request.query = {}
+        result = await server_with_sessions.handle_session_points(request)
+        body = json.loads(result.body)
+        assert body["points"] == []
+        assert body["no_curve"] is True
+        assert body["stats"]["total_wh"] == 0.5
+
+    @pytest.mark.asyncio
+    async def test_other_ports_not_marked(self, server_with_sessions):
+        server_with_sessions.ble.permanent_ports = {1}
+        request = AsyncMock()
+        request.query = {"period": "all", "limit": "10"}
+        result = await server_with_sessions.handle_sessions(request)
+        body = json.loads(result.body)
+        for s in body["sessions"]:
+            if s["port"] != 1:
+                assert s["permanent"] is False
+
+    @pytest.mark.asyncio
+    async def test_points_served_from_memory_window(self, server_with_sessions):
+        """常供会话：曲线来自内存窗口 + 整个会话的 stats + window 元信息。"""
+        now = time.time()
+        server_with_sessions.ble.get_permanent_session_window = MagicMock(
+            return_value={
+                "permanent": True,
+                "points": [{"timestamp": now - 60, "voltage": 20.0, "current": 1.0,
+                            "power": 20.0, "protocol": "PD"}],
+                "stats": {"session_id": 1, "port": 1, "total_wh": 42.0,
+                          "avg_power_w": 20.0, "peak_power_w": 65.0,
+                          "avg_voltage": 20.0, "avg_current": 1.0,
+                          "duration_sec": 7200, "start_time": now - 7200},
+                "window": {"retain_sec": 3600, "window_sec": 900, "from": now - 900,
+                           "to": now, "available_from": now - 1800,
+                           "available_to": now, "count": 1, "total_points": 1},
+            })
+        request = AsyncMock()
+        request.match_info = {"id": "1"}
+        request.query = {"window": "900"}
+        result = await server_with_sessions.handle_session_points(request)
+        body = json.loads(result.body)
+        assert body["permanent"] is True
+        assert len(body["points"]) == 1
+        assert body["stats"]["total_wh"] == 42.0
+        assert body["window"]["retain_sec"] == 3600
+        server_with_sessions.ble.get_permanent_session_window.assert_called_once_with(
+            1, 900.0, None)
+
+    @pytest.mark.asyncio
+    async def test_window_zero_falls_back_to_retain(self, server_with_sessions):
+        """window=0 表示"全部保留区间"，由调用方换算成保留时长。"""
+        server_with_sessions.ble.PERMANENT_RETAIN_SEC = 3600
+        server_with_sessions.ble.get_permanent_session_window = MagicMock(return_value=None)
+        request = AsyncMock()
+        request.match_info = {"id": "1"}
+        request.query = {"window": "0"}
+        await server_with_sessions.handle_session_points(request)
+        server_with_sessions.ble.get_permanent_session_window.assert_called_once_with(
+            1, 3600.0, None)
+
+    @pytest.mark.asyncio
+    async def test_bad_window_param_rejected(self, server_with_sessions):
+        request = AsyncMock()
+        request.match_info = {"id": "1"}
+        request.query = {"window": "abc"}
+        result = await server_with_sessions.handle_session_points(request)
+        assert result.status == 400
+
+    @pytest.mark.asyncio
+    async def test_normal_session_points_carry_stats(self, server_with_sessions):
+        """普通会话响应附上整会话 stats（形状向后兼容，仅多字段）。"""
+        request = AsyncMock()
+        request.match_info = {"id": "1"}
+        request.query = {}
+        result = await server_with_sessions.handle_session_points(request)
+        body = json.loads(result.body)
+        assert len(body["points"]) == 2
+        assert body["stats"]["total_wh"] == 1.5
+        assert body["stats"]["duration_sec"] == 1800
+
+
+class TestPointsDefaultWindow:
+    """界面已去掉"窗口长度"控件：缺省就该给满内存保留时长（1 小时）+ 贴最新。"""
+
+    @pytest.mark.asyncio
+    async def test_default_window_is_full_retention(self, server_with_sessions):
+        captured = {}
+
+        def fake_window(sid, window_sec, to_ts):
+            captured["window_sec"] = window_sec
+            captured["to"] = to_ts
+            return None      # 走 DB 回落分支即可，只关心入参
+
+        server_with_sessions.ble.get_permanent_session_window = MagicMock(side_effect=fake_window)
+        request = AsyncMock()
+        request.match_info = {"id": "1"}
+        request.query = {}          # 不带 window / to
+        await server_with_sessions.handle_session_points(request)
+
+        assert captured["window_sec"] == float(server_with_sessions.ble.PERMANENT_RETAIN_SEC)
+        assert captured["to"] is None, "缺省贴最新"
+
+    @pytest.mark.asyncio
+    async def test_window_zero_also_means_full_retention(self, server_with_sessions):
+        captured = {}
+        server_with_sessions.ble.get_permanent_session_window = MagicMock(
+            side_effect=lambda sid, w, to: captured.update(window_sec=w) or None)
+        request = AsyncMock()
+        request.match_info = {"id": "1"}
+        request.query = {"window": "0"}
+        await server_with_sessions.handle_session_points(request)
+        assert captured["window_sec"] == float(server_with_sessions.ble.PERMANENT_RETAIN_SEC)

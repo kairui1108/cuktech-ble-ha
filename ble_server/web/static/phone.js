@@ -516,19 +516,21 @@ function limitCardHtml(key, CL) {
                         <div class="charge-limit-dot"></div>
                         <span class="charge-limit-name">${PORT_NAMES[key]}</span>
                     </div>
-                    <span class="charge-limit-status" id="limitStatus_${key}">${I18N.t('chargeLimit.off')}</span>
+                    ${CL.modeChipsHtml(key)}
                 </div>
+                <div class="limit-perm-panel" id="limitPerm_${key}"></div>
                 <div class="charge-limit-track"><div class="charge-limit-fill" id="limitBar_${key}"></div></div>
                 <div class="charge-limit-progress" id="limitProgress_${key}"></div>
                 <div class="charge-limit-inputs">
                     <input type="number" class="charge-limit-wh" id="limitWh_${key}" min="0" max="1000" step="1" placeholder="${I18N.t('chargeLimit.placeholder')}">
-                    <select class="charge-limit-mode" id="limitMode_${key}">
+                    <select class="charge-limit-mode" id="limitMode_${key}" onchange="limitModeTouched('${key}')">
                         <option value="once">${I18N.t('chargeLimit.once')}</option>
                         <option value="always">${I18N.t('chargeLimit.always')}</option>
                     </select>
                 </div>
                 <div class="charge-limit-quick">
                     ${CL.QUICK_WH.map(w => `<button class="charge-limit-chip" onclick="setChargeLimitQuick('${key}', ${w})">${w}${I18N.t('chargeLimit.unit')}</button>`).join('')}
+                    ${CL.chipHtml(key, 'full_off', 'charge-limit-chip')}
                 </div>
                 <div class="charge-limit-actions">
                     <button class="charge-limit-action charge-limit-set" id="limitSet_${key}" onclick="applyChargeLimit('${key}')">${I18N.t('chargeLimit.set')}</button>
@@ -707,17 +709,16 @@ function onLimitPointerUp(e) {
     flipLimitDeck(dir, dir > 0 ? -1 : 1);
 }
 
+// 用户在没有能量限额时显式存过"限额模式"的端口：模式下拉此时以它为准
+// （否则恒被"充满即停"的模式盖掉，见 updateChargeLimitUI 的 saved）
+const limitModeSaved = {};
 function updateChargeLimitUI() {
     if (typeof ChargeLimit === 'undefined') return;
     const CL = ChargeLimit;
     for (const key of PORT_KEYS) {
         const e = CL.entryFor(key);
-        const statusEl = document.getElementById(`limitStatus_${key}`);
-        if (statusEl) {
-            statusEl.textContent = CL.statusText(key);
-            // 已设限额时用端口色（.on 由 CSS 取变量，同样跟随主题）
-            statusEl.classList.toggle('on', e.wh > 0);
-        }
+        // "已配置"= 有能量限额 / 充满即停 / 长期供电：进度条与下方状态点共用同一判定
+        const armed = CL.isArmed(key);
         const barEl = document.getElementById(`limitBar_${key}`);
         if (barEl) barEl.style.width = CL.progressPct(key) + '%';
         const progEl = document.getElementById(`limitProgress_${key}`);
@@ -727,24 +728,89 @@ function updateChargeLimitUI() {
         if (inputEl && document.activeElement !== inputEl) {
             inputEl.value = e.wh > 0 ? e.wh : '';
         }
+        // 模式下拉：用户改过但还没保存时不能被他人的 5s 轮询覆盖回旧值，
+        // 只有"后端值追上了当前选择"（保存成功）才解除保护。
         const modeEl = document.getElementById(`limitMode_${key}`);
-        if (modeEl && !modeEl.dataset.touched) modeEl.value = e.mode || 'once';
+        if (modeEl) {
+            // 模式下拉的"真值"：有能量限额时是限额的模式；没有限额时显示"自动"的模式
+            // ——否则用长期有效开了自动、刷新后又变回仅一次（用户看到的就是这个 bug）。
+            // 用户显式存过限额模式时以它为准：否则开了自动后刚存好的限额模式会被弹回。
+            const saved = (e.wh > 0 || limitModeSaved[key]
+                           ? e.mode
+                           : (CL.fullOffMode(key) || e.mode)) || 'once';
+            if (modeEl.dataset.touched) {
+                if (modeEl.value === saved) modeEl.dataset.touched = '';
+            } else {
+                modeEl.value = saved;
+            }
+        }
         // 指示点：空心/实心/警示色 + 当前项拉长，见 phone.css 注释
         const dotEl = document.getElementById(`limitDot_${key}`);
         if (dotEl) {
-            const set = e.wh > 0;
+            const set = armed;
             dotEl.classList.toggle('is-set', set);
-            dotEl.classList.toggle('is-fired', set && !!e.fired);
+            dotEl.classList.toggle('is-fired', CL.isFired(key));
             dotEl.classList.toggle('is-current', limitOrder[0] === key);
             dotEl.setAttribute('aria-current', limitOrder[0] === key ? 'true' : 'false');
             dotEl.setAttribute('aria-label', PORT_NAMES[key] + ' ' + CL.statusText(key));
         }
+        updatePortModeUI(CL, key);
+    }
+}
+
+// 两枚端口模式开关（常供 / 充满即停）：只切 class 与 aria，不重建 DOM。
+// 常供开启时"充满即停"置灰——互斥由后端强制，前端只做可见性提示。
+// 状态编码沿用指示点那套：圆点空心=关、实心=开、警示色=本次已充满断电。
+function updatePortModeUI(CL, key) {
+    const perm = CL.isPermanent(key);
+    const full = CL.isFullOff(key);
+    const fired = CL.fullOffFired(key);
+    const permBtn = document.getElementById(`mode-permanent-${key}`);
+    const fullBtn = document.getElementById(`mode-full_off-${key}`);
+    // 长期供电：整张卡收起限额控件，只留"已充多少"与这枚开关（见 phone.css）
+    const card = limitCardEl(key);
+    if (card) card.classList.toggle('is-permanent', perm);
+    // 卡头那个端口色点：这一口此刻真的在供电 → 呼吸动效（面板只放统计值，
+    // "现在在不在供电"由这个点表达）
+    const headDot = card && card.querySelector('.charge-limit-dot');
+    if (headDot) headDot.classList.toggle('is-live', !!CL.entryFor(key).is_charging);
+    const panel = document.getElementById(`limitPerm_${key}`);
+    if (panel) {
+        if (perm) {
+            // 只在内容真的变了才重建：本函数被 5s 轮询/翻卡/SSE 全量调用，
+            // 每帧 innerHTML 重建会持续销毁并重建 ring 与统计节点。
+            const html = CL.permanentPanelHtml(key);
+            if (panel.dataset.html !== html) {
+                panel.dataset.html = html;
+                panel.innerHTML = html;
+            }
+        } else if (panel.innerHTML) {
+            panel.innerHTML = '';
+            panel.dataset.html = '';
+        }
+    }
+    if (permBtn) {
+        permBtn.classList.toggle('is-on', perm);
+        permBtn.setAttribute('aria-checked', perm ? 'true' : 'false');
+        permBtn.title = perm ? I18N.t('chargeLimit.permanentOff') : I18N.t('chargeLimit.permanentHint');
+    }
+    if (fullBtn) {
+        fullBtn.classList.toggle('is-on', full);
+        fullBtn.classList.toggle('is-fired', full && fired);
+        fullBtn.setAttribute('aria-checked', full ? 'true' : 'false');
+        fullBtn.disabled = perm;
+        fullBtn.classList.toggle('is-disabled', perm);
+        const fMode = CL.fullOffMode(key) === CL.MODE_ALWAYS
+            ? I18N.t('chargeLimit.always') : I18N.t('chargeLimit.once');
+        fullBtn.title = perm ? I18N.t('chargeLimit.permanentConflict')
+            : (full ? fMode + ' · ' : '')
+              + (fired ? I18N.t('chargeLimit.fullOffFired') : I18N.t('chargeLimit.fullOffHint'));
     }
 }
 
 async function refreshChargeLimit() {
     if (typeof ChargeLimit === 'undefined') return;
-    await ChargeLimit.fetchLimits();
+    await Promise.all([ChargeLimit.fetchLimits(), ChargeLimit.fetchPortModes()]);
     updateChargeLimitUI();
 }
 
@@ -754,11 +820,54 @@ function setChargeLimitQuick(key, wh) {
     applyChargeLimit(key);
 }
 
+// 用户动了模式下拉：置保护位，等保存成功（或后端值追上）再放开
+function limitModeTouched(key) {
+    const el = document.getElementById(`limitMode_${key}`);
+    if (el) el.dataset.touched = '1';
+}
+
 async function applyChargeLimit(key) {
     const input = document.getElementById(`limitWh_${key}`);
     const modeEl = document.getElementById(`limitMode_${key}`);
     const wh = ChargeLimit.parseWhInput(input ? input.value : '');
-    if (wh === null) { toast(I18N.t('chargeLimit.saveFailed', { msg: I18N.t('chargeLimit.placeholder') })); return; }
+    if (wh === null) {
+        // 只改了模式（没填阈值）：把模式存下来即可——当前本来就没有限额，wh=0
+        // 不改变限额值，只是让"仅一次/长期有效"这个偏好能落库、不再被轮询打回。
+        const entry = ChargeLimit.entryFor(key);
+        const mode = modeEl ? modeEl.value : null;
+        // 没有能量限额时下拉显示的是"充满即停"的模式（见 updateChargeLimitUI 的
+        // saved），这时存限额的 mode 会在下一次轮询被弹回去，用户只看到"白存"。
+        // 直接走端口模式接口，改的就是下拉真正代表的那个值。
+        if (modeEl && !(entry.wh > 0) && ChargeLimit.isFullOff(key)
+                && mode && mode !== ChargeLimit.fullOffMode(key)) {
+            modeEl.dataset.touched = '1';
+            const r = await ChargeLimit.savePortMode(key, 'full_off', true, mode);
+            modeEl.dataset.touched = '';
+            if (r.error !== 'pending') {
+                toast(r.ok ? I18N.t('chargeLimit.modeSaved')
+                           : I18N.t('chargeLimit.saveFailed', { msg: r.error }));
+            }
+            updateChargeLimitUI();
+            return;
+        }
+        if (modeEl && !(entry.wh > 0) && !ChargeLimit.isFullOff(key)
+                && mode !== (entry.mode || 'once')) {
+            modeEl.dataset.touched = '1';
+            const res = await ChargeLimit.saveLimit(key, 0, mode);
+            // saveLimit 在同端口已有请求在途时直接返回 state（没有 ok/error 字段）：
+            // 那不是失败——不该弹"设置失败：undefined"，更不能解除保护位，
+            // 否则下一次 5s 轮询立刻把用户刚选的模式打回去。
+            if (!res || res.ok === undefined) return;
+            modeEl.dataset.touched = '';
+            if (res.ok) limitModeSaved[key] = true;
+            toast(res.ok ? I18N.t('chargeLimit.modeSaved')
+                         : I18N.t('chargeLimit.saveFailed', { msg: res.error }));
+            updateChargeLimitUI();
+            return;
+        }
+        toast(I18N.t('chargeLimit.saveFailed', { msg: I18N.t('chargeLimit.placeholder') }));
+        return;
+    }
     if (modeEl) modeEl.dataset.touched = '1';
     const res = await ChargeLimit.saveLimit(key, wh, modeEl ? modeEl.value : null);
     if (modeEl) modeEl.dataset.touched = '';
@@ -770,6 +879,12 @@ async function applyChargeLimit(key) {
 
 async function clearChargeLimit(key) {
     const res = await ChargeLimit.saveLimit(key, 0, null);
+    // 成功后必须放开"用户改过模式"的保护位，否则下拉会永久停在用户那次未保存的
+    // 选择上，后续 5s 轮询与 refreshChargeLimit 都拉不回来（与 app.js 保持一致）。
+    if (res.ok) {
+        const modeEl = document.getElementById(`limitMode_${key}`);
+        if (modeEl) modeEl.dataset.touched = '';
+    }
     toast(res.ok ? I18N.t('chargeLimit.cleared')
                  : I18N.t('chargeLimit.saveFailed', { msg: res.error }));
     updateChargeLimitUI();
@@ -948,12 +1063,42 @@ function phonePushData() {
 }
 
 // ── Init ──
-// 先把持久化的主题落到设备图 / 场景图标 / 主题按钮上，再走常规渲染
-applyPhoneTheme(isDark, false);
-renderAll();
-initPhoneSSE();
+// 先把持久化的主题落到设备图 / 场景图标 / 主题按钮上，再走常规渲染。
+// 整段包 try/catch：拿到旧的/裁剪过的 charge_limit.js 缓存（?v 版本不对）时，
+// 缺一个方法就会让下面的 applyPhoneTheme/renderAll/initPhoneSSE 全都不执行，
+// 页面直接白屏。能力缺失最多丢掉两枚模式开关，不该拖垮整页。
+if (typeof ChargeLimit !== 'undefined') {
+    try {
+        if (typeof ChargeLimit.setNotifier === 'function') {
+            ChargeLimit.setNotifier(toast);   // 限额/端口模式的失败提示走手机端 toast
+        }
+        // "充满即停"点击时用的模式 = 卡面上那个 once/always 下拉
+        if (typeof ChargeLimit.setModeReader === 'function') {
+            ChargeLimit.setModeReader((port) => {
+                const el = document.getElementById(`limitMode_${port}`);
+                return el ? el.value : null;
+            });
+        }
+    } catch (e) {
+        console.error('ChargeLimit wiring failed:', e);
+    }
+}
+// 与桌面页同样分步隔离：单步抛错不该让后面的初始化全不跑（半边可用的页面
+// 比明确报错更难查）。失败在界面上留一条提示，用户可以刷新。
+function phoneInitStep(name, fn) {
+    try { fn(); return true; }
+    catch (e) { console.error('init step failed:', name, e); return false; }
+}
+const phoneInitFailed = [
+    ['theme', () => applyPhoneTheme(isDark, false)],
+    ['renderAll', () => renderAll()],
+    ['sse', () => initPhoneSSE()],
+].filter(([n, fn]) => !phoneInitStep(n, fn)).map(([n]) => n);
 // 定时器：先 push 数据再渲染（去抖只渲染不 push，杜绝重复点）
 setInterval(() => { phonePushData(); renderCharts(); }, 2000);
+if (phoneInitFailed.length) {
+    try { toast(I18N.t('common.initPartial')); } catch (e) {}
+}
 // 安全兜底：每 30s 轮询 /api/status 校正因 SSE 队列丢事件导致的连接状态偏差
 setInterval(async () => {
     try {
