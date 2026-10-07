@@ -44,7 +44,7 @@
     <script defer src="/static/charge_limit.js?v=24"></script>
     <script src="/static/chart-loader.js"></script>
     <script src="/static/chart-config.js"></script>
-    <link rel="stylesheet" href="static/index.css?v=33">
+    <link rel="stylesheet" href="static/index.css?v=35">
 </head>
 <body>
 
@@ -278,17 +278,19 @@
                         <span data-i18n="energy.title">用电统计</span>
                         <span class="card-hint" id="energyTotal"></span>
                         <div class="segmented" role="group" id="energyTabs">
-                            <button class="time-btn active" data-energy-tab="ports" onclick="setEnergyTab('ports')"
-                                    data-i18n="energy.tabPorts">按端口</button>
                             <button class="time-btn" data-energy-tab="hourly" onclick="setEnergyTab('hourly')"
                                     data-i18n="energy.tabHourly">每小时</button>
+                            <button class="time-btn active" data-energy-tab="ports" onclick="setEnergyTab('ports')"
+                                    data-i18n="energy.tabPorts">按端口</button>
                             <button class="time-btn" data-energy-tab="protocols" onclick="setEnergyTab('protocols')"
                                     data-i18n="energy.tabProtocols">快充协议</button>
                         </div>
                     </div>
 
-                    <div class="energy-pane is-active" data-energy-pane="ports">
-                        <div class="energy-bar" id="energyPortBar"></div>
+                    <div class="energy-pane energy-pane--ring is-active" data-energy-pane="ports">
+                        <!-- 环只承担占比这一件事，数值与名称由右侧图例承载；
+                             所以环对读屏器是装饰（aria-hidden），信息不靠颜色单独传达。 -->
+                        <div class="energy-ring" id="energyPortRing" aria-hidden="true"></div>
                         <div class="energy-rows" id="energyPortRows"></div>
                     </div>
 
@@ -297,8 +299,8 @@
                              data-i18n-aria-label="energy.hourlyAria" aria-label="近 24 小时每小时用电量"></canvas></div>
                     </div>
 
-                    <div class="energy-pane" data-energy-pane="protocols">
-                        <div class="energy-bar" id="energyProtoBar"></div>
+                    <div class="energy-pane energy-pane--ring" data-energy-pane="protocols">
+                        <div class="energy-ring" id="energyProtoRing" aria-hidden="true"></div>
                         <div class="energy-rows" id="energyProtoRows"></div>
                     </div>
                 </section>
@@ -743,6 +745,6 @@
 
 </script>
 
-<script defer src="/static/app.js?v=26"></script>
+<script defer src="/static/app.js?v=27"></script>
 </body>
 </html>

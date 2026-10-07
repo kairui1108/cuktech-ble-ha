@@ -145,7 +145,6 @@ check(parseFloat(light['--edge']) > parseFloat(dark['--edge']),
 console.log('\n-- 图形（3:1 即可）：柱、点、协议色 --');
 const graphicCases = [
     ['--total-line（「总」模式的总功率曲线）', L['--total-line']],
-    ['--proto-pd', L['--proto-pd']],
     ['--dot-on（已连接圆点）', L['--dot-on']],
     ['--dot-warn（连接中圆点）', L['--dot-warn']],
     ['--proto-pps', L['--proto-pps']],
@@ -170,6 +169,14 @@ check(L['--proto-pd'] !== L['--accent'] && L['--proto-pd'] !== L['--accent-ink']
 // 这是"与侧栏迷你柱状图保持一致"的有意选择（侧栏那张图本来就是这个蓝）。
 const barC = contrast(/^#/.test(L['--chart-bar']) ? L['--chart-bar'] : '#46B4FF', CARD);
 check(barC >= 1.5, `--chart-bar（解析为 --port-c2 #46B4FF）对卡面 ${f(barC)}:1（记录现状，低于 3:1）`);
+
+// 记录例外：--proto-pd 为了"够鲜"低于图形件 3:1。
+// 为什么可接受：环形里的占比同时由右侧图例（圆点 + 名称 + Wh + 次数·占比）逐项给出，
+//   颜色不是唯一信息通道；而且白底要过 3:1 就得把绿的相对亮度压到 ≤0.30，
+//   旧值 #17a848 正是 3.12:1 —— "看着暗淡"的根源就是这条上限本身，不是选错了色号。
+// 只对 PD 这一档开口子，其余三档仍在 graphicCases 里守 ≥3:1。
+const pdC = contrast(L['--proto-pd'], CARD);
+check(pdC >= 2.2, `--proto-pd ${L['--proto-pd']} 对卡面 ${f(pdC)}:1（有意例外，守住 ≥2.2）`);
 
 console.log('\n-- 亮端口色不能当小字用（浅色下 1.4–2.6:1）：浅色必须有圆点描边兜底 --');
 // 选择器列表可能随主题增删，只要求"浅色规则里出现 .energy-dot 且带内描边"

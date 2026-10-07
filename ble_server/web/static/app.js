@@ -850,29 +850,51 @@
             if (energyHourlyLoaded) fetchEnergyHourly();
         }
 
-        // 一行 = 圆点 + 名称 + 行内占比条 + Wh + 次数 + 占比。
-        // 行内条是关键：四列版把名称和数字顶到两端，中间几百像素全是空的，
-        // 看着"密度不够"。条直接吃掉中间，占比还能和数字互相校验。
+        // 一行三格：圆点+名称 / 次数·占比 / 电量。环已经承担了占比，行内不再画进度条
+        // （同一件事画两遍正是这张卡原来"吵"的主因）；电量单独右对齐成一列，便于扫读。
         function energyRow(label, color, wh, count, share, isActive) {
             const live = isActive ? '<i class="energy-live"></i>' : '';
             const cls = wh > 0 ? 'energy-row' : 'energy-row is-zero';
             const pct = Math.round(share * 100);
             return `<div class="${cls}">
                 <span class="energy-name"><i class="energy-dot" style="background:${color}"></i>${label}${live}</span>
-                <span class="energy-track"><i class="energy-fill" style="width:${pct}%;background:${color}"></i></span>
+                <span class="energy-meta">${I18N.t('energy.count', { count: count || 0 })} · ${pct}%</span>
                 <span class="energy-val">${wh.toFixed(1)}<i>Wh</i></span>
-                <span class="energy-count">${I18N.t('energy.count', { count: count || 0 })}</span>
-                <span class="energy-pct">${pct}%</span>
             </div>`;
         }
 
-        function renderEnergyBar(bar, items) {
-            if (!bar) return;
+        // 环形占比：SVG 画弧。段与段之间留 2.5px 缝（相邻段色相接近时不会连成一片）；
+        // 圆心放"主导项占比 + 名称"——卡头已经有合计值，这里不重复它。
+        const RING_SIZE = 92, RING_STROKE = 11, RING_GAP = 2.5;
+        function renderEnergyRing(el, items) {
+            if (!el) return;
             const total = items.reduce((a, x) => a + x.wh, 0);
             const parts = items.filter(x => x.wh > 0);
-            bar.innerHTML = (total > 0 && parts.length)
-                ? parts.map(x => `<div style="width:${(x.wh / total * 100).toFixed(1)}%;background:${x.color}"></div>`).join('')
-                : '';
+            if (!(total > 0) || !parts.length) { el.innerHTML = ''; return; }
+            const r = (RING_SIZE - RING_STROKE) / 2;
+            const c = 2 * Math.PI * r;
+            const mid = RING_SIZE / 2;
+            let travelled = 0;
+            const arcs = parts.map(x => {
+                const share = x.wh / total;
+                const len = Math.max(c * share - RING_GAP, 0.6);
+                const arc = `<circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="${x.color}"
+                    stroke-width="${RING_STROKE}"
+                    stroke-dasharray="${len.toFixed(2)} ${(c - len).toFixed(2)}"
+                    stroke-dashoffset="${(-travelled).toFixed(2)}"></circle>`;
+                travelled += c * share;
+                return arc;
+            }).join('');
+            const dom = parts.reduce((a, b) => (b.wh > a.wh ? b : a));
+            el.innerHTML = `<svg viewBox="0 0 ${RING_SIZE} ${RING_SIZE}" aria-hidden="true">
+                <circle cx="${mid}" cy="${mid}" r="${r}" fill="none"
+                        stroke="var(--ring-track)" stroke-width="${RING_STROKE}"></circle>
+                ${arcs}
+                <text x="${mid}" y="${mid}" text-anchor="middle" dominant-baseline="central"
+                      font-size="19" font-weight="600" fill="var(--text)">${Math.round(dom.wh / total * 100)}%</text>
+                <text x="${mid}" y="${mid + 18}" text-anchor="middle" font-size="10"
+                      fill="var(--text-dim)">${dom.label}</text>
+            </svg>`;
         }
 
         function renderEnergy() {
@@ -893,7 +915,7 @@
                 return { label: p.label, color: `var(--port-${p.key})`,
                          wh: e.wh || 0, count: e.count || 0, active: !!e.is_active };
             });
-            renderEnergyBar(document.getElementById('energyPortBar'), portItems);
+            renderEnergyRing(document.getElementById('energyPortRing'), portItems);
             const portRows = document.getElementById('energyPortRows');
             if (portRows) {
                 const sum = portItems.reduce((a, x) => a + x.wh, 0);
@@ -909,7 +931,7 @@
                 color: energyProtoColor(p.protocol),
                 wh: p.wh || 0, count: p.count || 0, active: !!p.is_active,
             }));
-            renderEnergyBar(document.getElementById('energyProtoBar'), protoItems);
+            renderEnergyRing(document.getElementById('energyProtoRing'), protoItems);
             const protoRows = document.getElementById('energyProtoRows');
             if (protoRows) {
                 const sum = protoItems.reduce((a, x) => a + x.wh, 0);
