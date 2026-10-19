@@ -29,11 +29,27 @@ Standalone BLE server for connecting CUKTECH chargers and pushing real-time data
 - Linux with Bluetooth adapter
 - Docker + Docker Compose
 
+> Note: Docker Desktop on macOS cannot pass BLE through — on macOS use the native deployment (see notes below).
+
 ### Native
 - Python 3.10+
-- Linux with Bluetooth adapter
-- BlueZ 5.66+ (5.71 recommended)
+- Linux with Bluetooth adapter, BlueZ 5.66+ (5.71 recommended)
+- Or macOS (Apple Silicon verified — see notes below)
 - MQTT Broker (EMQX, Mosquitto, etc.)
+
+### macOS notes (darwin branch)
+
+Dedicated darwin code paths (CoreBluetooth) are built in; the full pipeline (MiOT auth, per-port readings, launchd daemon) was verified zero-patch on macOS 26 / Apple Silicon since v1.1.2. Before using:
+
+1. **Bluetooth permission**: the first BLE scan triggers a system prompt — grant access for the terminal running Python (or the `.venv/bin/python` binary for a launchd daemon) under System Settings → Privacy & Security → Bluetooth, otherwise scanning fails silently
+2. **`config.mac` must be the device's real MAC**: the darwin scanner matches devices by reversing the last 6 bytes of the FE95 advertisement — do not use the CoreBluetooth UUID
+3. **No Docker**: containers have no BLE passthrough on macOS; use the native deployment
+4. **Reconnect takes 30-60s**: after a service restart, scanning + backoff + the 5-step handshake need ~30-60s; `connected=false` during this window is normal
+
+```bash
+# Environment check on macOS (check_env.sh supports the darwin branch)
+./check_env.sh
+```
 
 ## Quick Start
 
@@ -268,7 +284,7 @@ same `0 ~ 1000` bound.)
 
 - **Single Device**: Current architecture supports only one charger at a time. Multi-device support is planned for future releases.
 - **Protocol Detection**: Protocol is derived from the authoritative firmware push (PIID 17/18, consistent with the Xiaomi Home app) and updates immediately on PD/PPS change — no periodic 60s refresh lag. A coarse voltage-based inference is used only in an extreme cold start (when PIID 17 is never received and its read fails).
-- **Platform Support**: Development and testing are done exclusively on Linux. Compatibility with other platforms (macOS, Windows) has not been verified — use at your own risk.
+- **Platform Support**: Development and testing are done on Linux. macOS (Apple Silicon) is supported via dedicated darwin code paths and community-verified (#6); Windows has not been verified — use at your own risk.
 
 ## Protocol Support
 

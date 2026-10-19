@@ -1,6 +1,6 @@
 #!/bin/bash
 # CUKTECH BLE Server - 环境检查脚本
-# 支持: Linux (x86_64/ARM), BlueZ 5.66+, Docker 容器
+# 支持: Linux (x86_64/ARM), BlueZ 5.66+, Docker 容器, macOS (darwin)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,20 +20,28 @@ echo ""
 # 0. 平台检测
 # ==========================================
 OS_TYPE=$(uname -s 2>/dev/null || echo "Unknown")
-if [ "$OS_TYPE" != "Linux" ]; then
-    check_fail "Unsupported OS: $OS_TYPE"
-    echo ""
-    echo "  This server is designed for Linux. Compatibility with"
-    echo "  other platforms (macOS, Windows) has not been tested."
-    echo "  Use at your own risk."
-    echo ""
-    echo "Result: FAIL (unsupported platform)"
-    exit 1
-fi
+IS_LINUX=0
+IS_DARWIN=0
+case "$OS_TYPE" in
+    Linux)  IS_LINUX=1 ;;
+    Darwin) IS_DARWIN=1 ;;
+    *)
+        check_fail "Unsupported OS: $OS_TYPE"
+        echo ""
+        echo "  This server supports Linux and macOS (darwin)."
+        echo "  Compatibility with other platforms (Windows) has not been"
+        echo "  tested. Use at your own risk."
+        echo ""
+        echo "Result: FAIL (unsupported platform)"
+        exit 1
+        ;;
+esac
 
-# Docker 检测
-if [ -f "/.dockerenv" ] || grep -q "docker" /proc/1/cgroup 2>/dev/null; then
-    check_warn "Running inside Docker container (ensure --privileged and /dev/hci* mounted)"
+# Docker 检测（仅 Linux；macOS 容器无 BLE 直通，不支持 Docker 部署）
+if [ "$IS_LINUX" -eq 1 ]; then
+    if [ -f "/.dockerenv" ] || grep -q "docker" /proc/1/cgroup 2>/dev/null; then
+        check_warn "Running inside Docker container (ensure --privileged and /dev/hci* mounted)"
+    fi
 fi
 
 # ==========================================
@@ -86,6 +94,26 @@ done
 echo ""
 echo "[Bluetooth Tools]"
 
+if [ "$IS_DARWIN" -eq 1 ]; then
+    # macOS: 无 BlueZ 工具链，bleak 走 CoreBluetooth
+    check_pass "macOS detected (bleak uses CoreBluetooth, BlueZ tools not required)"
+
+    # system_profiler JSON 的 key/枚举值不随系统语言本地化
+    BT_JSON=$(system_profiler SPBluetoothDataType -json 2>/dev/null || true)
+    if echo "$BT_JSON" | grep -q '"controller_properties"'; then
+        check_pass "Bluetooth adapter found"
+        if echo "$BT_JSON" | grep -Eq '"controller_state"[[:space:]]*:[[:space:]]*"attrib_on"'; then
+            check_pass "Bluetooth: On"
+        else
+            check_warn "Bluetooth: Off (enable in System Settings -> Bluetooth)"
+        fi
+    else
+        check_fail "No Bluetooth adapter found"
+    fi
+
+    check_warn "Bluetooth permission needed: first BLE scan triggers a system prompt - grant access for the terminal (or venv python) running Python in System Settings -> Privacy & Security -> Bluetooth, otherwise scanning fails silently"
+else
+
 HAS_BTCTL=0
 HAS_HCICONFIG=0
 HAS_BTMGMT=0
@@ -115,9 +143,12 @@ if [ $HAS_BTCTL -eq 0 ] && [ $HAS_BTMGMT -eq 0 ]; then
     check_fail "No Bluetooth management tool available (need bluetoothctl or btmgmt)"
 fi
 
+fi  # end Linux bluetooth tools
+
 # ==========================================
-# 4. 蓝牙适配器详情
+# 4. 蓝牙适配器详情（仅 Linux / BlueZ hci）
 # ==========================================
+if [ "$IS_LINUX" -eq 1 ]; then
 echo ""
 echo "[Bluetooth Adapter(s)]"
 
@@ -240,16 +271,22 @@ else
         index=$((index+1))
     done
 fi
+fi  # end Linux adapter details
 
 # ==========================================
 # 5. 用户权限
 # ==========================================
 echo ""
 echo "[Permissions]"
-if groups 2>/dev/null | grep -qw "bluetooth"; then
-    check_pass "User in bluetooth group"
+if [ "$IS_DARWIN" -eq 1 ]; then
+    # macOS 无 bluetooth 组，访问权限由 TCC 管理（已在蓝牙节提示）
+    check_pass "No bluetooth group needed on macOS (TCC manages access)"
 else
-    check_warn "User not in bluetooth group (systemd service may use SupplementaryGroups)"
+    if groups 2>/dev/null | grep -qw "bluetooth"; then
+        check_pass "User in bluetooth group"
+    else
+        check_warn "User not in bluetooth group (systemd service may use SupplementaryGroups)"
+    fi
 fi
 
 # ==========================================

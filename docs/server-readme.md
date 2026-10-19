@@ -29,11 +29,27 @@
 - Linux 系统（需蓝牙适配器）
 - Docker + Docker Compose
 
+> 注：macOS 的 Docker Desktop 无法直通蓝牙，macOS 请使用传统部署（见下方注意事项）。
+
 ### 传统部署
 - Python 3.10+
-- Linux 系统（需蓝牙适配器）
-- BlueZ 5.66+（推荐 5.71）
+- Linux 系统（需蓝牙适配器），BlueZ 5.66+（推荐 5.71）
+- 或 macOS（Apple Silicon 实测可用，见下方注意事项）
 - MQTT Broker（如 EMQX、Mosquitto）
+
+### macOS 注意事项（darwin 分支）
+
+代码内置 darwin 分支（CoreBluetooth），v1.1.2 起在 macOS 26 / Apple Silicon 上零补丁实测跑通全链路（MiOT 认证、四口读数、launchd 常驻）。使用前注意：
+
+1. **蓝牙权限**：首次 BLE 扫描触发系统弹窗，需在「系统设置 → 隐私与安全性 → 蓝牙」授权运行 Python 的终端；launchd 常驻场景需授权对应二进制（如 `.venv/bin/python`），否则扫描静默失败
+2. **`config.mac` 必须填设备真实 MAC**：darwin 扫描靠 FE95 广播尾 6 字节反查匹配，不能填 CoreBluetooth 返回的 UUID
+3. **不支持 Docker**：容器内无 BLE 直通，macOS 只能传统部署
+4. **重连耗时 30-60 秒**：服务重启后扫描 + 退避 + 五步握手需要约 30-60s，期间 `connected=false` 属正常中间态
+
+```bash
+# macOS 环境检查（check_env.sh 支持 darwin 分支）
+./check_env.sh
+```
 
 ## 快速开始（推荐）
 
