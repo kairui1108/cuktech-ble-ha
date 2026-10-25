@@ -851,6 +851,11 @@ class Server:
     #: qos=0 只是"交给本地 socket"，紧接着的 `_restart()` 会断 MQTT，消息可能根本没
     #: 出去——而那时旧前缀已经不在配置里，脚本也推导不出来，等于永久幽灵。
     RETAINED_CLEAR_QOS = 1
+    #: `wait_for_publish()` 的等待上限（秒）。**必须给**：paho 的默认值是 None，
+    #: 语义是"永远等"（内部 `Condition.wait(None)`）。而这段代码跑在 aiohttp 的
+    #: 事件循环里——broker 连着却不回 PUBACK（broker 卡死 / TCP 缓冲满 / 半死连接）
+    #: 时，一次配置保存就能把整台服务器冻住：所有设备的 HTTP、SSE、命令全部停摆。
+    RETAINED_CLEAR_TIMEOUT = 2.0
 
     def _mqtt_clear_retained(self, topic: str) -> bool:
         """清掉一条 retained 消息（**空负载** + retain + qos 1）。
@@ -859,9 +864,12 @@ class Server:
         `json.dumps(None)` → 往 retained 里塞一个字符串 "null"，订阅方看到的仍是
         一条"有内容"的消息。清除 retained 的唯一正确形状是空 payload。
 
-        `wait_for_publish()`：清理发生在"写盘之后、重启之前"的 1 秒窗口里，
-        没确认就断电式重启 = 清除白做（见 RETAINED_CLEAR_QOS 的注释）。
-        老版本 paho 没有这个方法，`getattr` 兜底。
+        `wait_for_publish(timeout)`：清理发生在"写盘之后、重启之前"的 1 秒窗口里，
+        没确认就断电式重启 = 清除白做；但**必须带超时**，理由见
+        `RETAINED_CLEAR_TIMEOUT`。老版本 paho 没有这个方法，`getattr` 兜底。
+
+        **阻塞调用**（paho 内部等 threading.Condition）——只允许从工作线程调，
+        见 `_purge_namespace`。
         """
         if not (self.mqtt_client and self.mqtt_client.is_connected()):
             return False
@@ -869,12 +877,19 @@ class Server:
             info = self.mqtt_client.publish(topic, "", retain=True, qos=self.RETAINED_CLEAR_QOS)
             waiter = getattr(info, "wait_for_publish", None)
             if callable(waiter):
-                waiter()
+                try:
+                    waiter(self.RETAINED_CLEAR_TIMEOUT)
+                except TypeError:      # paho 1.x 的签名不接受参数：宁可不等也别卡死
+                    waiter()
             return True
         except Exception as e:
             self._mqtt_publish_failures += 1
             _LOGGER.warning("清 retained 失败 %s: %s", topic, e)
             return False
+
+    def _clear_retained_batch(self, topics) -> list[str]:
+        """逐条清（**阻塞**，只允许在线程里调）。"""
+        return [t for t in topics if self._mqtt_clear_retained(t)]
 
     @staticmethod
     def _namespace_topics(ns) -> list[str]:
@@ -883,14 +898,21 @@ class Server:
         topics += [ns.port_topic(name) for name in PORT_NAMES.values()]
         return topics
 
-    def _purge_namespace(self, ns, device_id: str, why: str) -> list[str]:
+    async def _purge_namespace(self, ns, device_id: str, why: str) -> list[str]:
+        """清一台设备命名空间下的 retained（在**工作线程**里跑，不占事件循环）。
+
+        为什么必须丢线程：`wait_for_publish()` 是阻塞调用，paho 内部就是在等一个
+        `threading.Condition`。放在事件循环里调，broker 一卡住整台服务器就冻住
+        （所有设备的 HTTP/SSE/命令一起停摆）——清 9 条 × N 台设备，每条都可能等。
+        `mqtt_client.publish()` 本身是线程安全的（paho 明确支持跨线程 publish）。
+        """
         topics = self._namespace_topics(ns)
-        cleared = [t for t in topics if self._mqtt_clear_retained(t)]
-        _LOGGER.warning("[%s] %s：清理 %d 条 retained 主题（历史数据保留）",
-                        device_id, why, len(topics))
+        cleared = await asyncio.to_thread(self._clear_retained_batch, topics)
+        _LOGGER.warning("[%s] %s：清理 %d/%d 条 retained 主题（历史数据保留）",
+                        device_id, why, len(cleared), len(topics))
         return cleared
 
-    def purge_removed_devices(self, removed) -> list[str]:
+    async def purge_removed_devices(self, removed) -> list[str]:
         """设备从配置里消失后，清掉它在 broker 上的 retained 状态。
 
         为什么必须清：`{prefix}/status`、`.../port/c1` 等都是 retained 的，设备没了
@@ -903,18 +925,18 @@ class Server:
         """
         cleared: list[str] = []
         for rt in removed:
-            cleared += self._purge_namespace(
+            cleared += await self._purge_namespace(
                 rt.topics, rt.device_id, "设备已从配置移除（同 id 加回即恢复）")
         return cleared
 
-    def purge_stale_prefix(self, rt, new_prefix: str) -> list[str]:
+    async def purge_stale_prefix(self, rt, new_prefix: str) -> list[str]:
         """设备**还在**、但 `topic_prefix` 改了：旧前缀的 retained 同样是幽灵。
 
         这条缺口以前没人补：`purge_removed_devices` 只对比"消失的设备"，
         而 `clean_retained.py` 的前缀是从**当前配置**推导的——旧前缀改完之后就不在
         配置里了，脚本也推导不出来，等于永久幽灵。所以必须在改前缀的当场清。
         """
-        return self._purge_namespace(
+        return await self._purge_namespace(
             rt.topics, rt.device_id, f"topic 前缀已改为 {new_prefix}")
 
     def mqtt_publish(self, topic, payload, retain=False):
@@ -1009,11 +1031,28 @@ class Server:
             return plan
 
         # ── 老配置兜底 ──
+        for item in self._derived_bemfa_plan():
+            _push(item["rt"], item["port"], item["name"], item["entity_id"])
+        return plan
+
+    def _derived_bemfa_plan(self) -> list:
+        """老配置（没写过 `bemfa.entities` 键）的派生清单：`allowed_devices` × 5。
+
+        独立成方法是为了让**配置页也能拿到同一份派生结果**：老用户第一次在新页面上
+        点保存时，前端必须把这张表原样铺出来再提交，否则"配了 `allowed_devices: ["*"]`
+        的用户"会因为页面只铺 primary 的 5 行而丢掉其它设备的语音开关——而且服务端
+        随后会把它们从巴法云真的删掉（`registered` 差集）。派生规则只有这一份，
+        前端不再自己拼名字（`GET /api/config` 直接回 `derivedEntities`）。
+        """
+        registry = getattr(self, "registry", None)
+        if registry is None:          # `Server.__new__` 手工装配的测试路径
+            return []
+        plan: list = []
         allowed = self.config.bemfa.allowed_devices or [PRIMARY_DEVICE_ID]
         names = {"c1": self.config.bemfa.name_c1, "c2": self.config.bemfa.name_c2,
                  "c3": self.config.bemfa.name_c3, "a": self.config.bemfa.name_a,
                  "ble": self.config.bemfa.name_ble}
-        for rt in self.registry:
+        for rt in registry:
             if "*" not in allowed and rt.device_id not in allowed:
                 continue
             ids = self._bemfa_entity_ids(rt)
@@ -1024,7 +1063,8 @@ class Server:
                     label = f"{rt.name} 蓝牙开关"
                 else:
                     label = f"{rt.name} {BEMFA_PORT_LABELS.get(port, port)}"
-                _push(rt, port, label, ids.get(port))
+                plan.append({"device_id": rt.device_id, "port": port,
+                             "name": label, "entity_id": ids.get(port), "rt": rt})
         return plan
 
     def _bemfa_entity_for(self, rt, port):
@@ -1117,10 +1157,10 @@ class Server:
                     eid, lambda on, rt=rt, port=port: _port_cmd(rt, port, on))
 
         # ── 云端残留：从配置里删掉的实体，在巴法云 App 里还留着一个按了没反应的开关 ──
-        # 用上一次成功注册的 id 快照（`bemfa.registered`）做差集——只有服务端自己知道
-        # 上一轮到底注册过什么（用户手改 YAML 也照样对得上）。
-        stale = [eid for eid in (self.config.bemfa.registered or [])
-                 if eid and eid not in set(self._bemfa_map.values())]
+        # 用上一次成功注册的 id 快照做差集——只有服务端自己知道上一轮到底注册过什么
+        # （用户手改 YAML 也照样对得上）。快照存在 **DB meta**，见 `_bemfa_registered_snapshot`。
+        previous = self._bemfa_registered_snapshot()
+        stale = [eid for eid in previous if eid not in set(self._bemfa_map.values())]
         if stale:
             _LOGGER.info("Bemfa 清理已删除的实体 %d 个: %s", len(stale), ", ".join(stale))
             await self.bemfa.delete_topics(stale)
@@ -1132,60 +1172,110 @@ class Server:
             self._clear_bemfa_modified()
         # 记下这一轮注册的实体 id，供下次启动做残留清理
         registered = sorted(set(self._bemfa_map.values()))
-        if registered != sorted(set(self.config.bemfa.registered or [])):
+        if registered != previous:
             self._save_bemfa_registered(registered)
 
     def _config_path(self) -> Path:
         return Path(os.environ.get("CUKTECH_CONFIG_PATH", str(Path(__file__).parent / "config.yaml")))
 
-    def _patch_bemfa_yaml(self, mutate):
-        """把 `mutate(bemfa_section)` 的结果原子写回 config.yaml 的 `bemfa:` 节。
+    #: 上一轮注册到巴法云的实体 id 快照（供下次启动清云端残留）。
+    #: **存在 DB meta 而不是 config.yaml**：这是服务端自己的运行期记账，而
+    #: `yaml.safe_load + yaml.dump` 会把用户手写的注释、键序、引号风格整份抹掉
+    #: （config.yaml.example 就是一份带注释的模板，README 让人 cp 过去改）。
+    #: meta 表本来就是干这个的（`permanent_ports` / `web_language` 都在那儿）。
+    BEMFA_REGISTERED_META_KEY = "bemfa_registered"
 
-        这两处回写（清 `modified`、记 `registered`）都是**服务端自己的记账**：失败
-        只记警告，绝不因为记账失败影响启动。`mutate` 返回 False = 无需改动，不落盘。
+    def _bemfa_registered_snapshot(self) -> list[str]:
+        """上一次成功注册的实体 id（DB meta 为准，兼容早期写在 YAML 里的字段）。"""
+        store = self.history_store
+        ids: list[str] = []
+        if store is not None:
+            try:
+                raw = store.get_meta(self.BEMFA_REGISTERED_META_KEY, "")
+            except Exception:
+                raw = ""
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    parsed = None
+                if isinstance(parsed, list):
+                    ids = [str(x) for x in parsed if x]
+        if not ids:
+            # 迁移：10fed6b 曾把它写进 config.yaml 的 `bemfa.registered`，读一次并迁走
+            legacy = [str(x) for x in (getattr(self.config.bemfa, "registered", None) or []) if x]
+            if legacy:
+                _LOGGER.info("Bemfa registered 快照从 config.yaml 迁移到 DB meta（%d 项）",
+                             len(legacy))
+                ids = sorted(set(legacy))
+                self._save_bemfa_registered(ids)
+        return sorted(set(ids))
 
-        文件不存在时直接返回：纯环境变量部署下，凭空造一份只含 `bemfa:` 的
-        config.yaml 会变成下次启动的"配置文件"，等于把手改的现场清空。
+    def _save_bemfa_registered(self, entity_ids) -> None:
+        """记下本轮注册的实体 id（只写 DB meta，绝不碰 config.yaml）。"""
+        store = self.history_store
+        if store is None:                 # 手工装配的测试路径
+            return
+        payload = json.dumps(sorted(set(entity_ids)))
+        try:
+            store.set_meta(self.BEMFA_REGISTERED_META_KEY, payload)
+            _LOGGER.info("Bemfa 已记录本轮注册的实体 %d 个", len(set(entity_ids)))
+        except Exception:
+            _LOGGER.warning("Bemfa registered 快照写入失败", exc_info=True)
+
+    def _set_bemfa_yaml_bool(self, key: str, value: bool) -> bool:
+        """只改 config.yaml 里 `bemfa.<key>` 这**一行**，其余字节原样保留。
+
+        为什么要做到"只改一行"：服务端记账曾经用 `yaml.safe_load` + `yaml.dump`
+        整份重写，那会把用户手写的注释、顶层键顺序（dump 默认 sort_keys）和引号风格
+        全部抹掉——用户只会看到"我保存了一次设置，注释全没了"。
+        找不到该键时在 `bemfa:` 节头后补一行；找不到 `bemfa:` 节就整体追加。
+        失败一律返回 False（记账失败绝不影响启动）。
         """
         try:
-            import yaml
             config_path = self._config_path()
-            if not config_path.exists():
-                return
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            section = cfg.setdefault("bemfa", {})
-            if mutate(section) is False:
-                return
-            tmp_path = config_path.with_suffix(".tmp")
-            with open(tmp_path, "w") as f:
-                yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-            os.replace(tmp_path, config_path)
+            if not config_path.exists():      # 纯环境变量部署：不凭空造文件
+                return False
+            text = config_path.read_text(encoding="utf-8")
+            lines = text.splitlines(keepends=True)
+            literal = "true" if value else "false"
+            section_start = None
+            for idx, line in enumerate(lines):
+                if re.match(r"^bemfa\s*:\s*(#.*)?$", line.rstrip("\n")):
+                    section_start = idx
+                    break
+            if section_start is None:
+                suffix = "" if text.endswith(("\n", "")) else "\n"
+                config_path.write_text(f"{text}{suffix}bemfa:\n  {key}: {literal}\n",
+                                       encoding="utf-8")
+                return True
+            # 在节内找 `key:`（缩进 > 0；遇到下一个顶层键就停）
+            body_end = len(lines)
+            for idx in range(section_start + 1, len(lines)):
+                if lines[idx].strip() and not lines[idx].startswith((" ", "\t")):
+                    body_end = idx
+                    break
+            for idx in range(section_start + 1, body_end):
+                m = re.match(r"^(\s+)" + re.escape(key) + r"\s*:", lines[idx])
+                if m:
+                    indent = m.group(1)
+                    newline = "\n" if lines[idx].endswith("\n") else ""
+                    lines[idx] = f"{indent}{key}: {literal}{newline}"
+                    config_path.write_text("".join(lines), encoding="utf-8")
+                    return True
+            # 节存在但没有这个键：插在节头后面
+            newline = "\n" if lines[section_start].endswith("\n") else "\n"
+            lines.insert(section_start + 1, f"  {key}: {literal}{newline}")
+            config_path.write_text("".join(lines), encoding="utf-8")
+            return True
         except Exception:
-            _LOGGER.warning("Failed to update bemfa config", exc_info=True)
+            _LOGGER.warning("更新 config.yaml 的 bemfa.%s 失败", key, exc_info=True)
+            return False
 
     def _clear_bemfa_modified(self):
         """Set bemfa.modified=false in config.yaml after topic re-registration."""
-        def _mutate(section):
-            if not section.get("modified"):
-                return False
-            section["modified"] = False
+        if self._set_bemfa_yaml_bool("modified", False):
             _LOGGER.info("Bemfa modified flag cleared")
-            return True
-
-        self._patch_bemfa_yaml(_mutate)
-
-    def _save_bemfa_registered(self, entity_ids):
-        """记下本次成功注册的实体 id（下次启动据此清理云端残留）。"""
-        ids = sorted(set(entity_ids))
-
-        def _mutate(section):
-            section["registered"] = ids
-            _LOGGER.info("Bemfa 已记录本轮注册的实体 %d 个", len(ids))
-            return True
-
-        self.config.bemfa.registered = ids
-        self._patch_bemfa_yaml(_mutate)
 
     async def handle_health(self, request):
         """GET /api/health - health check endpoint."""
@@ -2465,6 +2555,14 @@ class Server:
                     # 老配置（没写过 entities 键）要让前端知道"这空表是没配过，不是配了 0 条"
                     "entitiesDefined": bool(cfg.bemfa.entities_defined),
                     "ports": list(BEMFA_PORTS),
+                    # 老配置的**派生清单**（`allowed_devices` × 5，服务端同一份实现）：
+                    # 前端拿它当"首次保存"的种子，才不会把 `allowed_devices: ["*"]`
+                    # 那些设备的开关丢掉。名字也由这里给，前端不再自己拼。
+                    "derivedEntities": [
+                        {"name": item["name"], "device": item["device_id"],
+                         "port": item["port"]}
+                        for item in self._derived_bemfa_plan()],
+                    "allowedDevices": list(cfg.bemfa.allowed_devices or []),
                 },
                 "server": {
                     "port": cfg.server.port,
@@ -2572,7 +2670,7 @@ class Server:
             kept_ids = {spec.device_id for spec in validated.device_specs()}
             removed = [rt for rt in self.registry if rt.device_id not in kept_ids]
             if removed:
-                self.purge_removed_devices(removed)
+                await self.purge_removed_devices(removed)
             # 设备**还在**但改了 topic 前缀：旧前缀的 retained 同样是幽灵，而且
             # clean_retained.py 从当前配置推导前缀，改完就再也推导不出旧的了。
             new_prefixes = {spec.device_id: validated.topics_for(spec).prefix
@@ -2581,7 +2679,7 @@ class Server:
                 if rt.device_id in kept_ids:
                     new_prefix = new_prefixes.get(rt.device_id)
                     if new_prefix and new_prefix != rt.topics.prefix:
-                        self.purge_stale_prefix(rt, new_prefix)
+                        await self.purge_stale_prefix(rt, new_prefix)
 
             _LOGGER.info("Config saved to %s, restarting...", config_path)
 
@@ -3008,9 +3106,16 @@ class Server:
 
         # 截止时间：HTTP 请求本身有 30s 上限（request_timeout_middleware），批量导入
         # 必须在它之前收尾，否则浏览器拿到 504 而线程还在跑——那正是"无超时网络调用
-        # 被放大 N 倍"的形态。超预算的余下设备按 timeout 逐台返回（复用现有结构）。
+        # 被放大 N 倍"的形态。
+        #
+        # 只判"下一发之前还剩多少"是不够的：已经发出去的那一发照样能跑满它自己的
+        # 超时（连接 5s + 读取 15s），于是总耗时 = 预算 + 一发的最坏值（20+20=40s > 30s）。
+        # 所以**把剩余预算当成这一发的超时下发**，让"最后一发"也不可能超支。
         budget = self.XIAOMI_IMPORT_BUDGET
         started = time.monotonic()
+
+        def _remaining() -> float:
+            return budget - (time.monotonic() - started)
 
         def _fetch_all():
             out = []
@@ -3021,12 +3126,13 @@ class Server:
                     # 不要拿个空 token 让配置页把设备写残。
                     out.append({"did": did, "error": "device_not_in_list"})
                     continue
-                if time.monotonic() - started > budget:
+                left = _remaining()
+                if left <= 0.5:            # 0.5s 以内不值得再开一发
                     out.append({"did": did, "name": dev.name, "mac": dev.mac,
                                 "model": dev.model, "error": "timeout"})
                     continue
                 try:
-                    key = client.get_beaconkey(did) or ""
+                    key = client.get_beaconkey(did, timeout=min(left, 15.0)) or ""
                 except Exception as e:      # 单台失败不能拖垮整批
                     out.append({"did": did, "name": dev.name, "mac": dev.mac,
                                 "model": dev.model, "error": str(e)})

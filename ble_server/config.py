@@ -248,9 +248,11 @@ class BemfaConfig:
     # 5×N 个实体，升级后语音指令一个都不变）"与"用户把这行全删了（明确要用 0 个
     # 实体）"——两者在数据上都是空列表，只有键的存在与否能分开。
     entities_defined: bool = False
-    # 上一次成功注册到巴法云云端的实体 id（服务端回写，用户不用管）。下次启动拿它
-    # 与本次实体表做差集，把"已经从配置里删掉"的实体在云端也删掉——否则巴法云 App
-    # 里会永远留着一个按了没反应的死开关。
+    # 上一次成功注册到巴法云云端的实体 id。
+    # **只读遗留字段**：服务端记账已改存 DB meta（`bemfa_registered`），因为写回
+    # config.yaml 要用 yaml.safe_load + yaml.dump 整份重写，会把用户手写的注释、
+    # 顶层键序和引号风格一起抹掉。这里保留解析只是为了把早期版本写下的值**迁移**到
+    # meta（见 `Server._bemfa_registered_snapshot`）；不会再被写回。
     registered: list = field(default_factory=list)
 
 

@@ -55,4 +55,14 @@ bemfa:
   name_ble: "蓝牙开关"
   # 语音实体给哪些设备建模（设备 id 列表）：缺省只有 primary，避免设备多时实体爆炸。
   # 写成 ["*"] 表示所有设备；非 primary 的实体 id 会加 `{device_id}_` 前缀。
+  # **一旦写了下面的 `entities:`，本键就不再参与建模**（实体表完全接管）。
   allowed_devices: ["default"]
+
+  # 语音开关表（可选，推荐用配置页维护）：一行 = 一个开关 = (名字, 设备, 端口)。
+  # 写了这个键就完全按表建模；留空 `entities: []` = 一个语音开关都不要。
+  # port 取值 c1/c2/c3/a/ble（`a` 是 USB-A 口，内部实体 id 后缀是 `usb_a`）。
+  # 名字是巴法云 App 里显示的名字；同一台设备的同一个口只能有一条。
+  # entities:
+  #   - { name: "客厅 C1", device: "default", port: c1 }
+  #   - { name: "书桌 C1", device: "desk",    port: c1 }
+  #   - { name: "客厅总开关", device: "default", port: ble }

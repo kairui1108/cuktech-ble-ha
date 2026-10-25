@@ -29,6 +29,61 @@ Path(_TEST_CONFIG_PATH).write_text("server:\n  log_level: info\n", encoding="utf
 from history import PortHistory
 
 
+# ── 环境自查：paho-mqtt 必须是 2.x ──────────────────────────────────────────────
+#
+# 为什么要在收集阶段拦：`ha_server.setup_mqtt()` 用的是 2.x 才有的
+# `paho.mqtt.client.CallbackAPIVersion`。系统解释器里若装着 1.6.1（Debian/Ubuntu
+# 的 `python3-paho-mqtt` 就是这个版本），跑出来的现象是 **55 个 setup error**：
+#
+#   AttributeError: module 'paho.mqtt.client' has no attribute 'CallbackAPIVersion'
+#
+# 它们全部长在 fixture 里（golden/multi-device 那批都要跑真 `on_startup`），看起来
+# 像"多设备装配坏了"，实际只是解释器选错——`requirements.txt` 写的是
+# `paho-mqtt>=2.0`，项目自己用的虚拟环境里是对的。与其让人对着 55 条看不出因果的
+# 报错排查半小时，不如用一句话说清：你该用哪个解释器。
+PAHO_MIN_VERSION = (2, 0)
+
+
+def _paho_version_problem() -> str | None:
+    """返回一行"哪里不对"的说明；环境正常时返回 None。"""
+    try:
+        from paho.mqtt import __version__ as paho_version
+        from paho.mqtt import client as paho_client
+    except ImportError as e:            # 连装都没装
+        return f"paho-mqtt 未安装（{e}）"
+    if not hasattr(paho_client, "CallbackAPIVersion"):
+        return (f"paho-mqtt {paho_version} 太旧（本项目需要 "
+                f">={'.'.join(map(str, PAHO_MIN_VERSION))}：`CallbackAPIVersion` 是 2.x API）")
+    try:
+        major, minor = (int(x) for x in str(paho_version).split(".")[:2])
+    except (TypeError, ValueError):
+        return None                      # 版本号形状不认识：API 在就算过
+    if (major, minor) < PAHO_MIN_VERSION:
+        return f"paho-mqtt {paho_version} 低于要求的 {'>='}{'.'.join(map(str, PAHO_MIN_VERSION))}"
+    return None
+
+
+def pytest_configure(config):
+    """收集前自查依赖，避免"解释器选错"披着 55 个 setup error 的外衣出现。"""
+    import sys as _sys
+
+    problem = _paho_version_problem()
+    if problem is None:
+        return
+    pytest.exit(
+        "\n".join([
+            "",
+            f"测试环境不对：{problem}",
+            f"  当前解释器：{_sys.executable}",
+            "  修法：用项目自带的虚拟环境跑——",
+            "      source ble_server/.venv/bin/activate && python -m pytest",
+            "  （requirements.txt 要求 paho-mqtt>=2.0；系统 python3-paho-mqtt 通常是 1.x）",
+            "",
+        ]),
+        returncode=1,
+    )
+
+
 @pytest.fixture(autouse=True)
 def mock_subprocess():
     """Prevent any test from calling real subprocess (hciconfig, bluetoothctl, etc.)."""

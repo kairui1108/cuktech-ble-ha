@@ -412,7 +412,7 @@ class TestRetainedCleanupEdges:
         s = dual.server
         desk = s.registry.get("desk")
         dual.reset_mqtt()
-        s.purge_removed_devices([desk])
+        await s.purge_removed_devices([desk])
         cleared = [p for p in dual.publishes if p["topic"].endswith("/status")]
         assert cleared and all(p["qos"] == 1 for p in cleared), cleared
 

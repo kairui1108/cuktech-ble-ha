@@ -140,16 +140,17 @@ class XiaomiCloudClient:
             raise XiaomiCloudLoginError("无法获取 service token")
         return True
 
-    def get_beaconkey(self, did: str) -> Optional[str]:
+    def get_beaconkey(self, did: str, timeout: Optional[float] = None) -> Optional[str]:
+        """取 BLE Key。`timeout` 语义与 `QrCodeXiaomiCloudClient.get_beaconkey` 一致。"""
         url = SERVERS.get(self._server, SERVERS["cn"])
         result = self._api_call(f"{url}/v2/device/blt_get_beaconkey", {
             "data": json.dumps({"did": did, "pdid": 1})
-        })
+        }, timeout=timeout)
         if result and result.get("code") == 0:
             return result.get("result", {}).get("key")
         return None
 
-    def _api_call(self, url, params):
+    def _api_call(self, url, params, timeout=None):
         headers = {"Accept-Encoding": "identity", "User-Agent": self._agent,
                     "Content-Type": "application/x-www-form-urlencoded",
                     "x-xiaomi-protocal-flag-cli": "PROTOCAL-HTTP2",
@@ -162,7 +163,7 @@ class XiaomiCloudClient:
         fields = _generate_enc_params(url, "POST", sn, nonce, params, self._ssecurity)
         try:
             response = self._session.post(url, headers=headers, cookies=cookies, params=fields,
-                                           timeout=CLOUD_HTTP_TIMEOUT)
+                                           timeout=timeout or CLOUD_HTTP_TIMEOUT)
             if response.status_code == 200:
                 decoded = _decrypt_rc4(_signed_nonce(self._ssecurity, fields["_nonce"]), response.text)
                 return json.loads(decoded)
@@ -414,12 +415,17 @@ class QrCodeXiaomiCloudClient:
         _LOGGER.info("Total devices with valid token: %d", len(devices))
         return devices
 
-    def get_beaconkey(self, did: str) -> Optional[str]:
-        """Get BLE beacon key for a device."""
+    def get_beaconkey(self, did: str, timeout: Optional[float] = None) -> Optional[str]:
+        """Get BLE beacon key for a device.
+
+        `timeout`：本次调用的 HTTP 超时（秒）。批量导入时由调用方按**剩余预算**
+        下发——只判"下一发之前还剩多少"挡不住已经飞出去的那一发，最后一条照样能
+        跑满它自己的超时，于是总耗时 = 预算 + 一发最坏值，越过 30s 请求上限。
+        """
         url = SERVERS.get(self._server, SERVERS["cn"])
         result = self._api_call(f"{url}/v2/device/blt_get_beaconkey", {
             "data": json.dumps({"did": did, "pdid": 1})
-        })
+        }, timeout=timeout)
         _LOGGER.info("beaconkey response: %s", result)
         if result and result.get("code") == 0:
             key = result.get("result", {}).get("beaconkey", "")
@@ -427,7 +433,7 @@ class QrCodeXiaomiCloudClient:
                 return key
         return None
 
-    def _api_call(self, url, params):
+    def _api_call(self, url, params, timeout=None):
         headers = {
             "Accept-Encoding": "identity",
             "User-Agent": self._agent,
@@ -451,7 +457,7 @@ class QrCodeXiaomiCloudClient:
         fields = _generate_enc_params(url, "POST", sn, nonce, params, self._ssecurity)
         try:
             response = self._session.post(url, headers=headers, cookies=cookies, params=fields,
-                                           timeout=CLOUD_HTTP_TIMEOUT)
+                                           timeout=timeout or CLOUD_HTTP_TIMEOUT)
             if response.status_code == 200:
                 decoded = _decrypt_rc4(_signed_nonce(self._ssecurity, fields["_nonce"]), response.text)
                 return json.loads(decoded)

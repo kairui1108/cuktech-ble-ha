@@ -40,9 +40,11 @@ class FakeClient:
         self.keys = keys or {}
         self.failing = set(failing)
         self.calls = []
+        self.timeouts = []
 
-    def get_beaconkey(self, did):
+    def get_beaconkey(self, did, timeout=None):
         self.calls.append(did)
+        self.timeouts.append(timeout)
         if did in self.failing:
             raise FakeCloudError("cloud boom")
         return self.keys.get(did)
@@ -189,9 +191,28 @@ class TestXiaomiImportBudget:
         import xiaomi_cloud
 
         src = inspect.getsource(xiaomi_cloud)
-        assert src.count("timeout=CLOUD_HTTP_TIMEOUT") >= 4, \
-            "登录两步 + 两个 API 客户端的 post/get 都要带超时"
+        fixed = src.count("timeout=CLOUD_HTTP_TIMEOUT")          # 登录三步
+        per_call = src.count("timeout=timeout or CLOUD_HTTP_TIMEOUT")   # 两个 _api_call
+        assert fixed + per_call >= 5, \
+            f"所有 requests 调用都要带超时（固定 {fixed} + 可覆盖 {per_call}）"
         assert xiaomi_cloud.CLOUD_HTTP_TIMEOUT == (5, 15)
+
+    async def test_per_call_timeout_is_capped_by_remaining_budget(self, server, monkeypatch):
+        """只判"下一发之前还剩多少"挡不住已经在飞的那一发：剩余预算必须**下发**成
+        这一发的超时，否则总耗时 = 预算 + 一发最坏值（20+20=40s > 30s 请求上限）。"""
+        client = FakeClient(keys={"did-desk": "k1", "did-bed": "k2"})
+        _seed(server, [DESK, BED], client)
+        monkeypatch.setattr(server, "XIAOMI_IMPORT_BUDGET", 5.0)
+
+        resp = await server.handle_xiaomi_import(
+            _json_request({"session_id": "sess1", "dids": ["did-desk", "did-bed"]}))
+        assert resp.status == 200
+        assert client.timeouts and all(t is not None for t in client.timeouts), client.timeouts
+        assert all(0 < t <= 5.0 for t in client.timeouts), \
+            f"每发的超时不得超过剩余预算：{client.timeouts}"
+        entry = server._xiaomi_sessions["sess1"]
+        if entry["timer"]:
+            entry["timer"].cancel()
 
 
 class TestXiaomiSessionLifecycle:

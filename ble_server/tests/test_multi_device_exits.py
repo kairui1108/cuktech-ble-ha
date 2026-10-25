@@ -219,14 +219,23 @@ class TestBemfaEntityTable:
         await dual.setup_bemfa()
         assert dual.bemfa.deleted == ["old_c1"]
 
-    async def test_registered_snapshot_is_written_back(self, dual):
-        """回写只加 `registered`，别的键一个都不许动（配置是用户的）。"""
-        import yaml
+    async def test_registered_snapshot_goes_to_db_meta(self, dual):
+        """回写记在 **DB meta**，config.yaml 一个字节都不动。
+
+        以前写进 YAML 的 `bemfa.registered`：`yaml.safe_load + yaml.dump` 整份重写，
+        会把用户手写的注释、顶层键序（dump 默认 sort_keys）和引号风格全部抹掉。
+        这是服务端自己的运行期记账，meta 表本来就是干这个的。
+        """
+        import json
+        from pathlib import Path
+        before = Path(dual._config_path()).read_bytes()
         self._bind(dual, ("客厅 C1", "default", "c1"), ("书房 C2", "desk", "c2"))
         await dual.setup_bemfa()
-        doc = yaml.safe_load(open(dual._config_path()))
-        assert doc["bemfa"]["registered"] == ["cuktech_c1", "desk_c2"]
-        assert doc["bemfa"]["enabled"] is False, "回写不能把 enabled 改成运行期的 true"
+        stored = json.loads(dual.history_store.get_meta(
+            ha_server.Server.BEMFA_REGISTERED_META_KEY, "[]"))
+        assert stored == ["cuktech_c1", "desk_c2"], stored
+        assert Path(dual._config_path()).read_bytes() == before, \
+            "记账绝不该改写用户的 config.yaml"
 
     async def test_config_get_exposes_the_table(self, dual):
         import json
