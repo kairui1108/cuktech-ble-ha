@@ -224,6 +224,68 @@ setTimeout(async () => {
         eq(ctx.__posts.length, before2, '缺 token → 不提交');
     }
 
+    console.log('\n-- 巴法云语音开关表：一行 = (名字, 设备, 端口) --');
+    {
+        const rows = () => JSON.parse(peek(ctx, 'JSON.stringify(_bemfaEntities)'));
+        // 上一节把 desk 的 token 清空着，先补回来，本节的保存用例才走得通
+        peek(ctx, `updateDeviceField(1, 'token', 'tok-desk')`);
+
+        // 老配置（没有 entities 键）→ 把 primary 的 5 个名字铺回成表，名字沿用默认值
+        eq(rows().length, 5, '老配置加载出 5 行（C1/C2/C3/USB-A/蓝牙）');
+        eq(rows()[0], { name: 'C口1开关', device: 'default', port: 'c1' },
+           'primary 的默认名沿用老配置里的「C口1开关」（零迁移）');
+        eq(rows().map(r => r.port), ['c1', 'c2', 'c3', 'a', 'ble'], '端口顺序固定');
+
+        // 「按设备生成」：每台设备 × 5 个开关，名字带设备名（否则 N 台的开关全同名）
+        const nDev = devices().length;
+        peek(ctx, 'autoFillBemfaEntities()');
+        eq(rows().length, nDev * 5, `每台设备 × 5 个开关（当前 ${nDev} 台）`);
+        ok(rows().some(r => r.device === 'desk' && r.port === 'c1' && r.name === '书桌充电器 C口1'),
+           '附加设备的开关名带设备名（巴法云 App 里分得清是谁）');
+        ok(rows().some(r => r.device === 'default' && r.port === 'c1' && r.name === 'C口1开关'),
+           'primary 仍然用老名字');
+
+        // 改绑设备：名字还是默认值时跟着改（用户手改过的名字不动）
+        peek(ctx, 'seedBemfaEntities({})');   // 复位成 primary 的 5 行
+        peek(ctx, `updateBemfaEntity(0, 'device', 'desk')`);
+        eq(rows()[0], { name: '书桌充电器 C口1', device: 'desk', port: 'c1' },
+           '默认名跟着设备走');
+        peek(ctx, `updateBemfaEntity(0, 'name', '我起的名字')`);
+        peek(ctx, `updateBemfaEntity(0, 'port', 'c2')`);
+        eq(rows()[0].name, '我起的名字', '用户起过的名字不跟着端口改');
+
+        // 删设备 → 绑在它身上的开关必须一起走（否则保存被 400 拦下，用户一脸懵）
+        peek(ctx, 'seedBemfaEntities({})');
+        peek(ctx, `updateBemfaEntity(0, 'device', 'desk')`);
+        eq(rows().filter(r => r.device === 'desk').length, 1, '先绑一行到 desk');
+        peek(ctx, 'removeDevice(1)');
+        eq(rows().filter(r => r.device === 'desk').length, 0, '删设备连带删它的开关');
+        eq(rows().length, 4, '其余 4 行不受影响');
+        peek(ctx, `_devices.splice(1, 0, { id: 'desk', name: '书桌充电器', mac: 'AA:BB:CC:DD:EE:02',
+                 token: '', ble_key: '', topic_prefix: '', bemfa_ble: '', is_primary: false, connected: false })`);
+        peek(ctx, `updateDeviceField(1, 'token', 'tok-desk')`);
+
+        // 保存 payload：实体表 + 老字段 name_c* 双写。**显式记录下标**：
+        // pop() 会拿到上一节的 POST，断言等于白测。
+        peek(ctx, 'seedBemfaEntities({})');
+        const idx = ctx.__posts.length;
+        await peek(ctx, 'saveConfig()');
+        const post = ctx.__posts[idx];
+        ok(!!post && post.url.indexOf('/api/config') >= 0, '保存确实提交了');
+        const b = post.body.config.bemfa;
+        eq(b.entities.length, 5, 'entities 就是表格本身');
+        eq(b.entities[0], { name: 'C口1开关', device: 'default', port: 'c1' }, '字段名与服务端一致');
+        eq(b.name_c1, 'C口1开关', '老字段 name_c1 照旧写（旧工具读它）');
+        eq(b.name_ble, '蓝牙开关', 'name_ble 映射到 ble 那一行');
+
+        // 重复绑定挡在保存之前：服务端会拒，但用户等到重启后才知道就太晚了
+        peek(ctx, `_bemfaEntities.push({ name: '重复的', device: 'default', port: 'c1' })`);
+        const before = ctx.__posts.length;
+        await peek(ctx, 'saveConfig()');
+        eq(ctx.__posts.length, before, '同一台设备的同一个口重复 → 不提交');
+        peek(ctx, 'seedBemfaEntities({})');
+    }
+
     console.log('\n-- 小米云：勾选多台一次导入 + 名称同步 --');
     {
         // 云端清单：desk 是**已配置**的（MAC 大小写/分隔符不同，必须认成同一台），

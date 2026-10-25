@@ -185,7 +185,10 @@ cp config.yaml.example config.yaml
 - Real-time power charts (Chart.js)
 - Port control (C1/C2/C3/A)
 - BLE connection quality metrics (hover BLE badge)
-- Bemfa custom device names
+- Bemfa voice switches, **one row each**: custom display name + which device + which port
+  (every device can have its own names); "Fill by device" creates N devices x 5 switches at once
+- Switches removed from the config are also deleted from the Bemfa cloud on next start
+  (no dead switches left in the voice assistant)
 - 6 theme options
 
 ## MQTT Topics

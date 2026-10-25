@@ -30,6 +30,13 @@ _RESERVED_DEVICE_IDS = frozenset({
     PRIMARY_DEVICE_ID,
 })
 
+# 巴法云语音实体的"端口"取值（§3.11）：c1/c2/c3/a 与 `{prefix}/port/{name}` 的第二段
+# 同名（同一个开关就是同一个口的 power），`ble` 是整机蓝牙开关（绑 status.connected）。
+BEMFA_PORTS = ("c1", "c2", "c3", "a", "ble")
+BEMFA_PORT_LABELS = {"c1": "C口1", "c2": "C口2", "c3": "C口3", "a": "USB-A", "ble": "蓝牙"}
+BEMFA_DEFAULT_NAMES = {"c1": "C口1开关", "c2": "C口2开关", "c3": "C口3开关",
+                       "a": "USB-A开关", "ble": "蓝牙开关"}
+
 
 def _load_yaml_config(path=None):
     """Load config from YAML file if exists.
@@ -189,6 +196,39 @@ class ServerConfig:
 
 
 @dataclass
+class BemfaEntityConfig:
+    """一条巴法云语音实体 = 用户自定义显示名 + 它绑定的(设备, 端口)（§3.11）。
+
+    为什么要显式成表：老形状 `name_c1…name_ble` + `allowed_devices` 只能表达
+    "同一套名字铺给所有设备"——多设备后用户要的是"客厅那台的 C1 叫 A、书房那台的
+    C1 叫 B"，名字必须与(设备,端口)成对出现才说得清，也才可能"只给某台设备的某个口
+    建实体"。
+    """
+
+    name: str = ""
+    device: str = PRIMARY_DEVICE_ID
+    port: str = "c1"
+
+    @property
+    def key(self) -> tuple:
+        return (self.device, self.port)
+
+
+def bemfa_entity_triple(ent) -> tuple:
+    """(name, device, port)——同时接受 `BemfaEntityConfig` 与裸 dict。
+
+    dict 形态必须也认：YAML 直读、`/api/config` 回包、测试里的手写配置都可能是
+    dict，而"只认 dataclass"会在某一处静默变成空实体清单（语音开关全消失）。
+    """
+    if isinstance(ent, dict):
+        return (str(ent.get("name") or ""), str(ent.get("device") or PRIMARY_DEVICE_ID),
+                str(ent.get("port") or ""))
+    return (str(getattr(ent, "name", "") or ""),
+            str(getattr(ent, "device", PRIMARY_DEVICE_ID) or PRIMARY_DEVICE_ID),
+            str(getattr(ent, "port", "") or ""))
+
+
+@dataclass
 class BemfaConfig:
     enabled: bool = False
     uid: str = ""
@@ -200,7 +240,18 @@ class BemfaConfig:
     modified: bool = False  # set true when names change, triggers topic delete+recreate on next start
     # 语音实体给哪些设备建模（§3.11）：缺省只给 primary，避免 N 台设备时实体爆炸。
     # 写成 ["*"] 或包含某 device_id 才给那台设备建 `{id}_c1` 这类实体。
+    # 仅在 `entities` 为空（老配置）时生效——见 ha_server._bemfa_entity_plan。
     allowed_devices: list = field(default_factory=lambda: [PRIMARY_DEVICE_ID])
+    # 自定义实体表：**写了这个键**就完全接管建模（allowed_devices/name_c* 退居兜底）。
+    entities: list = field(default_factory=list)
+    # `entities` 键是否出现过。区分"老配置（没有这个键 → 按 allowed_devices 派生出
+    # 5×N 个实体，升级后语音指令一个都不变）"与"用户把这行全删了（明确要用 0 个
+    # 实体）"——两者在数据上都是空列表，只有键的存在与否能分开。
+    entities_defined: bool = False
+    # 上一次成功注册到巴法云云端的实体 id（服务端回写，用户不用管）。下次启动拿它
+    # 与本次实体表做差集，把"已经从配置里删掉"的实体在云端也删掉——否则巴法云 App
+    # 里会永远留着一个按了没反应的死开关。
+    registered: list = field(default_factory=list)
 
 
 @dataclass
@@ -332,6 +383,8 @@ def config_from_mapping(ycfg: dict) -> Config:
     )
 
     bemfa_cfg = ycfg.get("bemfa", {})
+    if not isinstance(bemfa_cfg, dict):
+        raise ValueError("配置错误：`bemfa` 必须是映射")
     bemfa_enabled_env = os.environ.get("BEMFA_ENABLED", "").lower()
     bemfa_enabled = bemfa_enabled_env in ("1", "true", "yes") or bemfa_cfg.get("enabled", False)
     bemfa = BemfaConfig(
@@ -344,11 +397,15 @@ def config_from_mapping(ycfg: dict) -> Config:
         name_ble=bemfa_cfg.get("name_ble", "蓝牙开关"),
         modified=bemfa_cfg.get("modified", False),
         allowed_devices=list(bemfa_cfg.get("allowed_devices") or [PRIMARY_DEVICE_ID]),
+        entities=_parse_bemfa_entities(bemfa_cfg.get("entities")),
+        entities_defined="entities" in bemfa_cfg,
+        registered=[str(x) for x in (bemfa_cfg.get("registered") or [])],
     )
 
     devices = _parse_devices(ycfg, ble)
     cfg = Config(ble=ble, mqtt=mqtt, server=server, bemfa=bemfa, devices=devices)
     validate_device_specs(cfg)
+    validate_bemfa_entities(cfg)
     return cfg
 
 
@@ -461,3 +518,55 @@ def validate_device_specs(cfg: Config) -> None:
                     f"配置错误：设备 `{id_a}`（{a}）与 `{id_b}`（{b}）的 MQTT 主题重叠"
                     f"（一方的前缀正好是另一方的某个主题）")
 
+
+
+# ── 巴法云语音实体：解析与校验（§3.11） ──
+
+def _parse_bemfa_entities(raw) -> list:
+    """把 `bemfa.entities:` 解析成 `BemfaEntityConfig` 列表。
+
+    空 = 老配置（`name_c*` + `allowed_devices` 兜底），所以 `None`/`""`/`[]` 都返回
+    空列表而不是报错：升级后第一次启动手里就是这种配置。
+    """
+    if raw in (None, ""):
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("配置错误：`bemfa.entities` 必须是列表（每项一条语音实体）")
+    entities: list = []
+    seen: dict = {}
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"配置错误：`bemfa.entities[{idx}]` 必须是映射（name/device/port）")
+        name, device, port = bemfa_entity_triple(item)
+        name, device, port = name.strip(), device.strip(), port.strip()
+        if not name:
+            raise ValueError(
+                f"配置错误：`bemfa.entities[{idx}]` 缺少 `name`（巴法云里的显示名）")
+        if port not in BEMFA_PORTS:
+            raise ValueError(
+                f"配置错误：`bemfa.entities[{idx}]` 的 `port` 非法（{port or '空'}），"
+                f"只允许 {'/'.join(BEMFA_PORTS)}")
+        if (device, port) in seen:
+            raise ValueError(
+                f"配置错误：`bemfa.entities[{idx}]` 与第 {seen[(device, port)]} 条重复"
+                f"（同一台设备的同一个开关只能有一条实体）")
+        seen[(device, port)] = idx
+        entities.append(BemfaEntityConfig(name=name, device=device, port=port))
+    return entities
+
+
+def validate_bemfa_entities(cfg: Config) -> None:
+    """实体表里引用的设备必须真的存在。
+
+    这里必须 raise 而不是"跳过这条"：被跳过的实体在用户眼里就是"我明明配了语音
+    开关却喊不动"——而原因藏在启动日志里。指向不存在的设备只可能是配置写错了
+    （或删设备时忘了删实体），保存时就该被拦下。
+    """
+    known = {spec.device_id for spec in cfg.device_specs()}
+    for idx, ent in enumerate(cfg.bemfa.entities or []):
+        _, device, _ = bemfa_entity_triple(ent)
+        if device not in known:
+            raise ValueError(
+                f"配置错误：`bemfa.entities[{idx}]` 指向的设备 `{device}` 不存在"
+                f"（已配置的设备：{', '.join(sorted(known))}）")

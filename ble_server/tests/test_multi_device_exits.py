@@ -31,6 +31,7 @@ class FakeBemfa:
         self.devices = {}
         self.commands = {}
         self.states = []
+        self.deleted = []
         self.started = False
         self.is_connected = True
 
@@ -42,6 +43,10 @@ class FakeBemfa:
 
     def publish_state(self, entity_id, state):
         self.states.append((entity_id, state))
+
+    async def delete_topics(self, entity_ids):
+        self.deleted.extend(entity_ids)
+        return len(entity_ids)
 
     async def start(self):
         self.started = True
@@ -120,6 +125,211 @@ class TestBemfaNamespace:
         assert desk.manager.cmd_queue.qsize() == 1, "语音指令没进 desk 的队列"
         assert dual.primary.manager.cmd_queue.qsize() == before_primary, \
             "语音指令串到了 primary —— 会去开别人家的端口"
+
+
+class TestBemfaEntityTable:
+    """自定义语音开关表（§3.11）：一行 = (显示名, 设备, 端口)。
+
+    这块是"多设备 × 用户自己命名"的交点：名字不能只属于设备（那样 N 台的开关
+    全叫"C口1开关"），也不能只属于端口（那样一台机器只能有一套名字）。所以既
+    要证明"配了几条就只建几条"，也要证明"每条的开关只动它绑的那台设备的那个口"。
+    """
+
+    @pytest.fixture
+    async def dual(self, monkeypatch):
+        async with golden_env(devices=[DESK]) as env:
+            s = env.server
+            monkeypatch.setattr(ha_server, "BemfaClient", FakeBemfa)
+            s.config.bemfa.enabled = True
+            s.config.bemfa.uid = "test-uid"
+            s.bemfa = None
+            yield s
+
+    @staticmethod
+    def _bind(s, *rows):
+        """把 (名字, 设备, 端口) 三元组绑成实体表，并打开 `entities_defined`。"""
+        from config import BemfaEntityConfig
+        s.config.bemfa.entities = [BemfaEntityConfig(name=n, device=d, port=p)
+                                   for n, d, p in rows]
+        s.config.bemfa.entities_defined = True
+        # 老字段故意设成"全给"：证明实体表一旦存在就完全接管建模
+        s.config.bemfa.allowed_devices = ["*"]
+
+    async def test_plan_binds_name_to_device_and_port(self, dual):
+        self._bind(dual, ("客厅 C1", "default", "c1"),
+                   ("书房 C1", "desk", "c1"), ("书房蓝牙", "desk", "ble"))
+        plan = dual._bemfa_entity_plan()
+        assert [(i["device_id"], i["port"], i["name"], i["entity_id"]) for i in plan] == [
+            ("default", "c1", "客厅 C1", "cuktech_c1"),
+            ("desk", "c1", "书房 C1", "desk_c1"),
+            ("desk", "ble", "书房蓝牙", "desk_ble"),
+        ], "表里写了三条就只该有三条（不是 N 台 × 5 的笛卡尔积）"
+
+    async def test_plan_ignores_allowed_devices(self, dual):
+        """实体表存在时 allowed_devices 不再参与建模（否则会多建出一堆没名字的）。"""
+        self._bind(dual, ("客厅 C1", "default", "c1"))
+        assert len(dual._bemfa_entity_plan()) == 1
+
+    async def test_empty_table_means_no_entities(self, dual):
+        """显式空表 = 用户一个开关都不要，绝不能回退成"派生 5 个"。"""
+        self._bind(dual)
+        await dual.setup_bemfa()
+        assert dual._bemfa_entity_plan() == []
+        assert dual.bemfa.devices == {}
+        assert dual.bemfa.commands == {}
+
+    async def test_setup_registers_exactly_the_table(self, dual):
+        self._bind(dual, ("客厅 C1", "default", "c1"), ("书房 C2", "desk", "c2"))
+        await dual.setup_bemfa()
+        assert dual.bemfa.devices == {"cuktech_c1": "客厅 C1", "desk_c2": "书房 C2"}
+        assert set(dual.bemfa.commands) == {"cuktech_c1", "desk_c2"}
+
+    async def test_command_carries_the_bound_device_and_port(self, dual):
+        """红线：语音指令只能进它绑的那台设备的队列，而且只动那一行写的端口。"""
+        self._bind(dual, ("书房 C2", "desk", "c2"))
+        await dual.setup_bemfa()
+        desk = dual.registry.get("desk")
+        before = dual.primary.manager.cmd_queue.qsize()
+        dual.bemfa.commands["desk_c2"](True)
+        await asyncio.sleep(0)   # 回调走 call_soon_threadsafe，排到事件循环再取
+        assert dual.primary.manager.cmd_queue.qsize() == before, \
+            "语音指令串到了 primary —— 会去开别人家的端口"
+        assert desk.manager.cmd_queue.qsize() == 1
+        assert desk.manager.cmd_queue.get_nowait()[:2] == ("port", ("c2", "on"))
+
+    async def test_publish_only_for_bound_entities(self, dual):
+        self._bind(dual, ("书房 C2", "desk", "c2"))
+        await dual.setup_bemfa()
+        dual._bemfa_publish("cuktech/charger/desk/port/c2", {"active": True})
+        dual._bemfa_publish("cuktech/charger/desk/port/c1", {"active": True})
+        dual._bemfa_publish("cuktech/charger/desk/status", {"connected": True})
+        assert dual.bemfa.states == [("desk_c2", "on")], \
+            "表里没有的口/开关不该发状态（派生 id 不是'这个口有开关'的证据）"
+
+    async def test_ble_entity_carries_connection_state(self, dual):
+        self._bind(dual, ("书房蓝牙", "desk", "ble"))
+        await dual.setup_bemfa()
+        dual._bemfa_publish("cuktech/charger/desk/status", {"connected": False})
+        assert dual.bemfa.states == [("desk_ble", "off")]
+
+    async def test_stale_entity_is_deleted_from_cloud(self, dual):
+        """从表里删掉的实体，巴法云 App 里不能留一个按了没反应的死开关。"""
+        dual.config.bemfa.registered = ["old_c1", "cuktech_c1"]
+        self._bind(dual, ("客厅 C1", "default", "c1"))
+        await dual.setup_bemfa()
+        assert dual.bemfa.deleted == ["old_c1"]
+
+    async def test_registered_snapshot_is_written_back(self, dual):
+        """回写只加 `registered`，别的键一个都不许动（配置是用户的）。"""
+        import yaml
+        self._bind(dual, ("客厅 C1", "default", "c1"), ("书房 C2", "desk", "c2"))
+        await dual.setup_bemfa()
+        doc = yaml.safe_load(open(dual._config_path()))
+        assert doc["bemfa"]["registered"] == ["cuktech_c1", "desk_c2"]
+        assert doc["bemfa"]["enabled"] is False, "回写不能把 enabled 改成运行期的 true"
+
+    async def test_config_get_exposes_the_table(self, dual):
+        import json
+        self._bind(dual, ("客厅 C1", "default", "c1"))
+        resp = await dual.handle_config_get(mock_request("GET", "/api/config"))
+        bemfa = json.loads(resp.body)["config"]["bemfa"]
+        assert bemfa["entities"] == [{"name": "客厅 C1", "device": "default", "port": "c1"}]
+        assert bemfa["entitiesDefined"] is True
+        assert list(bemfa["ports"]) == ["c1", "c2", "c3", "a", "ble"]
+
+
+class TestBemfaEntityPersistence:
+    """保存路径：实体表要能存进 YAML、改没改要能被识别、指向不存在的设备要拦下。"""
+
+    @pytest.fixture
+    async def env(self, monkeypatch, tmp_path):
+        async with golden_env(devices=[DESK]) as e:
+            s = e.server
+            monkeypatch.setattr(ha_server, "BemfaClient", FakeBemfa)
+            cfg_path = tmp_path / "config.yaml"
+
+            async def _no_restart():
+                return None
+            monkeypatch.setattr(s, "_config_path", lambda: cfg_path)
+            monkeypatch.setattr(s, "_delayed_restart", _no_restart)
+            yield s, cfg_path
+
+    @staticmethod
+    def _write(cfg_path, bemfa):
+        import yaml
+        cfg_path.write_text(yaml.safe_dump({
+            "ble": {"mac": "AA:BB:CC:DD:EE:01", "token": "00" * 16},
+            "devices": [{"id": "desk", "mac": DESK["mac"], "token": DESK["token"]}],
+            "bemfa": bemfa,
+        }), encoding="utf-8")
+
+    @staticmethod
+    def _payload(**bemfa):
+        return {"config": {
+            "ble": {"mac": "AA:BB:CC:DD:EE:01", "token": "00****" + "0" * 4},
+            "devices": [{"id": "desk", "mac": DESK["mac"], "token": ""}],
+            "bemfa": bemfa,
+        }}
+
+    async def _save(self, s, payload):
+        req = mock_request("POST", "/api/config")
+
+        async def _json():
+            return payload
+        req.json = _json
+        return await s.handle_config_save(req)
+
+    async def test_entities_round_trip_and_mark_modified(self, env):
+        import yaml
+        s, cfg_path = env
+        self._write(cfg_path, {"enabled": True, "uid": "uid-1", "name_c1": "老名字"})
+        rows = [{"name": "客厅 C1", "device": "default", "port": "c1"},
+                {"name": "书房 C1", "device": "desk", "port": "c1"}]
+        resp = await self._save(s, self._payload(enabled=True, uid="uid-1", entities=rows))
+        assert resp.status == 200, resp.body
+        saved = yaml.safe_load(cfg_path.read_text())["bemfa"]
+        assert saved["entities"] == rows
+        assert saved["name_c1"] == "老名字", "老字段没被前端带上就该原样保留"
+        assert saved["modified"] is True, "实体变了必须让下次启动重建云端主题（改显示名）"
+
+        # 存下来的东西必须能被生产解析器吃下去
+        from config import config_from_mapping
+        cfg = config_from_mapping(yaml.safe_load(cfg_path.read_text()))
+        assert [(e.name, e.device, e.port) for e in cfg.bemfa.entities] == \
+            [("客厅 C1", "default", "c1"), ("书房 C1", "desk", "c1")]
+
+    async def test_unchanged_entities_do_not_mark_modified(self, env):
+        import yaml
+        s, cfg_path = env
+        rows = [{"name": "客厅 C1", "device": "default", "port": "c1"}]
+        self._write(cfg_path, {"enabled": True, "uid": "uid-1",
+                               "entities": rows, "modified": False})
+        resp = await self._save(s, self._payload(enabled=True, uid="uid-1", entities=rows))
+        assert resp.status == 200, resp.body
+        saved = yaml.safe_load(cfg_path.read_text())["bemfa"]
+        assert saved["modified"] is False, \
+            "没改实体却打 modified → 每次保存都会把巴法云主题删了重建一遍"
+
+    async def test_entity_pointing_at_removed_device_is_rejected(self, env):
+        """删设备却留着它的语音开关 → 保存当场 400，而不是重启后起不来。"""
+        import yaml
+        s, cfg_path = env
+        self._write(cfg_path, {"enabled": True, "uid": "uid-1"})
+        payload = {
+            "config": {
+                "ble": {"mac": "AA:BB:CC:DD:EE:01", "token": "00****" + "0" * 4},
+                "devices": [],       # desk 被删了
+                "bemfa": {"enabled": True, "uid": "uid-1",
+                          "entities": [{"name": "书房 C1", "device": "desk", "port": "c1"}]},
+            },
+        }
+        before = cfg_path.read_text()
+        resp = await self._save(s, payload)
+        assert resp.status == 400
+        import json
+        err = json.loads(resp.body)["error"]
+        assert "desk" in err and "不存在" in err, err
+        assert cfg_path.read_text() == before, "被拒的配置一个字节都不该落盘"
 
 
 class TestConfigDevicesApi:

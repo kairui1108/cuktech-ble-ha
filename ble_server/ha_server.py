@@ -25,7 +25,8 @@ from aiohttp import web
 
 from config import (
     load_config, config_from_mapping, LOG_LEVELS, PRIMARY_DEVICE_ID, DeviceConfig,
-    TopicNamespace,
+    TopicNamespace, BEMFA_PORTS, BEMFA_PORT_LABELS, BEMFA_DEFAULT_NAMES,
+    bemfa_entity_triple,
 )
 from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS, PIID_RANGES
 from ble_manager import (
@@ -144,6 +145,18 @@ def _chart_cache_bytes(cache) -> int:
         except (TypeError, IndexError):
             continue
     return total
+
+
+def _bemfa_entity_signature(raw) -> list:
+    """`bemfa.entities` 的规范化指纹：排序后的 (设备, 端口, 名称) 三元组。
+
+    用来判断"这次保存有没有动过语音实体"。直接比原始列表不行：前端/手写 YAML 的
+    字段顺序、缺省 device 写法都会让内容完全相同的两份配置看起来不同 —— 那会让
+    每次保存都打上 `modified`，于是每次重启都把巴法云主题删了重建一遍。
+    """
+    return sorted((device, port, name)
+                  for name, device, port in
+                  (bemfa_entity_triple(e) for e in (raw or [])))
 
 
 class SSEEmitter:
@@ -552,6 +565,10 @@ class Server:
         self._xiaomi_sessions: dict[str, dict] = {}
         self._start_time = time.time()
         self.bemfa: BemfaClient | None = None
+        # (device_id, port) → 巴法云实体 id 的映射，`setup_bemfa` 装配时落一次。
+        # `_bemfa_publish` 走它而不是每次现算：自定义实体表后"哪个实体绑哪个口"只有
+        # 装好的那份 plan 说得准（派生规则只是兜底）。
+        self._bemfa_map: dict = {}
         # 后台任务挂在实例上而不是 aiohttp 的 app_ 里：应用启动完成后再写 app_
         # 会触发 aiohttp 的 DeprecationWarning（"Changing state of started or
         # joined application is deprecated"），未来版本会直接报错。
@@ -947,22 +964,101 @@ class Server:
                 best = rt
         return best
 
+    def _bemfa_entity_plan(self) -> list:
+        """本次要建到巴法云的实体清单（§3.11）：一行 = 一台设备的某个开关。
+
+        返回 `[{device_id, port, name, entity_id, rt}]`，**`rt` 一并带上**：命令回调
+        必须捕获它（红线：回调里没有请求上下文，用 `self.ble` 会永远落到 primary）。
+
+        两种来源：
+        - 配了实体表（`bemfa.entities` 非空，或显式写了这个键）→ 完全照表来，
+          名字/设备/端口都是用户填的；
+        - 否则 → 老配置（`allowed_devices` × 5 个开关 + `name_c*`），行为与改造前
+          逐字节一致，老用户升级后语音指令一个都不变。
+        """
+        plan: list = []
+        seen_ids: set = set()
+
+        def _push(rt, port, name, eid):
+            # 同一个实体 id 绝不能建两次：`BemfaClient._devices` 是 dict，后来者会
+            # 覆盖前者 → 两个开关抢一个 topic，按哪个都只动其中一处。
+            if not eid or eid in seen_ids:
+                if eid:
+                    _LOGGER.warning("Bemfa 实体 id 重复（%s），已跳过 %s/%s",
+                                    eid, rt.device_id, port)
+                return
+            seen_ids.add(eid)
+            plan.append({"device_id": rt.device_id, "port": port, "name": name,
+                         "entity_id": eid, "rt": rt})
+
+        entries = list(getattr(self.config.bemfa, "entities", None) or [])
+        # `entities_defined` 才决定"用不用这张表"：空表 + 有键 = 用户就要 0 个实体；
+        # 空表 + 没键 = 老配置，走下面的兜底派生（升级后语音指令一个都不变）。
+        if entries or getattr(self.config.bemfa, "entities_defined", False):
+            for ent in entries:
+                name, device_id, port = bemfa_entity_triple(ent)
+                name = name.strip() or f"{BEMFA_PORT_LABELS.get(port, port)}开关"
+                rt = self.registry.get(device_id)
+                if rt is None:
+                    # 配置校验（validate_bemfa_entities）已经拦过，走到这里只可能是
+                    # 运行期把设备删了：跳过，但要在日志里能查到
+                    _LOGGER.warning("Bemfa 实体 `%s` 指向的设备 `%s` 不存在，已跳过",
+                                    name, device_id)
+                    continue
+                _push(rt, port, name, self._bemfa_entity_ids(rt).get(port))
+            return plan
+
+        # ── 老配置兜底 ──
+        allowed = self.config.bemfa.allowed_devices or [PRIMARY_DEVICE_ID]
+        names = {"c1": self.config.bemfa.name_c1, "c2": self.config.bemfa.name_c2,
+                 "c3": self.config.bemfa.name_c3, "a": self.config.bemfa.name_a,
+                 "ble": self.config.bemfa.name_ble}
+        for rt in self.registry:
+            if "*" not in allowed and rt.device_id not in allowed:
+                continue
+            ids = self._bemfa_entity_ids(rt)
+            for port in BEMFA_PORTS:
+                if rt.device_id == PRIMARY_DEVICE_ID:
+                    label = names.get(port) or BEMFA_DEFAULT_NAMES.get(port, port)
+                elif port == "ble":
+                    label = f"{rt.name} 蓝牙开关"
+                else:
+                    label = f"{rt.name} {BEMFA_PORT_LABELS.get(port, port)}"
+                _push(rt, port, label, ids.get(port))
+        return plan
+
+    def _bemfa_entity_for(self, rt, port):
+        """(设备, 端口) → 实体 id。表里没有这个开关就返回 None（不发状态）。
+
+        装配过的映射优先；没有映射时**只有一种情况可以退回派生规则**：还没装配
+        （单元测试、早于 `setup_bemfa` 的发布）。一旦配了实体表，派生 id 就不是
+        "这个口有开关"的证据——比如用户删掉了 primary 的 C2，那时再按派生规则发
+        状态，服务端会往一个没注册过的实体上发（线上是空转，测试里则是假阳性）。
+        """
+        plan_map = getattr(self, "_bemfa_map", None) or {}
+        eid = plan_map.get((rt.device_id, port))
+        if eid:
+            return eid
+        if plan_map or getattr(self.config.bemfa, "entities_defined", False):
+            return None
+        return self._bemfa_entity_ids(rt).get(port)
+
     def _bemfa_publish(self, topic, payload):
         """Map HA MQTT topics to Bemfa device states（按设备命名空间路由）。"""
         rt = self._bemfa_device_for_topic(topic)
         if rt is None:
             return
-        ids = self._bemfa_entity_ids(rt)
         if not isinstance(payload, dict):
             return
         rest = topic[len(rt.topics.prefix):].lstrip("/")
         if rest.startswith("port/"):
-            entity_id = ids.get(rest.split("/")[-1])
+            entity_id = self._bemfa_entity_for(rt, rest.split("/")[-1])
             if entity_id:
                 self.bemfa.publish_state(entity_id, MSG_ON if payload.get("active") else MSG_OFF)
         elif rest == "status":
-            self.bemfa.publish_state(ids["ble"],
-                                     MSG_ON if payload.get("connected") else MSG_OFF)
+            entity_id = self._bemfa_entity_for(rt, "ble")
+            if entity_id:
+                self.bemfa.publish_state(entity_id, MSG_ON if payload.get("connected") else MSG_OFF)
 
     async def setup_bemfa(self):
         """Initialize Bemfa client if enabled."""
@@ -976,25 +1072,9 @@ class Server:
 
         self.bemfa = BemfaClient(self.config.bemfa.uid, modified=self.config.bemfa.modified)
 
-        allowed = self.config.bemfa.allowed_devices or [PRIMARY_DEVICE_ID]
-        targets = [rt for rt in self.registry
-                   if "*" in allowed or rt.device_id in allowed]
-        names = {"c1": self.config.bemfa.name_c1, "c2": self.config.bemfa.name_c2,
-                 "c3": self.config.bemfa.name_c3, "a": self.config.bemfa.name_a,
-                 "ble": self.config.bemfa.name_ble}
-        port_label = {"c1": "C口1", "c2": "C口2", "c3": "C口3", "a": "USB-A"}
-
-        for rt in targets:
-            ids = self._bemfa_entity_ids(rt)
-            for name in ("c1", "c2", "c3", "a"):
-                # 显示名：primary 用配置里的老名字（零迁移），其他设备用"<设备名> C口1"
-                label = (names[name] if rt.device_id == PRIMARY_DEVICE_ID
-                         else f"{rt.name} {port_label[name]}")
-                self.bemfa.add_device(ids[name], label)
-            self.bemfa.add_device(
-                ids["ble"],
-                names["ble"] if rt.device_id == PRIMARY_DEVICE_ID
-                else f"{rt.name} 蓝牙开关")
+        plan = self._bemfa_entity_plan()
+        self._bemfa_map = {(item["device_id"], item["port"]): item["entity_id"]
+                           for item in plan}
 
         def _port_cmd(rt, port, on):
             """命令回调**必须捕获 rt**（§3.3 红线）：这里没有请求上下文，
@@ -1027,42 +1107,85 @@ class Server:
                 _LOGGER.error("Bemfa BLE cmd failed [%s]: %s", rt.device_id, e)
                 return False
 
-        for rt in targets:
-            ids = self._bemfa_entity_ids(rt)
-            for name in ("c1", "c2", "c3", "a"):
-                self.bemfa.on_command(ids[name],
-                                      lambda on, rt=rt, name=name: _port_cmd(rt, name, on))
-            self.bemfa.on_command(ids["ble"],
-                                  lambda on, rt=rt: _ble_cmd(rt, on))
+        for item in plan:
+            eid, rt, port = item["entity_id"], item["rt"], item["port"]
+            self.bemfa.add_device(eid, item["name"])
+            if port == "ble":
+                self.bemfa.on_command(eid, lambda on, rt=rt: _ble_cmd(rt, on))
+            else:
+                self.bemfa.on_command(
+                    eid, lambda on, rt=rt, port=port: _port_cmd(rt, port, on))
+
+        # ── 云端残留：从配置里删掉的实体，在巴法云 App 里还留着一个按了没反应的开关 ──
+        # 用上一次成功注册的 id 快照（`bemfa.registered`）做差集——只有服务端自己知道
+        # 上一轮到底注册过什么（用户手改 YAML 也照样对得上）。
+        stale = [eid for eid in (self.config.bemfa.registered or [])
+                 if eid and eid not in set(self._bemfa_map.values())]
+        if stale:
+            _LOGGER.info("Bemfa 清理已删除的实体 %d 个: %s", len(stale), ", ".join(stale))
+            await self.bemfa.delete_topics(stale)
 
         await self.bemfa.start()
 
         # Clear modified flag after successful topic registration
         if self.config.bemfa.modified:
             self._clear_bemfa_modified()
+        # 记下这一轮注册的实体 id，供下次启动做残留清理
+        registered = sorted(set(self._bemfa_map.values()))
+        if registered != sorted(set(self.config.bemfa.registered or [])):
+            self._save_bemfa_registered(registered)
 
     def _config_path(self) -> Path:
         return Path(os.environ.get("CUKTECH_CONFIG_PATH", str(Path(__file__).parent / "config.yaml")))
 
-    def _clear_bemfa_modified(self):
-        """Set bemfa.modified=false in config.yaml after topic re-registration."""
+    def _patch_bemfa_yaml(self, mutate):
+        """把 `mutate(bemfa_section)` 的结果原子写回 config.yaml 的 `bemfa:` 节。
+
+        这两处回写（清 `modified`、记 `registered`）都是**服务端自己的记账**：失败
+        只记警告，绝不因为记账失败影响启动。`mutate` 返回 False = 无需改动，不落盘。
+
+        文件不存在时直接返回：纯环境变量部署下，凭空造一份只含 `bemfa:` 的
+        config.yaml 会变成下次启动的"配置文件"，等于把手改的现场清空。
+        """
         try:
             import yaml
             config_path = self._config_path()
-            cfg = {}
-            if config_path.exists():
-                with open(config_path) as f:
-                    cfg = yaml.safe_load(f) or {}
-            if cfg.get("bemfa", {}).get("modified"):
-                cfg["bemfa"]["modified"] = False
-                # Atomic write: write to temp file then rename
-                tmp_path = config_path.with_suffix(".tmp")
-                with open(tmp_path, "w") as f:
-                    yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-                os.replace(tmp_path, config_path)
-                _LOGGER.info("Bemfa modified flag cleared")
+            if not config_path.exists():
+                return
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            section = cfg.setdefault("bemfa", {})
+            if mutate(section) is False:
+                return
+            tmp_path = config_path.with_suffix(".tmp")
+            with open(tmp_path, "w") as f:
+                yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
+            os.replace(tmp_path, config_path)
         except Exception:
-            _LOGGER.warning("Failed to clear bemfa modified flag", exc_info=True)
+            _LOGGER.warning("Failed to update bemfa config", exc_info=True)
+
+    def _clear_bemfa_modified(self):
+        """Set bemfa.modified=false in config.yaml after topic re-registration."""
+        def _mutate(section):
+            if not section.get("modified"):
+                return False
+            section["modified"] = False
+            _LOGGER.info("Bemfa modified flag cleared")
+            return True
+
+        self._patch_bemfa_yaml(_mutate)
+
+    def _save_bemfa_registered(self, entity_ids):
+        """记下本次成功注册的实体 id（下次启动据此清理云端残留）。"""
+        ids = sorted(set(entity_ids))
+
+        def _mutate(section):
+            section["registered"] = ids
+            _LOGGER.info("Bemfa 已记录本轮注册的实体 %d 个", len(ids))
+            return True
+
+        self.config.bemfa.registered = ids
+        self._patch_bemfa_yaml(_mutate)
 
     async def handle_health(self, request):
         """GET /api/health - health check endpoint."""
@@ -2335,6 +2458,13 @@ class Server:
                     "name_c3": cfg.bemfa.name_c3,
                     "name_a": cfg.bemfa.name_a,
                     "name_ble": cfg.bemfa.name_ble,
+                    # 自定义语音实体表（§3.11）：前端据此画"一行一个开关"的表格
+                    "entities": [{"name": name, "device": device, "port": port}
+                                 for name, device, port in
+                                 (bemfa_entity_triple(e) for e in (cfg.bemfa.entities or []))],
+                    # 老配置（没写过 entities 键）要让前端知道"这空表是没配过，不是配了 0 条"
+                    "entitiesDefined": bool(cfg.bemfa.entities_defined),
+                    "ports": list(BEMFA_PORTS),
                 },
                 "server": {
                     "port": cfg.server.port,
@@ -2401,17 +2531,20 @@ class Server:
                 if error:
                     return web.json_response({"ok": False, "error": error}, status=400)
 
-            # Detect bemfa name changes → set modified flag for topic re-registration
+            # 巴法云实体名/绑定变了 → 打 modified：云端主题的**显示名是注册时定的**
+            # （主题本身只由 entity_id 派生），改名必须 delete+recreate 才生效。
             if "bemfa" in config_data:
                 bemfa_existing = existing.get("bemfa", {})
-                NAME_KEYS = {"name_c1", "name_c2", "name_c3", "name_a", "name_ble"}
-                old_names = {}
+                NAME_KEYS = ("name_c1", "name_c2", "name_c3", "name_a", "name_ble")
+                old_bemfa: dict = {}
                 if config_path.exists():
                     with open(config_path) as f:
-                        old_cfg = yaml.safe_load(f) or {}
-                        old_names = {k: old_cfg.get("bemfa", {}).get(k) for k in NAME_KEYS}
-                new_names = {k: config_data["bemfa"].get(k) for k in NAME_KEYS}
-                if old_names != new_names:
+                        old_bemfa = (yaml.safe_load(f) or {}).get("bemfa", {}) or {}
+                old_view = ({k: old_bemfa.get(k) for k in NAME_KEYS},
+                            _bemfa_entity_signature(old_bemfa.get("entities")))
+                new_view = ({k: config_data["bemfa"].get(k) for k in NAME_KEYS},
+                            _bemfa_entity_signature(config_data["bemfa"].get("entities")))
+                if old_view != new_view:
                     bemfa_existing["modified"] = True
 
             # Atomic write: write to temp file then rename

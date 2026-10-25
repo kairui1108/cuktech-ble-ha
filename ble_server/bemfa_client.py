@@ -44,6 +44,17 @@ MSG_ON = "on"
 MSG_OFF = "off"
 
 
+def topic_for_entity(entity_id: str) -> str:
+    """实体 id → 巴法云主题（`hass{md5(entity_id)}006`）。
+
+    单独提出来是给"删除已不用的主题"用的：那条路径手里只有 entity_id（实体已经
+    从配置里删掉了，连 `BemfaDevice` 都不会建），主题规则必须和 `BemfaDevice.topic`
+    **同一份实现**，否则删的是另一条主题，云端残留反而更多。
+    """
+    md5 = hashlib.md5(entity_id.encode("utf-8")).hexdigest()
+    return f"{TOPIC_PREFIX}{md5}006"
+
+
 class BemfaDevice:
     """Represents a Bemfa switch device."""
 
@@ -56,8 +67,7 @@ class BemfaDevice:
     @property
     def topic(self) -> str:
         if self._topic is None:
-            md5 = hashlib.md5(self.entity_id.encode("utf-8")).hexdigest()
-            self._topic = f"{TOPIC_PREFIX}{md5}006"
+            self._topic = topic_for_entity(self.entity_id)
         return self._topic
 
     @property
@@ -281,6 +291,36 @@ class BemfaClient:
                 break
 
     # ---- HTTP API ----
+
+    async def delete_topics(self, entity_ids) -> int:
+        """删除一批实体在巴法云上的主题（实体已从配置里删掉时用）。
+
+        为什么需要：`modified=True` 只删"这次还要注册的那批"，所以从配置里删掉的
+        实体（用户去掉一行、或改了绑定端口）会在巴法云 App 里永远留着一个按了没反应
+        的死开关。返回成功删除的条数，供调用方记日志。
+        """
+        ids = [eid for eid in (entity_ids or []) if eid]
+        if not ids:
+            return 0
+        deleted = 0
+        async with aiohttp.ClientSession() as session:
+            for eid in ids:
+                topic = topic_for_entity(eid)
+                try:
+                    resp = await session.post(
+                        DELETE_TOPIC_URL,
+                        data={"uid": self._uid, "topic": topic, "type": 1},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    )
+                    body = await resp.text()
+                    _LOGGER.info("Bemfa delete %s (%s): HTTP %d %s",
+                                 topic, eid, resp.status, body)
+                    if resp.status == 200:
+                        deleted += 1
+                except Exception as e:
+                    _LOGGER.warning("Bemfa delete error: %s (%s): %s", topic, eid, e)
+                await asyncio.sleep(0.1)
+        return deleted
 
     async def _register_topics(self):
         """Register topics with Bemfa. Deletes existing topics first only when names changed."""

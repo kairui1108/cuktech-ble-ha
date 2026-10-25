@@ -166,3 +166,96 @@ class TestTopicNamespaceShape:
         cfg = _cfg(devices=[make_device("desk", topic_prefix="cuktech/desk/")])
         specs = cfg.device_specs()
         assert cfg.topics_for(specs[1]).status == "cuktech/desk/status"
+
+
+class TestBemfaEntityConfig:
+    """巴法云语音开关表（§3.11）的解析与校验。
+
+    为什么单测这一层：`bemfa.entities` 是唯一"名字 × 设备 × 端口"的声明位置，
+    它的错误全部发生在**启动时**——写错了不是"这条不生效"，而是进程拒绝启动、
+    Web UI 一起消失。所以规则要逐条钉住，报错还要能定位到第几条。
+    """
+
+    def _cfg_yaml(self, tmp_path, monkeypatch, *, entities, devices="desk"):
+        from config import load_config
+
+        dev_yaml = ""
+        if devices == "desk":
+            dev_yaml = ('devices:\n  - id: desk\n    mac: "AA:BB:CC:DD:EE:02"\n'
+                        f'    token: "{EXTRA_DEVICE_TOKEN}"\n')
+        p = Path(tmp_path) / "c.yaml"
+        p.write_text(
+            f'ble:\n  mac: "{DEFAULT_PRIMARY_MAC}"\n  token: "{EXTRA_DEVICE_TOKEN}"\n'
+            'mqtt:\n  topic_prefix: "cuktech/charger"\n'
+            + dev_yaml
+            + 'bemfa:\n  enabled: true\n  uid: "u"\n  entities:\n'
+            + "".join(f'    - name: "{n}"\n      device: {d}\n      port: {p_}\n'
+                      for n, d, p_ in entities),
+            encoding="utf-8")
+        monkeypatch.setenv("CUKTECH_CONFIG_PATH", str(p))
+        return load_config()
+
+    def test_entity_table_parses(self, tmp_path, monkeypatch):
+        cfg = self._cfg_yaml(tmp_path, monkeypatch, entities=[
+            ("客厅 C1", "default", "c1"), ("书房 C1", "desk", "c1")])
+        assert [(e.name, e.device, e.port) for e in cfg.bemfa.entities] == [
+            ("客厅 C1", "default", "c1"), ("书房 C1", "desk", "c1")]
+        assert cfg.bemfa.entities_defined is True
+
+    def test_missing_key_keeps_legacy_mode(self, tmp_path, monkeypatch):
+        """没写过 `entities` 键 = 老配置：`entities_defined` 必须为 False，
+        否则升级后语音指令会全部消失（老形状只能靠 allowed_devices + name_c* 派生）。"""
+        from config import load_config
+        p = Path(tmp_path) / "c.yaml"
+        p.write_text(
+            f'ble:\n  mac: "{DEFAULT_PRIMARY_MAC}"\n  token: "{EXTRA_DEVICE_TOKEN}"\n'
+            'bemfa:\n  enabled: true\n  uid: "u"\n  name_c1: "老名字"\n', encoding="utf-8")
+        monkeypatch.setenv("CUKTECH_CONFIG_PATH", str(p))
+        cfg = load_config()
+        assert cfg.bemfa.entities == []
+        assert cfg.bemfa.entities_defined is False
+        assert cfg.bemfa.name_c1 == "老名字"
+
+    def test_empty_list_is_an_explicit_choice(self, tmp_path, monkeypatch):
+        from config import load_config
+        p = Path(tmp_path) / "c.yaml"
+        p.write_text(
+            f'ble:\n  mac: "{DEFAULT_PRIMARY_MAC}"\n  token: "{EXTRA_DEVICE_TOKEN}"\n'
+            'bemfa:\n  enabled: true\n  uid: "u"\n  entities: []\n', encoding="utf-8")
+        monkeypatch.setenv("CUKTECH_CONFIG_PATH", str(p))
+        cfg = load_config()
+        assert cfg.bemfa.entities == [] and cfg.bemfa.entities_defined is True
+
+    def test_bad_port_is_located(self, tmp_path, monkeypatch):
+        with pytest.raises(ValueError, match=r"entities\[1\].*port"):
+            self._cfg_yaml(tmp_path, monkeypatch, entities=[
+                ("A", "default", "c1"), ("B", "default", "c9")])
+
+    def test_empty_name_rejected(self, tmp_path, monkeypatch):
+        with pytest.raises(ValueError, match="缺少 `name`"):
+            self._cfg_yaml(tmp_path, monkeypatch, entities=[("", "default", "c1")])
+
+    def test_duplicate_device_port_rejected(self, tmp_path, monkeypatch):
+        """同一台设备的同一个口只能有一个开关：两个名字抢一个口，按哪个都不知道。"""
+        with pytest.raises(ValueError, match="重复"):
+            self._cfg_yaml(tmp_path, monkeypatch, entities=[
+                ("A", "default", "c1"), ("B", "default", "c1")])
+
+    def test_unknown_device_rejected(self, tmp_path, monkeypatch):
+        with pytest.raises(ValueError, match="不存在"):
+            self._cfg_yaml(tmp_path, monkeypatch, entities=[("A", "ghost", "c1")])
+
+    def test_same_port_on_different_devices_is_fine(self, tmp_path, monkeypatch):
+        cfg = self._cfg_yaml(tmp_path, monkeypatch, entities=[
+            ("客厅 C1", "default", "c1"), ("书房 C1", "desk", "c1")])
+        assert len(cfg.bemfa.entities) == 2
+
+    def test_dict_entities_are_accepted(self):
+        """`bemfa_entity_triple` 必须同时吃 dataclass 与 dict：/api/config 回包、
+        YAML 直读、测试手写配置都可能是 dict，只认 dataclass 会静默清空实体表。"""
+        from config import bemfa_entity_triple, BemfaEntityConfig
+        assert bemfa_entity_triple({"name": "A", "device": "desk", "port": "c2"}) == \
+            ("A", "desk", "c2")
+        assert bemfa_entity_triple(BemfaEntityConfig(name="A", device="desk", port="c2")) == \
+            ("A", "desk", "c2")
+        assert bemfa_entity_triple({"name": "A", "port": "ble"}) == ("A", PRIMARY_DEVICE_ID, "ble")
