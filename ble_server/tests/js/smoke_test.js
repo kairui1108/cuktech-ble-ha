@@ -234,7 +234,7 @@ check('点设备卡片：整页重放，且请求带新设备', async () => {
     const ctx = load(indexChain());
     const res = vm.runInContext(`(function () {
         var DEVICES = [
-            { id: 'default', name: '', mac: '3C:CD:73:34:AE:59', connected: true, topic_prefix: 'cuktech/charger', is_primary: true },
+            { id: 'default', name: '', mac: '3C:CD:73:00:11:22', connected: true, topic_prefix: 'cuktech/charger', is_primary: true },
             { id: 'desk', name: 'Desk', mac: 'AA:BB:CC:DD:EE:02', connected: true, topic_prefix: 'cuktech/charger/desk', is_primary: false }
         ];
         DeviceStore.dispatch({ type: 'init', devices: DEVICES, connected: true, authenticated: true, ports: {} });

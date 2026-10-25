@@ -14,7 +14,7 @@ Nothing in this directory is synthetic unless a file says so explicitly.
 
 **What was captured.** The ATT traffic of a CUKTECH power bank / charger (the MiOT
 `FE95` GATT service, characteristic UUID `0x001b` = `cmd_recv`, ATT value handle
-`0x001c`). Device under test: charger MAC `3C:CD:73:34:AE:59`, firmware string
+`0x001c`). Device under test: charger MAC `3C:CD:73:xx:xx:xx` (OUI only), firmware string
 `HS6621C` (Bluetrum SoC), firmware version `2.1.2` — both read straight out of the
 captures (`device_info` / `fw_version` characteristic reads).
 
@@ -31,7 +31,7 @@ captures (`device_info` / `fw_version` characteristic reads).
 | **total** | **142** | **89** | all `inline` (`data[2] == 0x02`) |
 
 **How it was captured.** An ESP32 BLE sniffer wrote the HCI stream to btsnoop files
-while an Android host (advertising itself as `kairui Redmi K30 5G`) was connected to
+while an Android host (advertising itself as a Redmi K30 5G) was connected to
 the charger and running the MiOT login + telemetry flow. The sniffer's own relay
 traffic is interleaved in the same files and is discarded by the parser (§6).
 
