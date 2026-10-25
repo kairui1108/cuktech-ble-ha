@@ -240,7 +240,9 @@ setTimeout(async () => {
         ok(peek(ctx, 'document.getElementById("xiaomiDevices").innerHTML').indexOf('checkbox') >= 0,
            '每行是勾选框（多选的前提）');
 
-        // 勾上全部 + 同步名称，一次导入
+        // 勾上全部 + 同步名称，一次导入；顺手把"自动关窗"做成探针
+        ctx.__closed = 0;
+        peek(ctx, `closeXiaomiModal = function () { __closed++; }`);
         peek(ctx, `_xiaomiSessionId = 'sess1'`);
         const before = devices();
         peek(ctx, `document.getElementById('xiaomiSyncNames').checked = true; xiaomiSelectAll(true)`);
@@ -276,6 +278,9 @@ setTimeout(async () => {
         eq(fresh.ble_key, 'key-2', 'BLE Key 写入');
         ok(peek(ctx, 'document.getElementById("xiaomiImportStatus").textContent').indexOf('1') >= 0,
            '导入结果给用户看（新增/更新计数）');
+        ok(peek(ctx, 'document.getElementById("xiaomiImportStatus").textContent').indexOf('保存') >= 0,
+           '结果文案必须点明"还没落盘，要再点保存"（否则关掉页面就白干）');
+        eq(ctx.__closed, 0, '导入后**不自动关窗**（导入 ≠ 已保存）');
     }
 
     console.log('\n-- 小米云：不勾"同步名称"时保留用户自己起的名字 --');
@@ -296,6 +301,26 @@ setTimeout(async () => {
             String(d.mac || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase() === 'aabbccddee02');
         eq(desk.name, '我自己起的名字', '没勾同步名称 → 用户起的名字不能被覆盖');
         eq(desk.token, 'rotated-token', '但凭据照常更新（换 token 是导入的主要用途）');
+    }
+
+    console.log('\n-- 小米云：生成的设备 id 要避开保留字（否则保存时才被 400 拦下） --');
+    {
+        peek(ctx, `_xiaomiSessionId = 'sess1'`);
+        peek(ctx, `showDeviceList({ cuktech: [
+            { did: 'did-set', name: 'set', mac: 'aa:bb:cc:dd:ee:11', model: 'njcuk01' } ] })`);
+        peek(ctx, `xiaomiSelectAll(true)`);
+        ctx.__xiaomiImport = {
+            ok: true,
+            devices: [{ did: 'did-set', name: 'set', mac: 'aa:bb:cc:dd:ee:11',
+                        token: 't-set', model: 'njcuk01', ble_key: 'k-set' }],
+        };
+        await peek(ctx, 'importXiaomiSelected()');
+        const added = devices().find((d) =>
+            String(d.mac || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase() === 'aabbccddee11');
+        ok(!!added, '新设备照常导入');
+        ok(['all', 'set', 'port', 'status', 'settings', 'ble', 'charge_event', 'default']
+            .indexOf(added.id) < 0, `生成的 id 撞上保留字（${added.id}）`);
+        ok(/^[a-z0-9][a-z0-9_-]*$/.test(added.id), `id 必须合法（${added.id}）`);
     }
 
     console.log('\n-- 小米云：没选设备时不该发请求 --');

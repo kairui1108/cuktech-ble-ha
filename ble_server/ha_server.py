@@ -828,23 +828,50 @@ class Server:
     def history(self, value):
         self._history_assigned = value
 
-    # ── 设备被移除后的残留清理（§3.6/§3.10） ──
+    # ── 设备命名空间的残留清理（§3.6/§3.10） ──
+
+    #: 清 retained 用的 QoS。与 `clean_retained.py` 对齐（那边一直是 qos=1）：
+    #: qos=0 只是"交给本地 socket"，紧接着的 `_restart()` 会断 MQTT，消息可能根本没
+    #: 出去——而那时旧前缀已经不在配置里，脚本也推导不出来，等于永久幽灵。
+    RETAINED_CLEAR_QOS = 1
 
     def _mqtt_clear_retained(self, topic: str) -> bool:
-        """清掉一条 retained 消息（**空负载** + retain）。
+        """清掉一条 retained 消息（**空负载** + retain + qos 1）。
 
         不能用 `mqtt_publish(topic, None, retain=True)`：那个函数会
         `json.dumps(None)` → 往 retained 里塞一个字符串 "null"，订阅方看到的仍是
         一条"有内容"的消息。清除 retained 的唯一正确形状是空 payload。
+
+        `wait_for_publish()`：清理发生在"写盘之后、重启之前"的 1 秒窗口里，
+        没确认就断电式重启 = 清除白做（见 RETAINED_CLEAR_QOS 的注释）。
+        老版本 paho 没有这个方法，`getattr` 兜底。
         """
         if not (self.mqtt_client and self.mqtt_client.is_connected()):
             return False
         try:
-            self.mqtt_client.publish(topic, "", retain=True)
+            info = self.mqtt_client.publish(topic, "", retain=True, qos=self.RETAINED_CLEAR_QOS)
+            waiter = getattr(info, "wait_for_publish", None)
+            if callable(waiter):
+                waiter()
             return True
-        except Exception:
+        except Exception as e:
             self._mqtt_publish_failures += 1
+            _LOGGER.warning("清 retained 失败 %s: %s", topic, e)
             return False
+
+    @staticmethod
+    def _namespace_topics(ns) -> list[str]:
+        """一台设备的全部"状态型"主题（要清的就是这些）。"""
+        topics = [ns.status, ns.settings, ns.port, ns.ble, ns.charge_event]
+        topics += [ns.port_topic(name) for name in PORT_NAMES.values()]
+        return topics
+
+    def _purge_namespace(self, ns, device_id: str, why: str) -> list[str]:
+        topics = self._namespace_topics(ns)
+        cleared = [t for t in topics if self._mqtt_clear_retained(t)]
+        _LOGGER.warning("[%s] %s：清理 %d 条 retained 主题（历史数据保留）",
+                        device_id, why, len(topics))
+        return cleared
 
     def purge_removed_devices(self, removed) -> list[str]:
         """设备从配置里消失后，清掉它在 broker 上的 retained 状态。
@@ -859,16 +886,19 @@ class Server:
         """
         cleared: list[str] = []
         for rt in removed:
-            ns = rt.topics
-            topics = [ns.status, ns.settings, ns.port, ns.ble, ns.charge_event]
-            topics += [ns.port_topic(name) for name in PORT_NAMES.values()]
-            for topic in topics:
-                if self._mqtt_clear_retained(topic):
-                    cleared.append(topic)
-            _LOGGER.warning(
-                "[%s] 设备已从配置移除：清理 %d 条 retained 主题（历史数据保留，"
-                "同 id 加回即恢复）", rt.device_id, len(topics))
+            cleared += self._purge_namespace(
+                rt.topics, rt.device_id, "设备已从配置移除（同 id 加回即恢复）")
         return cleared
+
+    def purge_stale_prefix(self, rt, new_prefix: str) -> list[str]:
+        """设备**还在**、但 `topic_prefix` 改了：旧前缀的 retained 同样是幽灵。
+
+        这条缺口以前没人补：`purge_removed_devices` 只对比"消失的设备"，
+        而 `clean_retained.py` 的前缀是从**当前配置**推导的——旧前缀改完之后就不在
+        配置里了，脚本也推导不出来，等于永久幽灵。所以必须在改前缀的当场清。
+        """
+        return self._purge_namespace(
+            rt.topics, rt.device_id, f"topic 前缀已改为 {new_prefix}")
 
     def mqtt_publish(self, topic, payload, retain=False):
         """Publish to all enabled MQTT clients (multiplex)."""
@@ -2410,6 +2440,15 @@ class Server:
             removed = [rt for rt in self.registry if rt.device_id not in kept_ids]
             if removed:
                 self.purge_removed_devices(removed)
+            # 设备**还在**但改了 topic 前缀：旧前缀的 retained 同样是幽灵，而且
+            # clean_retained.py 从当前配置推导前缀，改完就再也推导不出旧的了。
+            new_prefixes = {spec.device_id: validated.topics_for(spec).prefix
+                            for spec in validated.device_specs()}
+            for rt in self.registry:
+                if rt.device_id in kept_ids:
+                    new_prefix = new_prefixes.get(rt.device_id)
+                    if new_prefix and new_prefix != rt.topics.prefix:
+                        self.purge_stale_prefix(rt, new_prefix)
 
             _LOGGER.info("Config saved to %s, restarting...", config_path)
 
@@ -2603,6 +2642,18 @@ class Server:
 
     #: 等扫码的会话寿命（秒）
     XIAOMI_SCAN_TTL = 300
+    #: 批量导入的整体预算（秒）。必须明显小于 30s 的请求上限（留出云调用的读超时
+    #: 15s 与收尾时间）：超预算的设备逐台返回 `timeout`，而不是让浏览器等到 504。
+    XIAOMI_IMPORT_BUDGET = 20.0
+
+    def _xiaomi_session_lock(self, entry: dict) -> asyncio.Lock:
+        """会话级互斥锁（懒创建）：一个 `requests.Session` 同时只能被一个线程用。"""
+        lock = entry.get("lock")
+        if lock is None:
+            lock = asyncio.Lock()
+            entry["lock"] = lock
+        return lock
+
     #: 扫码完成后可以导入的窗口（秒）。每次导入都重新计时，够用户分批选设备；
     #: 别设太短：用户可能先去翻设备铭牌确认 MAC，回来时"会话已过期要重扫"很恼人。
     XIAOMI_IMPORT_TTL = 300
@@ -2765,8 +2816,9 @@ class Server:
                 {"ok": False, "error": f"小米云登录依赖缺失: {e}"}, status=503)
 
         try:
-            ble_key = await asyncio.get_running_loop().run_in_executor(
-                None, entry["client"].get_beaconkey, did)
+            async with self._xiaomi_session_lock(entry):
+                ble_key = await asyncio.get_running_loop().run_in_executor(
+                    None, entry["client"].get_beaconkey, did)
             self._arm_xiaomi_timer(session_id, self.XIAOMI_IMPORT_TTL)
             if ble_key:
                 return web.json_response({"ok": True, "ble_key": ble_key})
@@ -2821,6 +2873,12 @@ class Server:
         known = {d.did: d for d in (entry.get("devices") or [])}
         client = entry["client"]
 
+        # 截止时间：HTTP 请求本身有 30s 上限（request_timeout_middleware），批量导入
+        # 必须在它之前收尾，否则浏览器拿到 504 而线程还在跑——那正是"无超时网络调用
+        # 被放大 N 倍"的形态。超预算的余下设备按 timeout 逐台返回（复用现有结构）。
+        budget = self.XIAOMI_IMPORT_BUDGET
+        started = time.monotonic()
+
         def _fetch_all():
             out = []
             for did in dids:
@@ -2829,6 +2887,10 @@ class Server:
                     # 不在本次扫码拿到的清单里（伪造的 did / 清单已过期）：明确报错，
                     # 不要拿个空 token 让配置页把设备写残。
                     out.append({"did": did, "error": "device_not_in_list"})
+                    continue
+                if time.monotonic() - started > budget:
+                    out.append({"did": did, "name": dev.name, "mac": dev.mac,
+                                "model": dev.model, "error": "timeout"})
                     continue
                 try:
                     key = client.get_beaconkey(did) or ""
@@ -2840,13 +2902,17 @@ class Server:
                             "token": dev.token, "model": dev.model, "ble_key": key})
             return out
 
-        try:
-            results = await asyncio.get_running_loop().run_in_executor(None, _fetch_all)
-        except XiaomiCloudLoginError as e:
-            return web.json_response({"ok": False, "error": str(e)}, status=400)
-        except Exception as e:
-            _LOGGER.error("Xiaomi import failed: %s", e)
-            return web.json_response({"ok": False, "error": str(e)}, status=500)
+        # `requests.Session` 不是线程安全的：两个标签页同时点导入（或边导入边取单台
+        # key）就是两个线程操作同一个 Session。按会话串行化——批量导入本来就该独占。
+        lock = self._xiaomi_session_lock(entry)
+        async with lock:
+            try:
+                results = await asyncio.get_running_loop().run_in_executor(None, _fetch_all)
+            except XiaomiCloudLoginError as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400)
+            except Exception as e:
+                _LOGGER.error("Xiaomi import failed: %s", e)
+                return web.json_response({"ok": False, "error": str(e)}, status=500)
 
         # 每次导入重挂窗口：允许用户分两批选设备，都算同一次登录
         self._arm_xiaomi_timer(session_id, self.XIAOMI_IMPORT_TTL)

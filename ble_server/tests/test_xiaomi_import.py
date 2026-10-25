@@ -160,6 +160,40 @@ class TestXiaomiImport:
             entry["timer"].cancel()
 
 
+class TestXiaomiImportBudget:
+    """P2-1：批量导入必须有整体预算，别让云端卡住变成 N 次悬死。
+
+    `requests` 的超时已由 `xiaomi_cloud.CLOUD_HTTP_TIMEOUT` 兜住；这里再锁服务端的
+    "整体截止时间"：超出预算的设备逐台返回 `timeout`，请求本身必须按时收尾
+    （30s 中间件只会把浏览器救出去，线程不会）。
+    """
+
+    async def test_over_budget_devices_report_timeout(self, server, monkeypatch):
+        client = FakeClient(keys={"did-desk": "k1", "did-bed": "k2"})
+        _seed(server, [DESK, BED], client)
+        monkeypatch.setattr(server, "XIAOMI_IMPORT_BUDGET", -1.0)   # 立即超预算
+
+        resp = await server.handle_xiaomi_import(
+            _json_request({"session_id": "sess1", "dids": ["did-desk", "did-bed"]}))
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert [d.get("error") for d in body["devices"]] == ["timeout", "timeout"]
+        assert client.calls == [], "超预算就不该再去调云端"
+        entry = server._xiaomi_sessions["sess1"]
+        if entry["timer"]:
+            entry["timer"].cancel()
+
+    def test_cloud_client_sets_http_timeouts(self):
+        """`requests` 默认无限等：`_api_call` 必须显式给 (连接, 读取) 超时。"""
+        import inspect
+        import xiaomi_cloud
+
+        src = inspect.getsource(xiaomi_cloud)
+        assert src.count("timeout=CLOUD_HTTP_TIMEOUT") >= 4, \
+            "登录两步 + 两个 API 客户端的 post/get 都要带超时"
+        assert xiaomi_cloud.CLOUD_HTTP_TIMEOUT == (5, 15)
+
+
 class TestXiaomiSessionLifecycle:
     async def test_expired_session_is_dropped_by_timer(self, server):
         client = FakeClient()

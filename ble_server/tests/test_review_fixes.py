@@ -370,3 +370,77 @@ class TestRecoveryStateOnDevicesEndpoint:
             assert by_id["desk"]["recovery"]["count"] >= 1
             assert "recovery" not in by_id["default"], \
                 "健康设备不该多出这个键（响应要逐字节不变）"
+
+
+class TestRetainedCleanupEdges:
+    """P2-2：设备还在但 topic 前缀改了 → 旧前缀的 retained 也必须清。
+
+    这条缺口以前没人补：`clean_retained.py` 的前缀是从**当前配置**推导的，前缀一改
+    旧的就再也推导不出来，等于永久幽灵。
+    """
+
+    @pytest.fixture
+    async def dual(self):
+        async with golden_env(devices=[DESK]) as env:
+            yield env
+
+    async def test_changed_prefix_clears_old_retained(self, dual):
+        s = dual.server
+        s._delayed_restart = _noop_coro
+        dual.reset_mqtt()
+        payload = {"config": {
+            "ble": {"mac": "AA:BB:CC:DD:EE:01", "token": "c1b1****c162"},
+            "devices": [{"device_id": "default", "mac": "AA:BB:CC:DD:EE:01",
+                         "is_primary": True},
+                        {"device_id": "desk", "mac": DESK["mac"],
+                         "token": DESK["token"],
+                         # 前缀从 .../desk 改成 .../desk2（设备还在，只是换了命名空间）
+                         "topic_prefix": "cuktech/charger/desk2"}],
+        }}
+        resp = await s.handle_config_save(_json_request("POST", "/api/config", payload))
+        assert resp.status == 200, resp.body
+
+        topics = {p["topic"] for p in dual.publishes}
+        assert "cuktech/charger/desk/status" in topics, \
+            f"改前缀后旧前缀的 retained 没清（永久幽灵）：{sorted(topics)}"
+        assert "cuktech/charger/desk/port/c1" in topics
+        assert not any(t.startswith("cuktech/charger/desk2/") for t in topics), \
+            "新前缀还没发布过，不该去清它"
+
+    async def test_retained_clear_uses_qos1(self, dual):
+        """qos=0 只是交给本地 socket：紧接着重启会断 MQTT，清除可能根本没发出去。"""
+        s = dual.server
+        desk = s.registry.get("desk")
+        dual.reset_mqtt()
+        s.purge_removed_devices([desk])
+        cleared = [p for p in dual.publishes if p["topic"].endswith("/status")]
+        assert cleared and all(p["qos"] == 1 for p in cleared), cleared
+
+
+class TestRecoveryFieldIsPublicOnly:
+    async def test_alerted_is_not_exposed(self, monkeypatch):
+        """`/api/devices.recovery` 只给对外语义，内部记账（alerted）不外泄。"""
+        async with golden_env(devices=[DESK]) as env:
+            s = env.server
+            desk = s.registry.get("desk")
+
+            async def fake_l1(mac):
+                return None
+
+            async def fake_l15(mac):
+                return None
+
+            monkeypatch.setattr(s.adapter, "_l1_disconnect", fake_l1)
+            monkeypatch.setattr(s.adapter, "_l15_remove", fake_l15)
+            s.adapter.set_device_count_provider(lambda: 3)
+            s.adapter.register_connection(s.primary.mac)
+            for _ in range(4):
+                await s.adapter.recover_device(desk.mac)
+
+            state = s.adapter.backoff_state(desk.mac)
+            assert "alerted" not in state, state
+            assert set(state) <= {"mac", "count", "since", "last_at", "level", "reason"}
+            doc = json.loads((await s.handle_devices(
+                mock_request("GET", "/api/devices"))).body)
+            rec = {d["id"]: d for d in doc["devices"]}["desk"]["recovery"]
+            assert "alerted" not in rec

@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title data-i18n="pageTitle.config">CUKTECH 配置</title>
 <link rel="icon" href="/static/favicon.ico">
-<script src="/static/locales/zh-CN.js?v=25"></script>
-<script src="/static/locales/en.js?v=25"></script>
+<script src="/static/locales/zh-CN.js?v=26"></script>
+<script src="/static/locales/en.js?v=26"></script>
 <script src="/static/i18n.js?v=6"></script>
 <link rel="stylesheet" href="static/phone.css?v=36">
 <style>
@@ -864,16 +864,24 @@ function xiaomiConfiguredIndex(mac) {
     return findDeviceIndex(d => xiaomiMacOf(d) === m);
 }
 
+// 与服务端 `config._RESERVED_DEVICE_IDS` 同一套保留字：这些 id 的派生主题会与
+// 端口/状态/命令主题撞车（`{prefix}/set` 等），服务端 validate_device_specs 会拒绝
+// 启动。导入时先避开，否则用户会在"保存"那一步收到一个 400 还得自己改名。
+const RESERVED_DEVICE_IDS = ['all', 'set', 'port', 'status', 'settings', 'ble',
+                             'charge_event', 'default'];
+
 // 给新导入的设备起一个合法 id（`^[a-z0-9][a-z0-9_-]*$`，与服务端同规则）：
 // 优先用云上的英文名做 slug，中文名 slug 为空就退到 MAC 尾号（稳定、可读、不撞车）。
 function suggestDeviceId(dev) {
     const used = new Set(_devices.map(d => (d.id || '').toLowerCase()));
     const slug = String(dev.name || '').toLowerCase()
         .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-    const base = (slug && /^[a-z0-9]/.test(slug)) ? slug
+    let base = (slug && /^[a-z0-9]/.test(slug)) ? slug
         : 'charger' + normMac(dev.mac).slice(-4);
+    // 撞上保留字就加后缀（`set` → `set-2`），而不是交给服务端报错
+    if (RESERVED_DEVICE_IDS.indexOf(base) >= 0) base = base + '-2';
     let id = base, n = 2;
-    while (used.has(id)) { id = base + '-' + n; n++; }
+    while (used.has(id) || RESERVED_DEVICE_IDS.indexOf(id) >= 0) { id = base + '-' + n; n++; }
     return id;
 }
 
@@ -1015,7 +1023,8 @@ async function importXiaomiSelected() {
         renderXiaomiDeviceList();
         _xiaomiSelected = new Set();
         updateXiaomiImportBtn();
-        if (!sum.failed) setTimeout(closeXiaomiModal, 1500);
+        // **不自动关窗**：导入只是"把凭据填进设备卡片"，还没落盘。自动关掉会让用户
+        // 以为已经保存好了，关掉页面就白干。文案里已经明说要点保存。
     } catch (e) {
         status.textContent = I18N.t('config.bleKeyFailed', { msg: e.message });
         status.style.color = 'var(--danger)';

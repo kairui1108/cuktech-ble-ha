@@ -20,6 +20,9 @@ broker 就会把 retained 消息删掉。
     .venv/bin/python scripts/clean_retained.py             # 真清
     ./cuktech_ctl.sh clean-retained                      # 等价封装
 
+    # 已从配置里删掉 / 改掉前缀的设备（推导不出来，必须手工给）：
+    .venv/bin/python scripts/clean_retained.py --dry-run --prefix cuktech/charger/desk
+
 （设计文档 §6.1 的运维脚本，与 `history_down.py` 同级。）
 """
 from __future__ import annotations
@@ -77,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
                          "或脚本同目录 config.yaml）")
     ap.add_argument("--dry-run", action="store_true", help="只打印 topic，不连接 broker")
     ap.add_argument("--wait", type=float, default=1.0, help="发布后等待秒数（默认 1s）")
+    ap.add_argument("--prefix", action="append", default=[], metavar="PREFIX",
+                    help="额外清理这些前缀（可重复）。用于「已经从配置里删掉或改掉的旧"
+                         "前缀」：那种前缀无法从当前配置推导，只能手工指定，这也是 MQTT "
+                         "里唯一剩下的补救路径。例：--prefix cuktech/charger/desk")
     args = ap.parse_args(argv)
 
     if args.config:                       # 与服务器同一套环境变量口径
@@ -85,8 +92,15 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_config()
     prefixes = non_primary_prefixes(config)
+    # 手工指定的前缀（已从配置里删除/改名的旧前缀）与推导出来的合并去重：
+    # 服务端现在会在删除/改前缀的当场清理，但历史遗留（升级前就产生的幽灵）只能靠这里。
+    manual = [p.strip().rstrip("/") for p in (args.prefix or []) if p.strip()]
+    if manual:
+        print(f"额外指定前缀: {', '.join(manual)}")
+    prefixes = sorted(set(prefixes) | set(manual))
     if not prefixes:
-        print("没有非 primary 设备，无需清理（单设备/ESP32 场景）")
+        print("没有非 primary 设备，无需清理（单设备/ESP32 场景）；"
+              "如要清已删除设备的旧前缀，用 --prefix 指定")
         return 0
     topics = topics_to_clear(prefixes)
     print(f"前缀: {', '.join(prefixes)}")

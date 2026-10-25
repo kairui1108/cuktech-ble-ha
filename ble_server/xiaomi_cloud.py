@@ -92,6 +92,14 @@ class XiaomiCloudLoginError(Exception):
     pass
 
 
+#: 云 HTTP 超时（连接, 读取）。**必须显式给**：`requests` 默认无限等，而调用方是
+#: `run_in_executor` 里的阻塞线程——一旦云端卡住，线程和 `requests.Session` 就永久
+#: 挂在那里（executor 没有取消路径），30s 的请求超时只把浏览器救了，服务端照样漏。
+#: 批量导入把"一次悬死"放大成 N 次，所以这里是硬性要求而不是优化。
+#: 读超时 15s 与 API 请求的 30s 上限留出一半余量，够一次云调用往返。
+CLOUD_HTTP_TIMEOUT = (5, 15)
+
+
 class XiaomiCloudDevice:
     """Represents a device from Xiaomi cloud."""
     def __init__(self, did, mac, token, name, model, extra=""):
@@ -153,7 +161,8 @@ class XiaomiCloudClient:
         sn = _signed_nonce(self._ssecurity, nonce)
         fields = _generate_enc_params(url, "POST", sn, nonce, params, self._ssecurity)
         try:
-            response = self._session.post(url, headers=headers, cookies=cookies, params=fields)
+            response = self._session.post(url, headers=headers, cookies=cookies, params=fields,
+                                           timeout=CLOUD_HTTP_TIMEOUT)
             if response.status_code == 200:
                 decoded = _decrypt_rc4(_signed_nonce(self._ssecurity, fields["_nonce"]), response.text)
                 return json.loads(decoded)
@@ -164,7 +173,9 @@ class XiaomiCloudClient:
     def _login_step_1(self):
         url = "https://account.xiaomi.com/pass/serviceLogin?sid=xiaomiio&_json=true"
         headers = {"User-Agent": self._agent, "Content-Type": "application/x-www-form-urlencoded"}
-        response = self._session.get(url, headers=headers, cookies={"userId": self._username})
+        response = self._session.get(url, headers=headers,
+                                      cookies={"userId": self._username},
+                                      timeout=CLOUD_HTTP_TIMEOUT)
         if response.status_code != 200:
             return False
         json_resp = self._to_json(response.text)
@@ -189,7 +200,8 @@ class XiaomiCloudClient:
                    "user": self._username,
                    "_sign": getattr(self, "_sign", ""),
                    "_json": "true"}
-        response = self._session.post(url, headers=headers, params=fields, allow_redirects=False)
+        response = self._session.post(url, headers=headers, params=fields,
+                                       allow_redirects=False, timeout=CLOUD_HTTP_TIMEOUT)
         if response.status_code != 200:
             return False
         json_resp = self._to_json(response.text)
@@ -211,7 +223,7 @@ class XiaomiCloudClient:
         if not self._location:
             return True
         headers = {"User-Agent": self._agent, "Content-Type": "application/x-www-form-urlencoded"}
-        response = self._session.get(self._location, headers=headers)
+        response = self._session.get(self._location, headers=headers, timeout=CLOUD_HTTP_TIMEOUT)
         if response.status_code == 200:
             self._service_token = response.cookies.get("serviceToken")
             return self._service_token is not None
@@ -438,7 +450,8 @@ class QrCodeXiaomiCloudClient:
         sn = _signed_nonce(self._ssecurity, nonce)
         fields = _generate_enc_params(url, "POST", sn, nonce, params, self._ssecurity)
         try:
-            response = self._session.post(url, headers=headers, cookies=cookies, params=fields)
+            response = self._session.post(url, headers=headers, cookies=cookies, params=fields,
+                                           timeout=CLOUD_HTTP_TIMEOUT)
             if response.status_code == 200:
                 decoded = _decrypt_rc4(_signed_nonce(self._ssecurity, fields["_nonce"]), response.text)
                 return json.loads(decoded)

@@ -279,15 +279,16 @@ class AdapterCoordinator:
             return LEVEL_ADAPTER
 
         await self._l1_disconnect(mac)
-        self._l1_failures[mac] = self._l1_failures.get(mac, 0) + 1
-        if self._l1_failures[mac] <= L1_FAILURES_BEFORE_REMOVE:
+        key = _key(mac)      # 计数表与退避表同一口径：MAC 大小写不敏感
+        self._l1_failures[key] = self._l1_failures.get(key, 0) + 1
+        if self._l1_failures[key] <= L1_FAILURES_BEFORE_REMOVE:
             self._log("info", "L1 recovery for %s (disconnect + reconnect)", mac)
             return LEVEL_DEVICE
 
         await self._l15_remove(mac)
-        self._l15_failures[mac] = self._l15_failures.get(mac, 0) + 1
+        self._l15_failures[key] = self._l15_failures.get(key, 0) + 1
         if (self.device_count > 1 and self.has_live_connections()
-                and self._l15_failures[mac] <= L15_FAILURES_BEFORE_ADAPTER):
+                and self._l15_failures[key] <= L15_FAILURES_BEFORE_ADAPTER):
             self._log("warning",
                       "L1.5 recovery for %s (removed BlueZ cache; adapter left alone "
                       "because other devices are still connected)", mac)
@@ -305,8 +306,8 @@ class AdapterCoordinator:
             return LEVEL_REMOVE
 
         await self.recover_adapter()
-        self._l1_failures.pop(mac, None)
-        self._l15_failures.pop(mac, None)
+        self._l1_failures.pop(key, None)
+        self._l15_failures.pop(key, None)
         self.clear_backoff(mac)
         return LEVEL_ADAPTER
 
@@ -392,8 +393,8 @@ class AdapterCoordinator:
                   mac, self.device_count - 1)
         await self._rebuild_hook(mac)
         self._stuck_devices.discard(mac)
-        self._l1_failures.pop(mac, None)
-        self._l15_failures.pop(mac, None)
+        self._l1_failures.pop(_key(mac), None)
+        self._l15_failures.pop(_key(mac), None)
         self.clear_backoff(mac)
         return LEVEL_INPROCESS
 
@@ -427,13 +428,19 @@ class AdapterCoordinator:
                       mac, LEVEL_REMOVE, entry["count"], reason)
         return entry
 
+    #: `backoff_state()` 对外的字段（白名单）。`alerted` 是实现细节（只用来避免
+    #: 重复报错），透出去会让外部契约绑在内部记账上。
+    BACKOFF_PUBLIC_FIELDS = ("mac", "count", "since", "last_at", "level", "reason")
+
     def backoff_state(self, mac: str) -> dict | None:
         """这台设备的退避状态（None = 正常）。`/api/devices` 用它对外暴露。
 
         只在**卡住**时才有内容，正常设备的响应因此逐字节不变。
         """
         entry = self._l15_backoff.get(_key(mac))
-        return dict(entry) if entry else None
+        if not entry:
+            return None
+        return {k: entry[k] for k in self.BACKOFF_PUBLIC_FIELDS if k in entry}
 
     def clear_backoff(self, mac: str) -> None:
         self._l15_backoff.pop(_key(mac), None)
@@ -442,8 +449,8 @@ class AdapterCoordinator:
     def note_connected(self, mac: str) -> None:
         self.register_connection(mac)
         self._stuck_devices.discard(mac)
-        self._l1_failures.pop(mac, None)
-        self._l15_failures.pop(mac, None)
+        self._l1_failures.pop(_key(mac), None)
+        self._l15_failures.pop(_key(mac), None)
         self.clear_backoff(mac)
 
 

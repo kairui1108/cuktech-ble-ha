@@ -251,6 +251,12 @@ class TestL15BackoffVisibility:
         await multi.recover_device("AA:BB:CC:DD:EE:01")       # 只到 L1，还在正常阶梯里
         assert multi.backoff_state("AA:BB:CC:DD:EE:01") is None
 
+    async def test_failure_counters_are_case_insensitive(self, multi, bt):
+        """同一台设备的两种 MAC 写法必须共享计数（否则"连续失败"永远数不到 2）。"""
+        multi.note_connected("AA:BB:CC:DD:EE:02")
+        assert await multi.recover_device("aa:bb:cc:dd:ee:01") == LEVEL_DEVICE
+        assert await multi.recover_device("AA:BB:CC:DD:EE:01") == LEVEL_REMOVE
+
     async def test_reconnect_clears_backoff(self, multi):
         multi.note_connected("AA:BB:CC:DD:EE:02")
         await multi.recover_device("AA:BB:CC:DD:EE:01")
