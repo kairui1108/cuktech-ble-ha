@@ -378,6 +378,10 @@ devices:
   老库升级自动归到 primary，曲线无缝保留）；
 - 一台故障只重建那一台：`AdapterCoordinator` 分级恢复（L1 断开 → L1.5 清 BlueZ
   缓存 → L2 适配器下电，仅当只有一台或全员离线时才下电）；
+- 认证连续失败 3 次直接升级 L3 重建 BLE 会话（单设备＝进程重启，多设备＝那台的
+  进程内重建），前面只做 30s/60s 两次快重试；一小时最多重建 3 次，超出后改为
+  10 分钟慢退避 + `device_session_stuck` 状态并提示断电重插/检查 token（真机实测：
+  链路硬断后设备会重放旧 session 数据，进程内重试一次都救不回来，换新进程 30 秒即好）；
 - Web UI 出现设备切换器（单设备时隐藏），HA 集成里"一设备一 entry"；
 - 回滚：`./cuktech_ctl.sh history-down`（非 primary 历史归档，幂等）+ `clean-retained`。
 

@@ -1,13 +1,16 @@
 """CUKTECH BLE Server - BLE connection manager with auto-reconnect."""
 import asyncio
+import json
 import logging
 import sys
 import os
 import random
+import tempfile
 import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 try:
@@ -123,7 +126,22 @@ class BLEManager:
     RECONNECT_JITTER = 0.25      # ±25% jitter on reconnect delays
     CIRCUIT_BREAKER_MAX_FAIL = 20  # consecutive failures before cooling off
     CIRCUIT_BREAKER_COOLDOWN = 300  # 5 minutes
-    MAX_AUTH_FAILURES = 15  # consecutive auth failures before restarting process
+    # 连续认证失败到第几次就**升级 L3 重建 BLE 会话**（N=1 进程重启；N>1 由协调器
+    # 做 per-device 进程内重建）。取 3 是实测定出来的，不是拍的：
+    #   2026-10-25 真机两次复现"链路硬断 → 设备重放上一轮 session 数据"后，进程内的
+    #   重试阶梯（120s/180s/300s）**一次都没成功**（每次都卡在 `未收到 RCV_OK, got:
+    #   00000101`），而换个新进程 30 秒内必好（容器 restart 与 ctl.sh restart 各一次）。
+    #   原值 15 意味着要空转约 1 小时才自愈——期间设备一直"假离线"。
+    MAX_AUTH_FAILURES = 3
+    # L3 之前的两级快重试（秒）。存在意义只是吃掉"偶发一次认证失败"（设备忙/连接
+    # 建立瞬间的时序抖动）；真卡死的话等更久也没用，早点重建更划算。
+    AUTH_RETRY_DELAYS = (30, 60)
+    # L3 重建的预算：一小时内最多重启几次。防止"设备真的坏了/token 已换"时变成
+    # 每两分钟重启一次的风暴——那种情况要的是告警，不是重启。
+    AUTH_L3_MAX_PER_HOUR = 3
+    AUTH_L3_WINDOW_SEC = 3600
+    # 预算耗尽后的慢退避（给设备足够时间自然清除 BLE 会话）
+    AUTH_STUCK_SLOW_DELAY_SEC = 600
     # 认证卡死重启前，等这么久把"正在重启"状态发出去（MQTT/SSE 一次投递的时间）
     AUTH_STUCK_NOTIFY_SEC = 2.0
     LIMIT_RETRY_SEC = 15    # 限额关断命令未生效的重试窗口（命令超时 10s）
@@ -1353,21 +1371,62 @@ class BLEManager:
 
     @staticmethod
     def _auth_backoff_delay(auth_fail_count: int) -> int:
-        """认证失败后的分钟级退避延迟（表驱动，与设备会话清除节奏对齐）。
+        """认证失败后的退避延迟（秒）。
 
-        ≥5 次: 10 分钟（设备 BLE 会话需足够时间清除）
-        ≥3 次: 5 分钟
-        否则: 2 * 次数，封顶 3 分钟
+        L3 之前的两次快重试走 `AUTH_RETRY_DELAYS`；预算耗尽后走慢退避，给设备
+        足够时间自然清除 BLE 会话。等更久并不能修好"设备重放旧 session"这种
+        卡死（真机实测 3 次 120/180/300s 全失败），所以这里不再做分钟级爬坡。
         """
-        if auth_fail_count >= 5:
-            return 600
-        if auth_fail_count >= 3:
-            return 300
-        return min(120 * auth_fail_count, 180)
+        if auth_fail_count >= BLEManager.MAX_AUTH_FAILURES:
+            return BLEManager.AUTH_STUCK_SLOW_DELAY_SEC
+        index = max(0, auth_fail_count - 1)
+        delays = BLEManager.AUTH_RETRY_DELAYS
+        return delays[min(index, len(delays) - 1)]
+
+    # ── L3 重建预算（跨进程持久：重启后仍要知道"刚才已经重启过几次"）──
+
+    def _auth_restart_ledger_path(self) -> Path:
+        """记录 L3 重启时间戳的小文件，放在历史库旁边。
+
+        取不到历史库路径（配置是 mock、或字段为空）时退到临时目录——决不能在
+        当前工作目录里随手丢文件，那会污染代码仓库并让"重启预算"跨项目串味。
+        """
+        try:
+            db_path = self.config.server.history_db_path
+            if isinstance(db_path, str) and db_path.strip():
+                return Path(db_path).with_name(".auth_restarts.json")
+        except Exception:
+            pass
+        return Path(tempfile.gettempdir()) / "cuktech_auth_restarts.json"
+
+    def _recent_auth_restarts(self, now: float | None = None) -> list:
+        """窗口内的 L3 重启时间戳（读不到就当作 0 次，绝不因为记账失败卡住恢复）。"""
+        now = time.time() if now is None else now
+        try:
+            with open(self._auth_restart_ledger_path()) as f:
+                stamps = [float(x) for x in json.load(f).get("restarts", [])]
+        except Exception:
+            return []
+        return [t for t in stamps if now - t < self.AUTH_L3_WINDOW_SEC]
+
+    def _allow_auth_restart(self) -> bool:
+        """本窗口内还能不能再重启一次（预算防"设备真坏"时的重启风暴）。"""
+        return len(self._recent_auth_restarts()) < self.AUTH_L3_MAX_PER_HOUR
+
+    def _note_auth_restart(self) -> None:
+        """记一笔 L3 重启（写失败不影响重启本身——恢复优先）。"""
+        stamps = self._recent_auth_restarts() + [time.time()]
+        try:
+            path = self._auth_restart_ledger_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w") as f:
+                json.dump({"restarts": stamps}, f)
+        except Exception as e:
+            self.log.debug("auth restart ledger write failed: %s", e)
 
     @staticmethod
     def _should_restart_process(auth_fail_count: int) -> bool:
-        """连续认证失败达到阈值后，重启整个进程以恢复 BLE 会话。"""
+        """连续认证失败达到阈值后，重建 BLE 会话（N=1 即进程重启）。"""
         return auth_fail_count >= BLEManager.MAX_AUTH_FAILURES
 
     async def _recover_from_auth_stuck(self) -> None:
@@ -1496,28 +1555,43 @@ class BLEManager:
                 await self._disconnect()
             if not self._stop_event.is_set():
                 if isinstance(last_error, AuthConnectionError):
-                    # auth 失败可能有两类原因:
-                    # 1. 设备端 session 未清除 (需等待设备自然超时)
-                    # 2. BlueZ GATT 缓存损坏 (需 power cycle 本地适配器)
-                    # 因此 auth 失败也应重置本地适配器，避免陷入永久失败
+                    # 认证失败两类原因:
+                    # 1. 设备端 session 未清除（重连时设备重放上一轮 key exchange）；
+                    # 2. BlueZ GATT 缓存损坏（需 power cycle 本地适配器）。
+                    # 两类都不是"等久一点"能好的（真机实测 120/180/300s 三次全失败），
+                    # 所以只做两级快重试，然后直接 L3 重建会话——换个新进程 30 秒就好。
                     self._reconnect_attempts = 0  # reset: auth failure has its own counter
                     self._auth_fail_count += 1
                     await self._force_disconnect_bluetooth()
-                    if self._should_restart_process(self._auth_fail_count):
+                    if (self._should_restart_process(self._auth_fail_count)
+                            and self._allow_auth_restart()):
+                        self._note_auth_restart()
+                        self.log.warning(
+                            "Auth failed %d times consecutively — rebuilding the BLE "
+                            "session (L3: %s)",
+                            self._auth_fail_count,
+                            "process restart" if self.adapter is None else
+                            "N=1 process restart / N>1 per-device rebuild")
                         await self._recover_from_auth_stuck()
-                    elif self._auth_fail_count >= 5:
+                        # N>1 时重建已排进独立任务并置了 _stop_event，这里退出即可；
+                        # N=1 时不会返回到这里（进程已重启）。
+                        continue
+                    if self._auth_fail_count >= self.MAX_AUTH_FAILURES:
+                        # 预算耗尽：说明重启也救不回来 —— 这是"设备真坏了/token 已换"，
+                        # 要的是告警而不是每两分钟重启一次的循环。
                         self.log.error(
-                            "Auth failed %d times consecutively. "
-                            "Device session is stuck. Please power-cycle the charger "
-                            "(unplug and replug) to reset its BLE session.",
-                            self._auth_fail_count)
-                        self._publish_status({"connected": False, "error": "device_session_stuck"}, retain=True)
-                        # 等待 10 分钟后自动重试（给设备足够时间清除 BLE 会话）
-                        delay = self._auth_backoff_delay(self._auth_fail_count)
-                    else:
-                        delay = self._auth_backoff_delay(self._auth_fail_count)
-                    self.log.warning("Auth failed %d times, reset adapter and waiting %ds...",
-                                    self._auth_fail_count, delay)
+                            "Auth failed %d times consecutively and the L3 rebuild budget "
+                            "is exhausted (%d restarts in %ds). Device session is stuck — "
+                            "power-cycle the charger (unplug and replug) or check that the "
+                            "token in config.yaml still matches this device.",
+                            self._auth_fail_count, self.AUTH_L3_MAX_PER_HOUR,
+                            self.AUTH_L3_WINDOW_SEC)
+                        self._publish_status(
+                            {"connected": False, "error": "device_session_stuck"},
+                            retain=True)
+                    delay = self._auth_backoff_delay(self._auth_fail_count)
+                    self.log.warning("Auth failed %d/%d times, reset adapter and waiting %ds...",
+                                    self._auth_fail_count, self.MAX_AUTH_FAILURES, delay)
                 elif last_error and ('POWERED_OFF' in str(last_error) or 'No powered Bluetooth' in str(last_error)):
                     delay = 60  # Bluetooth powered off, check less frequently
                 elif last_error and 'Charger not found' in str(last_error):
