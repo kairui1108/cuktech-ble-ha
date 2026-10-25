@@ -138,6 +138,7 @@
             renderFirmwareChip();
             resetChartData();
             fetchChartData();                                 // 图表重拉本设备的历史
+            resetEnergyCard();                                // 用电/协议统计同样是每设备一份
             // 桶里可能只有"我们收到过的最后一次快照"（甚至根本没有）：换过去立刻
             // 按新设备拉一次全量状态，避免空白/过期。charge_history 与 charge_limit
             // 各自监听 device-changed 事件自取数据。
@@ -159,6 +160,22 @@
             // 实时累积缓冲与迷你柱状历史同理：都描述"这台设备最近的输出"
             dev.realTimeBuf = { 1: [], 2: [], 3: [], 4: [] };
             updateSummary._hist = [];
+        }
+
+        // 用电统计（总量 / 端口占比 / 协议占比 / 逐时柱状图）也是每设备一份。
+        // 不清空的话，从 A 切到 B 之后的第一秒里，卡片上写的是 A 的 Wh —— 而 B 的
+        // 请求还在路上。用户看到的"统计错了"十有八九就是这一秒的残影。
+        function resetEnergyCard() {
+            _energySeq++;                  // 让在途的旧设备响应作废（它可能后到）
+            energyStats = null;
+            energyProto = null;
+            renderEnergy();
+            refreshEnergyCard();
+            if (energyHourlyLoaded) {
+                energyHourlyLoaded = false;
+                if (hourlyChart) { hourlyChart.destroy(); hourlyChart = null; }
+                fetchEnergyHourly();
+            }
         }
 
         function renderFirmwareChip() {
@@ -2037,4 +2054,110 @@
         }
         if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
             I18N.onChange(rerenderDynamic);
+        }
+
+        // ══════════════════════════════════════════════════════════
+        //  多设备工作台：切换条 + "全部设备"汇总（device-bench.js）
+        //
+        //  这里只提供三件事：怎么把一桶状态折成"仪表上的四个数"、怎么取今日用电、
+        //  以及选设备后的收尾。切换条的形状、排序、动效全在 bench 里——两页共用。
+        //  单设备时 bench 不生成任何 DOM，本段代码对改造前的行为零影响。
+        // ══════════════════════════════════════════════════════════
+        function benchSummary(b) {
+            const order = ['1', '2', '3', '4'];
+            const label = { 1: 'C1', 2: 'C2', 3: 'C3', 4: 'USB-A' };
+            let watts = 0;
+            const ports = order.map((id) => {
+                const p = (b.ports || {})[id] || {};
+                const w = Number(p.power) || 0;
+                if (p.active) watts += w;
+                return {
+                    key: PORT_KEY_MAP[id],
+                    label: label[id],
+                    active: !!p.active,
+                    power: w,
+                    enabled: p.enabled !== false,
+                    // 端口色与设备图上的光条同源，所以"哪口在充"不用读字
+                    color: `var(--port-${PORT_KEY_MAP[id]})`
+                };
+            });
+            return { online: !!(b.connected && b.authenticated), watts, ports };
+        }
+
+        // 今日用电按设备各取一次（汇总页才用；60s 内 bench 自己会缓存）
+        function benchFetchEnergy(id, done) {
+            const u = new URL('/api/device/' + encodeURIComponent(id) + '/energy/stats', API_BASE);
+            u.searchParams.set('period', 'today');
+            fetch(u)
+                .then((r) => r.json())
+                .then((d) => done(typeof d.total_wh === 'number' ? d.total_wh : null))
+                .catch(() => done(null));
+        }
+
+        // ?preview=multi：在只有一台充电器的机器上验收"点卡片整页切换"。
+        // 伪造设备的桶由这里灌（桶的形状是桌面页私有的），点卡片走的是真的
+        // store.switchDevice，请求由 store 拦掉。去掉参数即恢复。
+        const PREVIEW_SYNTH = {
+            pv1: { ports: { 2: { v: 20.1, a: 2.2, proto: 'PD' }, 3: { v: 9.0, a: 1.3, proto: 'QC3' } }, wh: 12.4 },
+            pv2: { ports: { 1: { v: 15.0, a: 1.2, proto: 'UFCS' } }, wh: 6.1 },
+            pv3: { ports: {}, wh: 0 }
+        };
+
+        function previewSeed(id, bucket) {
+            const spec = PREVIEW_SYNTH[id];
+            if (!bucket || !spec) return;
+            const base = DeviceStore.get('default') || {};
+            const basePorts = base.ports || {};
+            const baseWatts = Object.keys(basePorts)
+                .reduce((n, k) => n + (Number(basePorts[k].power) || 0), 0);
+            const online = id !== 'pv3';
+
+            bucket.connected = online;
+            bucket.authenticated = online;
+            bucket.bleConnected = online;
+            bucket.firmware = base.firmware || 'v1.0.0';
+            bucket.settings = Object.assign({}, base.settings || {});
+            bucket.protocolSwitches = Object.assign({}, base.protocolSwitches || {});
+            bucket.protocolExtend = base.protocolExtend || 0;
+            bucket.previewWh = spec.wh;
+            bucket.ports = {};
+            [1, 2, 3, 4].forEach((pid) => {
+                const live = basePorts[String(pid)] || {};
+                const synth = spec.ports[pid];
+                let power = 0, voltage = 0, current = 0, protocol = 'idle';
+                if (online) {
+                    if (baseWatts > 0) {
+                        // 真机在充电：按比例缩放，读数看着才"同源"（pv1 就是真机本体）
+                        power = Math.round((Number(live.power) || 0) * (id === 'pv1' ? 1 : 0.55) * 10) / 10;
+                        voltage = live.voltage || 0;
+                        current = live.current || 0;
+                        protocol = power > 0 ? (live.protocol || 'idle') : 'idle';
+                    } else if (synth) {
+                        // 真机空载：给固定读数，否则三张卡片全是 0W，看不出切换有没有生效
+                        voltage = synth.v; current = synth.a;
+                        power = Math.round(voltage * current * 10) / 10;
+                        protocol = synth.proto;
+                    }
+                }
+                bucket.ports[String(pid)] = {
+                    voltage, current, power,
+                    active: power > 0,
+                    enabled: online,
+                    protocol
+                };
+            });
+        }
+
+        if (typeof DeviceBench !== 'undefined') {
+            DeviceBench.init({
+                railId: 'deviceSwitcher',
+                preview: /[?&]preview=multi/.test(location.search),
+                previewSeed,
+                fleetId: 'fleetView',
+                summarise: benchSummary,
+                fetchEnergy: benchFetchEnergy,
+                // 选中设备后：单设备视图重放由 DeviceStore 自己触发，
+                // 这里只把图表拉回该设备（切设备时 replay 已经拉过一次，避免重复请求）
+                onPick: () => { DeviceStore.renderSwitcher(); }
+            });
         }

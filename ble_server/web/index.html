@@ -36,18 +36,20 @@
     })();
     </script>
 
-    <script src="/static/locales/zh-CN.js?v=22"></script>
-    <script src="/static/locales/en.js?v=22"></script>
-    <script src="/static/i18n.js?v=5"></script>
+    <script src="/static/locales/zh-CN.js?v=24"></script>
+    <script src="/static/locales/en.js?v=24"></script>
+    <script src="/static/i18n.js?v=6"></script>
     <!-- 多设备状态中枢：必须早于 app.js（后者在顶层就用它的视图），
          也必须早于 charge_history/charge_limit（两者都经它发请求） -->
-    <script src="/static/device-store.js?v=1"></script>
+    <script src="/static/device-store.js?v=8"></script>
+    <!-- 多设备工作台（切换条 + 全部设备汇总）：只做呈现，数据与请求仍走 device-store.js -->
+    <script src="/static/device-bench.js?v=18"></script>
     <script defer src="/static/chart.umd.min.js"></script>
     <script defer src="/static/charge_history.js?v=17"></script>
     <script defer src="/static/charge_limit.js?v=25"></script>
     <script src="/static/chart-loader.js"></script>
     <script src="/static/chart-config.js"></script>
-    <link rel="stylesheet" href="static/index.css?v=36">
+    <link rel="stylesheet" href="static/index.css?v=52">
 </head>
 <body>
 
@@ -57,6 +59,8 @@
     <symbol id="i-list" viewBox="0 0 24 24"><path d="M3.8 7h16.4M3.8 12h16.4M3.8 17h10.4"/></symbol>
     <symbol id="i-github" viewBox="0 0 24 24"><path d="M12 2.2a10 10 0 0 0-3.2 19.5c.5.1.7-.2.7-.5v-1.8c-2.8.6-3.4-1.3-3.4-1.3-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.4-1.1.7-1.3-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7 1 .7 2v2.9c0 .3.2.6.7.5A10 10 0 0 0 12 2.2Z"/></symbol>
     <symbol id="i-external" viewBox="0 0 24 24"><path d="M13.8 4h6.4v6.4"/><path d="M20.2 4 11.6 12.6"/><path d="M18 14.6V18a2.2 2.2 0 0 1-2.2 2.2H6a2.2 2.2 0 0 1-2.2-2.2V8.2A2.2 2.2 0 0 1 6 6h3.5"/></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="M15 4.8 8 12l7 7.2"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="M9 4.8 16 12l-7 7.2"/></symbol>
     <symbol id="i-cog" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M19.1 14.4a1.5 1.5 0 0 0 .3 1.7l.1.1a1.9 1.9 0 1 1-2.7 2.7l-.1-.1a1.5 1.5 0 0 0-2.6 1.1v.2a1.9 1.9 0 1 1-3.8 0v-.1a1.5 1.5 0 0 0-2.6-1.1l-.1.1a1.9 1.9 0 1 1-2.7-2.7l.1-.1a1.5 1.5 0 0 0-1.1-2.6h-.2a1.9 1.9 0 1 1 0-3.8h.1a1.5 1.5 0 0 0 1.1-2.6l-.1-.1a1.9 1.9 0 1 1 2.7-2.7l.1.1a1.5 1.5 0 0 0 1.7.3h.1a1.5 1.5 0 0 0 .9-1.4v-.2a1.9 1.9 0 1 1 3.8 0v.1a1.5 1.5 0 0 0 2.6 1.1l.1-.1a1.9 1.9 0 1 1 2.7 2.7l-.1.1a1.5 1.5 0 0 0 1.1 2.6h.2a1.9 1.9 0 1 1 0 3.8h-.1a1.5 1.5 0 0 0-1.4.9Z"/></symbol>
 </svg>
 
@@ -124,16 +128,16 @@
         </div>
     </header>
 
-    <!-- 设备切换器：由 SSE init 的 devices 列表驱动（§3.12/§3.8）。服务端只在
-         ≥2 台设备时才发这个列表，所以单设备时这里始终 hidden —— 视觉与改造前
-         完全一致，连一个像素都不多占。 -->
-    <nav class="device-switcher" id="deviceSwitcher" hidden></nav>
-
     <main class="wrap page">
         <div class="page-grid">
 
             <!-- ── 主列：设备状态 → 端口控制 → 数据与记录 ── -->
             <div class="col-main">
+
+                <!-- 全部设备（汇总页）：点切换条上的"全部"时出现。它占住主列、侧列
+                     只留设备堆栈（.fleet-mode），所以点任意一台就能回去 —— 不需要
+                     再做一个"返回"。单设备时永不生成内容。 -->
+                <div class="fleet-view" id="fleetView" hidden></div>
 
                 <!-- 设备 + 端口：合成一张卡（左＝设备面板与总览数值，右＝四个端口） -->
                 <section class="card card-top" id="cardTop">
@@ -315,8 +319,15 @@
 
             </div>
 
-            <!-- ── 侧列：总功率 / 场景 / 限额 / 倒计时 / 杂项设置 ── -->
+            <!-- ── 侧列：设备堆栈 / 总功率 / 场景 / 限额 / 倒计时 / 杂项设置 ── -->
             <div class="col-side">
+
+                <!-- 设备切换：一叠小卡片，放在"当前总功率"卡正上方。点哪张，整页
+                     （设备面板 / 端口控制 / 图表 / 设置 / 记录）就换成那台的数据。
+                     由 SSE init 的 devices 列表驱动（§3.12/§3.8）：服务端只在 ≥2 台
+                     时才发这个列表，单设备时这里始终 hidden —— 与改造前完全一致，
+                     一个像素都不多占。 -->
+                <nav class="device-switcher" id="deviceSwitcher" hidden></nav>
 
                 <!-- 当前总功率 + 功率占比条（phone.html rate-card 同款） -->
                 <section class="card card-rate" id="cardRate">
@@ -366,17 +377,6 @@
                     </div>
                 </section>
 
-                <!-- 设备设置 -->
-                <section class="card" id="cardSettings">
-                    <div class="card-title">
-                        <span data-i18n="index.deviceSettings">设备设置</span>
-                        <button class="tool-btn settings-open" id="settingsOpen" type="button" onclick="openSettingsModal()">
-                            <svg class="ic" aria-hidden="true"><use href="#i-cog"/></svg>
-                            <span data-i18n="index.settingsOpen">设置</span>
-                        </button>
-                    </div>
-                </section>
-
             </div>
         </div>
     </main>
@@ -402,7 +402,9 @@
 <div class="settings-overlay" id="settingsModal">
     <div class="modal" role="dialog" aria-modal="true">
         <div class="modal-header">
-            <span class="modal-title" data-i18n="index.deviceSettings">设备设置</span>
+            <!-- 标题带设备名：同一份设置弹窗现在由切换条上的卡片打开，
+                 不写清是"哪一台"的设置，用户切过去就看不出变化 -->
+            <span class="modal-title"><span data-i18n="index.deviceSettings">设备设置</span><span id="settingsDeviceName"></span></span>
             <button class="modal-close" onclick="closeSettingsModal()" type="button" aria-label="close">&times;</button>
         </div>
         <div class="settings-grid" id="settingsGrid">
@@ -433,11 +435,16 @@
 </div>
 
 <script>
-// 设备设置浮层：配置行平时不占右栏高度，点"设置"弹出
+// 设备设置浮层：**单击侧栏切换条上的卡片**弹出，标题里带上那台设备的名字。
+// 配置项跟着设备的桶走（切换设备 = 换一份设置），所以弹窗不需要自己记是哪台。
 (function () {
     var modal = document.getElementById('settingsModal');
     if (!modal) return;
-    function open() { modal.classList.add('is-open'); }
+    var nameEl = document.getElementById('settingsDeviceName');
+    function open(name) {
+        if (nameEl) nameEl.textContent = name ? ' · ' + name : '';
+        modal.classList.add('is-open');
+    }
     function close() { modal.classList.remove('is-open'); }
     window.openSettingsModal = open;
     window.closeSettingsModal = close;
@@ -753,6 +760,6 @@
 
 </script>
 
-<script defer src="/static/app.js?v=28"></script>
+<script defer src="/static/app.js?v=32"></script>
 </body>
 </html>

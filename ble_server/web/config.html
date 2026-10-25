@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title data-i18n="pageTitle.config">CUKTECH 配置</title>
 <link rel="icon" href="/static/favicon.ico">
-<script src="/static/locales/zh-CN.js?v=14"></script>
-<script src="/static/locales/en.js?v=14"></script>
-<script src="/static/i18n.js?v=3"></script>
-<link rel="stylesheet" href="static/phone.css?v=14">
+<script src="/static/locales/zh-CN.js?v=24"></script>
+<script src="/static/locales/en.js?v=24"></script>
+<script src="/static/i18n.js?v=6"></script>
+<link rel="stylesheet" href="static/phone.css?v=36">
 <style>
 /* Config page overrides */
 .config-section { margin-top: 12px; }
@@ -308,7 +308,13 @@ function updateDeviceField(index, field, value) {
 }
 
 function deviceLabel(d) {
-    return d.name || d.id || I18N.t('config.addDevice');
+    // 服务端在"没配名字"时会把内部 id 回填进 name（`describe()` 的 `name or id`），
+    // 所以 name === id 等价于没名字——否则中文页面上会冒出 `default` 这种英文标识。
+    if (d.name && d.name !== d.id) return d.name;
+    // primary 的名字可以为空（服务端只有 ble: 节，没有名字字段）：此时绝不能把
+    // 内部 id `default` 顶上去——中文页面上冒出一串英文字符，用户根本不知道那是谁。
+    if (d.is_primary) return I18N.t('device.primaryName');
+    return d.id || I18N.t('device.unnamedDevice');
 }
 
 // 卡片列表：编辑态与在线状态都只是"改写已有节点"，整块 innerHTML 只在

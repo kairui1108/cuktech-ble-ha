@@ -46,7 +46,6 @@
 
         // ── Index page ──
         index: {
-            settingsOpen: '设置',
             connectionStatus: '连接状态',
             bleControl: 'BLE 控制',
             powerChart: '功率曲线',
@@ -357,7 +356,25 @@
 
         // ── Device switcher（多设备共用，index.html / phone.html）──
         device: {
-            switcher: '设备切换'
+            switcher: '设备切换',
+            // ── 多设备工作台（device-bench.js）──
+            // 全部设备的显示名用"充电器"而不是内部 id：primary 没有名字时绝不能把
+            // `default` 这种内部标识塞给用户（中文页面里出现英文字符串的常见来源）。
+            all: '全部',
+            unnamedDevice: '未命名设备',
+            primaryName: '默认充电器',
+            // 桌面牌堆上那张卡既可拖动翻牌，也可单击打开这台设备的设置。
+            cardHint: '单击打开这台设备的设置',
+            allHint: '单击查看全部设备',
+            // 翻牌箭头的读屏文案（界面上不出现文字，只出现箭头）
+            prev: '上一台',
+            next: '下一台',
+            onlineCount: '{{online}}/{{total}} 在线',
+            fleetTitle: '全部充电器',
+            fleetNow: '实时',
+            fleetOnline: '在线',
+            fleetToday: '今日',
+            todayWh: '今日 {{wh}} Wh'
         },
 
         // ── Device info (HA iframe) ──

@@ -6,6 +6,11 @@ const API_BASE = window.location.origin;
 // 放全局还有一个原因：页面的 bfcache 处理器要能关掉它并置空（见 initPhoneSSE）。
 let phoneEvtSource = null;
 
+// 设备下拉菜单的门闩：renderAll() 在很早就可能被调用（init 的重放），而菜单
+// 那几个 DOM 引用是文件靠后处的 const（那时还在 TDZ 里）。var 在脚本开头就已
+// 初始化，所以先用它挡住早期调用，菜单段执行完再打开。
+var deviceMenuReady = false;
+
 // Localized scene names/descriptions (keys into the i18n resource packs)
 function sceneName(mode) { return I18N.t('scene.' + ({ 1: 'ai', 2: 'eco', 3: 'single', 4: 'balanced' }[mode] || 'ai')); }
 function sceneDesc(mode) { return I18N.t('scene.desc' + ({ 1: 'Ai', 2: 'Eco', 3: 'Single', 4: 'Balanced' }[mode] || 'Ai')); }
@@ -263,6 +268,7 @@ async function toggleConnection() {
 
 // ── Render ──
 function renderAll() {
+    renderDeviceMenu(false);   // 标题（当前设备名）与展开列表里的数值
     renderDeviceArea();
     renderSceneCard();
     renderPortCtl();
@@ -1358,3 +1364,320 @@ if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
         renderAll();
     });
 }
+
+// ── 多设备工作台：切换条 + "全部设备"汇总（device-bench.js，手机版） ──
+// 手机页的端口桶是 c1..a + {v,a,w} 形状（见 applyPortsToBucket），与桌面页的
+// API 形状不同，所以折算函数由本页提供；bench 只负责画。
+function benchSummary(b) {
+    let watts = 0;
+    const ports = PORT_KEYS.map((key) => {
+        const p = (b.ports || {})[key] || {};
+        const w = Number(p.w) || 0;
+        // 手机桶没有 active 字段：w/v 非零就是这口在供电（与渲染层同一判定）
+        const active = w > 0 || (Number(p.v) || 0) > 0;
+        if (active) watts += w;
+        return {
+            key,
+            label: PORT_NAMES[key],
+            active,
+            power: w,
+            enabled: p.enabled !== false,
+            color: PORT_COLORS[key]
+        };
+    });
+    return { online: !!(b.connected && b.authenticated), watts, ports };
+}
+
+// ── 预览（?preview=multi）：单台充电器上也能验收"点标题切整页" ──
+// 伪造设备的桶由这里灌——手机桶是 c1..a + {v,a,w} 形状，桌面页那份不能直接用。
+// 切设备走的是真的 DeviceStore.switchDevice，请求由 store 拦掉（不出网），
+// 所以看到的是真机制，不是效果图。去掉参数即恢复。
+const PHONE_PREVIEW = /[?&]preview=multi/.test(location.search);
+const PREVIEW_SYNTH = {
+    pv1: { ports: { c2: { v: 20.1, a: 2.2, proto: 'PD' }, c3: { v: 9.0, a: 1.3, proto: 'QC3' } }, wh: 12.4 },
+    pv2: { ports: { c1: { v: 15.0, a: 1.2, proto: 'UFCS' } }, wh: 6.1 },
+    pv3: { ports: {}, wh: 0 }
+};
+
+function phonePreviewSeed(id, bucket) {
+    const spec = PREVIEW_SYNTH[id];
+    if (!bucket || !spec) return;
+    const base = DeviceStore.get('default') || {};
+    const basePorts = base.ports || {};
+    const realW = PORT_KEYS.reduce((n, k) => n + (Number((basePorts[k] || {}).w) || 0), 0);
+    const online = id !== 'pv3';
+
+    bucket.connected = online;
+    bucket.authenticated = online;
+    bucket.bleConnected = online;
+    bucket.firmware = base.firmware || 'v1.0.0';
+    bucket.settings = Object.assign({}, base.settings || {});
+    bucket.scene = base.scene || 1;
+    bucket.screenTime = base.screenTime || 1;
+    bucket.trickleEnabled = !!base.trickleEnabled;
+    bucket.delayMinutes = Object.assign({}, base.delayMinutes || {});
+    bucket.previewWh = spec.wh;
+
+    for (const key of PORT_KEYS) {
+        const live = basePorts[key] || {};
+        const synth = spec.ports[key];
+        let w = 0, v = 0, a = 0, protocol = 'idle';
+        if (online) {
+            if (realW > 0) {
+                // 真机在充电：按比例缩放，读数"同源"，切过去的手感才是真的
+                const scale = id === 'pv1' ? 1 : 0.55;
+                w = Math.round((Number(live.w) || 0) * scale * 10) / 10;
+                v = live.v || 0;
+                a = live.a || 0;
+                protocol = w > 0 ? (live.protocol || 'idle') : 'idle';
+            } else if (synth) {
+                // 真机空载：给固定读数，否则几张卡全是 0W，看不出切换有没有生效
+                v = synth.v;
+                a = synth.a;
+                w = Math.round(v * a * 10) / 10;
+                protocol = synth.proto;
+            }
+        }
+        bucket.ports[key] = { v, a, w, protocol, enabled: online };
+    }
+}
+
+function benchFetchEnergy(id, done) {
+    const u = new URL('/api/device/' + encodeURIComponent(id) + '/energy/stats', API_BASE);
+    u.searchParams.set('period', 'today');
+    fetch(u)
+        .then((r) => r.json())
+        .then((d) => done(typeof d.total_wh === 'number' ? d.total_wh : null))
+        .catch(() => done(null));
+}
+
+if (typeof DeviceBench !== 'undefined') {
+    // 手机上 bench 只负责"全部设备"那一页；设备切换长在标题栏的下拉列表里
+    // （下一节，phone.js 自己渲染），所以这里不传 railId。
+    DeviceBench.init({
+        fleetId: 'fleetView',
+        summarise: benchSummary,
+        fetchEnergy: benchFetchEnergy,
+        preview: PHONE_PREVIEW,
+        previewSeed: phonePreviewSeed,
+        // 进/出"全部设备"页时标题要跟着变（标题里显示的就是"你现在在看什么"）
+        onMode: function () { renderDeviceMenu(true); }
+    });
+}
+
+// ── 设备切换：点标题栏 → 下拉列表（小卡片预览功率）──────────────────────
+// 为什么不是原来那条吸顶横条：它固定占掉 58px，而手机上这一栏要显示的其实只有
+// "我现在看的是哪台"和"切到哪台"——那正是标题的位置。收起来时一个像素都不占。
+const navTitleText = document.getElementById('navTitleText');
+const navProductName = navTitleText ? navTitleText.textContent : '';
+const deviceMenuBtn = document.getElementById('deviceMenuBtn');
+const deviceMenuCaret = document.getElementById('deviceMenuCaret');
+const deviceMenu = document.getElementById('deviceMenu');
+const deviceMenuList = document.getElementById('deviceMenuList');
+let deviceMenuOpen = false;
+let deviceMenuSig = '';
+deviceMenuReady = true;      // 到这里 DOM 引用都拿到了，早期调用可以真正干活了
+
+/** 设备清单：与 bench 用的是同一份 —— 这样 ?preview=multi 的伪造设备在手机上
+ *  也出现在菜单里（单设备的服务端不在 SSE 里发 devices，§3.8）。 */
+function menuDevices() {
+    if (typeof DeviceBench !== 'undefined' && DeviceBench.devices) return DeviceBench.devices();
+    const list = DeviceStore.devices();
+    if (list.length) return list;
+    const id = DeviceStore.current();
+    return id ? [{ id: id, name: '', is_primary: true }] : [];
+}
+
+function menuLabel(d) {
+    return DeviceStore.deviceLabel ? DeviceStore.deviceLabel(d) : (d.name || d.id);
+}
+
+function escHtml(v) {
+    return String(v === undefined || v === null ? '' : v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/** 一行小卡片：灯 / 名字 / 端口微点 / 瓦数 / 功率脊（刻度 120W，与桌面一致）。 */
+function deviceItemHtml(id, name, opts) {
+    const sum = opts && opts.summary ? opts.summary : benchSummary(DeviceStore.get(id) || {});
+    const dots = (sum.ports || []).map((p) => {
+        const on = p.active ? ' is-on' : '';
+        const off = p.enabled === false ? ' is-off-mode' : '';
+        return '<i class="bench-port' + on + off + '" style="--pc:' + escHtml(p.color || 'currentColor') + '"></i>';
+    }).join('');
+    return '<i class="bench-led' + (sum.online ? ' is-on' : '') + '"></i>'
+        + '<span class="bench-body">'
+        + '<span class="bench-name">' + escHtml(name) + '</span>'
+        + (opts && opts.meta ? '<span class="bench-meta">' + escHtml(opts.meta) + '</span>'
+                             : '<span class="bench-ports">' + dots + '</span>')
+        + '</span>'
+        + '<span class="bench-right"><span class="bench-w"><b></b><em>W</em></span></span>'
+        + '<span class="bench-spine" aria-hidden="true"></span>';
+}
+
+/** 标题 + 列表。结构只在"设备清单 / 语言"变了时重建，瓦数每帧只改文本。 */
+function renderDeviceMenu(force) {
+    if (!deviceMenuReady || !deviceMenuBtn || !deviceMenuList) return;
+    const list = menuDevices();
+    const multi = list.length >= 2;
+    const cur = DeviceStore.current();
+    const curDevice = list.find((d) => d.id === cur) || list[0];
+
+    // 标题：多台时显示"当前这台"（一眼知道在看谁），在汇总页时显示"全部"，
+    // 单台时保持产品名且不可点。
+    const inFleet = (typeof DeviceBench !== 'undefined' && DeviceBench.isFleet)
+        ? DeviceBench.isFleet() : false;
+    if (navTitleText) {
+        navTitleText.textContent = inFleet ? I18N.t('device.all')
+            : (multi && curDevice ? menuLabel(curDevice) : navProductName);
+    }
+    deviceMenuBtn.disabled = !multi;
+    if (deviceMenuCaret) deviceMenuCaret.hidden = !multi;
+    if (!multi) { closeDeviceMenu(); return; }
+    // 收起来时只维护标题（"我现在在看哪台"），列表等展开时再建
+    if (!deviceMenuOpen && !force) return;
+
+    const sig = (PHONE_PREVIEW ? 'pv|' : '') + I18N.getLocale() + '|'
+        + list.map((d) => d.id + ':' + menuLabel(d)).join(',');
+    if (force || sig !== deviceMenuSig) {
+        deviceMenuSig = sig;
+        deviceMenuList.innerHTML = (PHONE_PREVIEW
+                ? '<li class="dev-menu-tag" aria-hidden="true">PREVIEW</li>' : '')
+            + list.map((d) => {
+            return '<li class="dev-item" role="option" tabindex="0" data-device="' + escHtml(d.id) + '">'
+                + deviceItemHtml(d.id, menuLabel(d)) + '</li>';
+        }).join('')
+            // "全部设备"：多台时才有的汇总页入口（虚线框，和真的设备卡片区分开）
+            + '<li class="dev-item dev-item--all" role="option" tabindex="0" data-device="__all__">'
+            + deviceItemHtml(cur || '', I18N.t('device.all'), {
+                summary: { online: true, ports: [] },
+                meta: I18N.t('device.onlineCount', { online: menuOnlineCount(list), total: list.length })
+            })
+            + '</li>';
+    }
+
+    // 数值每帧刷新（不重建 DOM）
+    const items = deviceMenuList.querySelectorAll('.dev-item');
+    for (const item of items) {
+        const id = item.getAttribute('data-device');
+        const b = item.querySelector('.bench-w b');
+        const spine = item.querySelector('.bench-spine');
+        if (id === '__all__') {
+            let total = 0, online = 0;
+            for (const d of list) {
+                const s = benchSummary(DeviceStore.get(d.id) || {});
+                total += s.watts;
+                if (s.online) online += 1;
+            }
+            if (b) b.textContent = String(Math.round(total));
+            if (spine) spine.style.setProperty('--share', String(menuShare(total, 120 * Math.max(1, list.length))));
+            const led = item.querySelector('.bench-led');
+            if (led) led.classList.toggle('is-on', online > 0);
+            continue;
+        }
+        const sum = benchSummary(DeviceStore.get(id) || {});
+        if (b) b.textContent = String(Math.round(sum.watts));
+        if (spine) spine.style.setProperty('--share', String(menuShare(sum.watts, 120)));
+        item.classList.toggle('is-current', id === cur);
+        item.setAttribute('aria-selected', id === cur ? 'true' : 'false');
+        const led = item.querySelector('.bench-led');
+        if (led) led.classList.toggle('is-on', !!sum.online);
+        const portEls = item.querySelectorAll('.bench-port');
+        (sum.ports || []).forEach((p, i) => {
+            const el = portEls[i];
+            if (!el) return;
+            el.classList.toggle('is-on', !!p.active);
+            el.style.setProperty('--pc', p.color || 'currentColor');
+        });
+    }
+}
+
+function menuOnlineCount(list) {
+    return list.filter((d) => benchSummary(DeviceStore.get(d.id) || {}).online).length;
+}
+
+/** 功率脊刻度：该台 / 120W；"全部"那张 / (n × 120W)。与桌面牌堆同一口径。 */
+function menuShare(watts, max) {
+    if (!(watts > 0) || !(max > 0)) return 0;
+    return Math.min(1, Math.max(0.02, watts / max));
+}
+
+function openDeviceMenu() {
+    if (!deviceMenu || deviceMenuBtn.disabled) return;
+    deviceMenuOpen = true;
+    deviceMenu.hidden = false;
+    deviceMenuBtn.setAttribute('aria-expanded', 'true');
+    renderDeviceMenu(true);
+}
+
+function closeDeviceMenu() {
+    if (!deviceMenu || !deviceMenuOpen) {
+        if (deviceMenu) deviceMenu.hidden = true;
+        if (deviceMenuBtn) deviceMenuBtn.setAttribute('aria-expanded', 'false');
+        deviceMenuOpen = false;
+        return;
+    }
+    deviceMenuOpen = false;
+    deviceMenu.hidden = true;
+    deviceMenuBtn.setAttribute('aria-expanded', 'false');
+}
+
+function toggleDeviceMenu() {
+    if (deviceMenuOpen) closeDeviceMenu(); else openDeviceMenu();
+}
+
+function pickDeviceItem(el) {
+    if (!el) return;
+    const id = el.getAttribute('data-device');
+    closeDeviceMenu();
+    if (id === '__all__') {
+        if (typeof DeviceBench !== 'undefined') DeviceBench.enterFleet();
+        return;
+    }
+    // 从汇总页点某一台：先退出汇总页，再切设备（否则页面还停在清单上）
+    if (typeof DeviceBench !== 'undefined' && DeviceBench.isFleet && DeviceBench.isFleet()) {
+        DeviceBench.exitFleet();
+    }
+    if (id && id !== DeviceStore.current()) DeviceStore.switchDevice(id);
+    else renderDeviceMenu(true);
+}
+
+if (deviceMenuBtn) {
+    deviceMenuBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleDeviceMenu(); });
+    document.addEventListener('click', (e) => {
+        if (!deviceMenuOpen) return;
+        if (deviceMenu && deviceMenu.contains(e.target)) return;
+        if (deviceMenuBtn.contains(e.target)) return;
+        closeDeviceMenu();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && deviceMenuOpen) closeDeviceMenu();
+    });
+}
+if (deviceMenuList) {
+    deviceMenuList.addEventListener('click', (e) => {
+        const item = e.target.closest ? e.target.closest('.dev-item') : null;
+        pickDeviceItem(item);
+    });
+    deviceMenuList.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        const item = e.target.closest ? e.target.closest('.dev-item') : null;
+        if (!item) return;
+        e.preventDefault();
+        pickDeviceItem(item);
+    });
+}
+
+// 设备清单 / 当前指针 / 语言 变了都要重画标题与列表。
+// 清单变化走 store 的那个唯一信号（setSwitcherRenderer：store 负责数据、
+// 页面负责长相），指针变化走 onChange。
+if (DeviceStore.setSwitcherRenderer) {
+    DeviceStore.setSwitcherRenderer(function () { renderDeviceMenu(true); });
+}
+DeviceStore.onChange(function () { renderDeviceMenu(true); });
+if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
+    I18N.onChange(function () { renderDeviceMenu(true); });
+}
+renderDeviceMenu(true);
+setInterval(function () { if (deviceMenuOpen) renderDeviceMenu(false); }, 1000);

@@ -34,6 +34,8 @@
     var replay = [];                // 换设备时要重放的渲染函数，顺序即渲染顺序
     var listeners = [];             // 直接注册的 device-changed 回调
     var switcher = null;            // 切换器容器（页面里可选）
+    var customSwitcher = null;      // 接管切换条渲染（device-bench.js：多设备工作台）
+    var previewIds = [];            // 预览用的伪造设备（?preview=multi）：不落盘、不发请求
     var switcherSig = '';           // 设备清单指纹：清单没变就不重建切换器 DOM
     var view = null;                // 当前设备桶的读写视图（Proxy）
 
@@ -49,6 +51,12 @@
     }
 
     function currentBucket() { return bucketOf(current); }
+
+    function toReplayList(v) {
+        if (!v) return [];
+        if (typeof v === 'function') return [v];
+        return Array.prototype.slice.call(v);
+    }
 
     // 当前设备那一桶的读写视图。用 Proxy 而不是给每个变量配一对访问器：
     // 页面里的渲染函数（app.js 约 900 行）遍布全文，让它们继续写 `dev.ports`
@@ -73,6 +81,9 @@
 
     // 选中态同时写 URL（可刷新可分享）与 localStorage（记住上次）。
     function persist(id) {
+        // 预览设备在服务端不存在：写进 URL/localStorage 只会让下次打开落在一个
+        // 不存在的设备上，所以预览态一律不落盘。
+        if (isPreviewId(id)) return;
         try { global.localStorage.setItem(STORAGE_KEY, id); } catch (e) {}
         try {
             var u = new URL(global.location.href);
@@ -100,11 +111,60 @@
         return u.toString();
     }
 
+    /**
+     * 预览设备（只在 ?preview=multi 且由页面明确登记时存在）绝不出网：
+     * 服务端没有这台设备，真发出去只会一串 404，而 404 的空白页面既看不出
+     * "排版对不对"，也看不出"切过去了"。
+     *
+     * 所以这里回一份**从该设备自己的桶里长出来的**假响应：/api/status 的字段
+     * 逐项对着桶里的现值，页面照常 renderPorts/updateSettingsUI，界面就停在这台
+     * 伪造设备的快照上（和真的收到一条 SSE 走的是同一条路径）。
+     */
+    function previewResponse(path) {
+        var b = currentBucket() || {};
+        var out = { ok: true };
+        var p = String(path);
+        if (p.indexOf('/api/status') >= 0) {
+            out.connected = !!b.connected;
+            out.authenticated = !!b.authenticated;
+            out.ports = b.ports || {};
+            out.settings = b.settings || {};
+            out.protocol_switches = b.protocolSwitches || {};
+            out.protocol_extend = b.protocolExtend || 0;
+            out.firmware_version = b.firmware || '';
+        } else if (p.indexOf('/api/energy/stats') >= 0) {
+            out.total_wh = Number(b.previewWh) || 0;
+            out.by_port = {};
+        } else if (p.indexOf('/api/chart') >= 0) {
+            // 伪造设备没有历史：让页面画空图，而不是画上一台的曲线
+            out.ok = false;
+        }
+        return { ok: true, status: 200, json: function () { return Promise.resolve(out); } };
+    }
+
+    function isPreviewId(id) { return previewIds.indexOf(id) >= 0; }
+
     function api(path, opts) {
+        if (isPreviewId(current)) return Promise.resolve(previewResponse(path));
         return global.fetch(url(path), opts);
     }
 
     // ── 设备清单与切换器 ──
+
+    /**
+     * 用户可见的设备名。
+     * 服务端"没配名字"时会把内部 id 回填进 name（`describe()` 的 `name or id`），
+     * 所以 name === id 等价于没名字：直接把 `default` 这种内部标识印在中文页面上，
+     * 用户既不知道那是谁，也看着像一串英文乱码。
+     */
+    function deviceLabel(d) {
+        if (!d) return '';
+        var named = d.name && d.name !== d.id;
+        if (named) return d.name;
+        var t = (global.I18N && global.I18N.t) ? global.I18N.t : null;
+        if (d.is_primary || d.id === PRIMARY) return t ? t('device.primaryName') : 'Charger';
+        return d.name || d.id || (t ? t('device.unnamedDevice') : '');
+    }
 
     function esc(text) {
         return String(text === undefined || text === null ? '' : text)
@@ -129,6 +189,12 @@
     // 切换器 DOM：pills 只在"设备清单变了"时重建（每帧重建会打断 hover 与点击），
     // 选中态与在线圆点每帧只改 class。
     function renderSwitcher() {
+        // 工作台接管时，切换条的 DOM 归 device-bench.js 管（它还要画端口微点与功率脊）。
+        // 本函数仍是**唯一**的"清单变化"信号源：store 负责数据，bench 负责长相。
+        if (customSwitcher) {
+            try { customSwitcher(); } catch (e) { console.error('custom switcher failed:', e); }
+            return;
+        }
         if (!switcher) return;
         // 单设备（或服务端没给列表）：整条隐藏 —— 与改造前的视觉完全一致
         if (devices.length < 2) {
@@ -144,7 +210,7 @@
         markBody(true);
         // 指纹里带语言：pills 里唯一需要翻译的是 aria-label，切语言时得重建一次
         var locale = (global.I18N && global.I18N.getLocale) ? global.I18N.getLocale() : '';
-        var sig = locale + '\u0003' + devices.map(function (d) { return d.id + '\u0001' + (d.name || d.id); }).join('\u0002');
+        var sig = locale + '\u0003' + devices.map(function (d) { return d.id + '\u0001' + deviceLabel(d); }).join('\u0002');
         if (sig !== switcherSig) {
             switcherSig = sig;
             var label = (global.I18N && global.I18N.t) ? global.I18N.t('device.switcher') : 'Devices';
@@ -154,7 +220,7 @@
                     return '<button type="button" class="time-btn device-pill" role="tab" data-device="'
                         + esc(d.id) + '" aria-selected="false">'
                         + '<i class="device-dot" aria-hidden="true"></i>'
-                        + '<span class="device-pill-name">' + esc(d.name || d.id) + '</span></button>';
+                        + '<span class="device-pill-name">' + esc(deviceLabel(d)) + '</span></button>';
                 }).join('')
                 + '</div></div>';
         }
@@ -312,7 +378,12 @@
         defaults = opts.defaults || null;
         applyPorts = opts.applyPorts || null;
         serviceEvent = opts.service || null;
-        replay = opts.replay || [];
+        // replay 既接受"一个函数"也接受"函数数组"。两个页面都是各写一个
+        // replayDeviceView 传进来的——早先这里只当数组处理，于是函数被赋值给
+        // `replay`，而函数也有 `.length`（形参个数，这里是 0）→ replayAll 一次
+        // 都不跑。表现就是：切了设备，指针动了、监听 device-changed 的历史/限额
+        // 卡也换了，但设备面板、端口、图表、设置还停在上一台——最像"串台"的那种。
+        replay = toReplayList(opts.replay);
         resolveInitial();
         view = makeView();
         if (opts.switcherId && global.document) bindSwitcher(global.document.getElementById(opts.switcherId));
@@ -327,8 +398,17 @@
         dispatch: dispatch,
         switchDevice: switchDevice,
         renderSwitcher: renderSwitcher,
+        setSwitcherRenderer: function (fn) { customSwitcher = fn; renderSwitcher(); },
+        // 预览：登记伪造设备（空数组退出预览）。登记后这些 id 不发请求、不落盘。
+        setPreviewIds: function (ids) { previewIds = (ids || []).slice(); },
+        isPreviewId: isPreviewId,
         current: function () { return current; },
+        deviceLabel: deviceLabel,
         devices: function () { return devices.slice(); },
+        // 设备清单的"另一个来源"：单设备的服务端不在 SSE 里发 devices（§3.8），
+        // 界面侧探测 /api/devices 拿到之后交给 store，后面全按同一份清单走。
+        // 只在清单为空时被调用，多设备路径的行为完全不变。
+        setDevices: setDevices,
         get: function (id) { return bucketOf(id); },
         onChange: function (fn) { listeners.push(fn); }
     };

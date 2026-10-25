@@ -46,7 +46,6 @@
 
         // ── Index page ──
         index: {
-            settingsOpen: 'Options',
             connectionStatus: 'Connection Status',
             bleControl: 'BLE Control',
             powerChart: 'Power Chart',
@@ -356,7 +355,23 @@
 
         // ── Device switcher（多设备共用，index.html / phone.html）──
         device: {
-            switcher: 'Switch device'
+            switcher: 'Switch device',
+            // ── multi-device bench (device-bench.js) ──
+            all: 'All',
+            unnamedDevice: 'Unnamed device',
+            primaryName: 'Main charger',
+            // 桌面牌堆上那张卡既可拖动翻牌，也可单击打开这台设备的设置。
+            cardHint: 'Open this device\'s settings',
+            allHint: 'Show all devices',
+            // 翻牌箭头的读屏文案（界面上不出现文字，只出现箭头）
+            prev: 'Previous device',
+            next: 'Next device',
+            onlineCount: '{{online}}/{{total}} online',
+            fleetTitle: 'All chargers',
+            fleetNow: 'Live',
+            fleetOnline: 'Online',
+            fleetToday: 'Today',
+            todayWh: '{{wh}} Wh today'
         },
 
         // ── Device info (HA iframe) ──

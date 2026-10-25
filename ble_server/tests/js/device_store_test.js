@@ -332,6 +332,31 @@ console.log('\n-- switchDevice：换指针 + 重放 + 广播 device-changed --')
     eq(ctx.__events.filter((e) => e.type === 'device-changed').length, 1, '空操作不广播');
 }
 
+console.log('\n-- replay 传"一个函数"也要跑（两个页面就是这么传的） --');
+{
+    // 真实回归：app.js / phone.js 传的是 replay: replayDeviceView（单个函数），
+    // 而 store 早先只当数组处理 —— 函数也有 .length（形参个数 0），于是重放一次都
+    // 不跑：切设备后指针动了、历史/限额卡换了，但设备面板、端口、图表、设置还停在
+    // 上一台。这里把这个形状钉死，两个页面再怎么传都得跑起来。
+    const ctx = buildUnitPage();
+    const called = peek(ctx, `(function () {
+        var hits = [];
+        DeviceStore.init({
+            defaults: function () { return { ports: {}, settings: {} }; },
+            replay: function (id) { hits.push(id); },
+            switcherId: 'deviceSwitcher'
+        });
+        DeviceStore.dispatch({ type: 'init', devices: [
+            { id: 'default', name: '', mac: 'AA', connected: true, is_primary: true },
+            { id: 'desk', name: '书桌充电器', mac: 'BB', connected: true, is_primary: false }
+        ] });
+        hits.length = 0;
+        DeviceStore.switchDevice('desk');
+        return hits.join(',');
+    })()`);
+    eq(called, 'desk', '单函数形式的 replay 在切设备时被调用一次，参数是新设备 id');
+}
+
 console.log('\n-- 切换器：单设备整条隐藏，多设备才渲染 --');
 {
     const ctx = buildUnitPage();
@@ -450,13 +475,91 @@ console.log('\n-- 页面骨架：切换器随 HTML 下发、默认隐藏、且�
     ];
     for (const [page, pageScript] of pages) {
         const html = fs.readFileSync(path.join(WEB, page), 'utf8');
-        ok(/<nav class="device-switcher" id="deviceSwitcher" hidden><\/nav>/.test(html),
-           `${page} 自带 hidden 的切换器容器（单设备时连一个像素都不占）`);
         // 用 src 前缀定位真正的 <script> 标签（注释里也会提到文件名，直接 indexOf 会误判）
         const storeAt = html.indexOf(`src="/static/device-store.js`);
         const pageAt = html.indexOf(`src="/static/${pageScript}`);
         ok(storeAt > 0 && pageAt > storeAt, `${page} 里 device-store.js 先于 ${pageScript} 加载`);
     }
+    {
+        // 桌面：侧栏那副牌是一个空的 <nav hidden>，内容由 bench 生成
+        const indexHtml = fs.readFileSync(path.join(WEB, 'index.html'), 'utf8');
+        ok(/<nav class="device-switcher" id="deviceSwitcher" hidden><\/nav>/.test(indexHtml),
+           'index.html 自带 hidden 的牌堆容器');
+        // 手机：切换入口是标题栏的下拉列表，不再有那条吸顶横条
+        const phoneHtml = fs.readFileSync(path.join(WEB, 'phone.html'), 'utf8');
+        ok(phoneHtml.indexOf('id="deviceSwitcher"') < 0,
+           'phone.html 没有吸顶横条容器（那 58px 还给页面了）');
+        ok(phoneHtml.indexOf('id="deviceMenuBtn"') > 0 && phoneHtml.indexOf('id="deviceMenuList"') > 0,
+           'phone.html：标题栏是切换入口，下面挂一个下拉列表容器');
+        ok(/id="deviceMenu"[^>]*hidden/.test(phoneHtml), '下拉列表默认收起（不占位）');
+        ok(/aria-expanded="false"/.test(phoneHtml) && /aria-controls="deviceMenu"/.test(phoneHtml),
+           '标题按钮带 aria-haspopup/expanded/controls（读屏能知道它会展开）');
+        const phoneCss = fs.readFileSync(path.join(WEB, 'static/phone.css'), 'utf8');
+        ok(phoneCss.indexOf('.device-switcher') < 0, 'phone.css 里那条吸顶条的样式已删除');
+        ok(phoneCss.indexOf('.dev-item') > 0 && phoneCss.indexOf('.dev-menu') > 0,
+           'phone.css 有下拉列表与小卡片的样式');
+        // 标题居中：左齿轮 28px、右主题按钮 28px，标题靠 flex 居中；早年给隐藏的
+        // .nav-more 留的 margin-right:36px 会把整块左推，两边白边就不一样长了
+        ok(!/\.nav-title\s*\{[^}]*margin-right/.test(phoneCss),
+           '标题栏没有 margin-right（否则文字两边白边不对称）');
+        ok(/button\.nav-title:not\(:disabled\)::before\s*\{[^}]*content:\s*''/.test(phoneCss),
+           '右边的 ▾ 用等宽 ::before 在左边配平，设备名才是真居中');
+        // 选择器收窄到 <button class="nav-title">：config.html 的标题是 <div>，
+        // 不该跟着拿到 cursor:pointer 与那块 14px 配平（会把它的标题顶偏）
+        ok(!/^\.nav-title \{\s*\n\s*display: flex/m.test(phoneCss),
+           '标题按钮的样式挂在 button.nav-title 上，不污染 config.html 的 <div> 标题');
+        {
+            // 下拉箭头不能太小太淡（10px / .55 几乎看不见）
+            const caretBlock = (phoneCss.match(/\.nav-caret\s*\{[^}]*\}/) || [''])[0];
+            ok(/font-size:\s*1[3-9]px/.test(caretBlock), '下拉箭头字号 ≥ 13px');
+            ok(/opacity:\s*0?\.[7-9]/.test(caretBlock), '下拉箭头淡度 ≥ .7');
+            ok(/rotate\(180deg\)/.test(phoneCss), '展开时箭头翻转（指示"再点收起"）');
+        }
+        ok(!/has-device-(bench|switcher)/.test(phoneCss),
+           '不再为那条吸顶条给整页加顶部留白（body.has-device-* 已撤）');
+        // 下拉列表的逻辑在 phone.js：标题显示当前设备、点列表项 = 整页切换
+        const phoneJs = fs.readFileSync(path.join(STATIC, 'phone.js'), 'utf8');
+        ok(/function renderDeviceMenu/.test(phoneJs), 'phone.js 渲染这个下拉列表');
+        ok(/DeviceStore\.switchDevice\(id\)/.test(phoneJs),
+           '点列表项 = 切设备（整页跟着换，走的是真的 store 指针）');
+        ok(/navProductName/.test(phoneJs), '只有一台设备时标题退回产品名');
+        ok(/menuShare\(sum\.watts, 120\)/.test(phoneJs) &&
+           /menuShare\(total, 120 \* Math\.max\(1, list\.length\)\)/.test(phoneJs),
+           '小卡片上的功率脊刻度与桌面一致（单台 /120W，全部 /n×120W）');
+        ok(/DeviceBench\.enterFleet/.test(phoneJs), '"全部设备"仍然进得去汇总页');
+        // 预览：手机上也要能在单台硬件上验收"点标题切整页"
+        ok(/PHONE_PREVIEW\s*=\s*\/\[\?&\]preview=multi\//.test(phoneJs),
+           'phone.js 认 ?preview=multi');
+        ok(/preview:\s*PHONE_PREVIEW/.test(phoneJs) && /previewSeed:\s*phonePreviewSeed/.test(phoneJs),
+           '把预览开关与灌数据函数交给 bench（伪造设备因此才被登记为真桶）');
+        ok(/DeviceBench\.devices/.test(phoneJs),
+           '菜单用 bench 的同一份清单（伪造设备在手机上也看得到）');
+        ok(phoneCss.indexOf('.dev-menu-tag') > 0, '下拉列表里有 PREVIEW 标记的样式');
+        ok(/DeviceBench\.exitFleet/.test(phoneJs), '从汇总页点某一台会先退出汇总页');
+    }
+    // 版式契约：切换条住在右侧栏里、正压"当前总功率"卡之上；汇总页占主列。
+    // 这两条是用户点名的布局要求，靠 CSS 无法断言，直接钉在 DOM 顺序上。
+    const indexHtml = fs.readFileSync(path.join(WEB, 'index.html'), 'utf8');
+    const sideAt = indexHtml.indexOf('<div class="col-side">');
+    const swAt = indexHtml.indexOf('id="deviceSwitcher"');
+    const rateAt = indexHtml.indexOf('id="cardRate"');
+    const mainAt = indexHtml.indexOf('<div class="col-main">');
+    const fleetAt = indexHtml.indexOf('id="fleetView"');
+    ok(sideAt > 0 && swAt > sideAt && rateAt > swAt,
+       'index.html：切换条在右侧栏内、位于"当前总功率"卡之前');
+    ok(mainAt > 0 && fleetAt > mainAt && fleetAt < sideAt,
+       'index.html：汇总页在主列里（进汇总后侧栏仍留着切换条，点卡片就能回去）');
+
+    // 设备设置的入口从"右栏底部那张空卡片"搬到了切换条的卡片上：
+    // 卡片是当前这台，单击弹出的就是这台的设置，所以那颗按钮连同整张卡都该消失。
+    ok(indexHtml.indexOf('id="cardSettings"') < 0,
+       'index.html：右栏底部那张"设备设置"卡片已经撤掉');
+    ok(indexHtml.indexOf('id="settingsOpen"') < 0, '连它的"设置"按钮一起撤掉');
+    ok(indexHtml.indexOf('id="settingsDeviceName"') > 0,
+       '设置弹窗的标题留了设备名的位置（否则看不出弹的是哪一台）');
+    ok(/function open\(name\)/.test(indexHtml) && /openSettingsModal/.test(indexHtml),
+       '弹窗的打开函数接收设备名（由切换条卡片传进来）');
+
     // 两个页面的脚本链都必须能跑通（不抛 ReferenceError）
     ok(fs.existsSync(path.join(STATIC, 'device-store.js')), 'device-store.js 存在');
 }
