@@ -358,9 +358,10 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 （或该设备显式配置的 `topic_prefix`），叶子主题形状不变——也就是 ESP32 固件
 "每台设备配不同前缀"的接入方式原样适用；primary 永远是 `cuktech/charger`。
 
-## 多设备（同一块 BLE 网卡接多台充电器）
+## 多设备（同一块网卡接多台充电器）
 
-`config.yaml` 加一个 `devices:` 节即可（不写 = 单设备，行为与以前逐字节一致）：
+`config.yaml` 加一个 `devices:` 节即可（不写 = 单设备，行为与以前逐字节一致）。
+架构与取舍见 [docs/multi-device-design.md](docs/multi-device-design.md)：
 
 ```yaml
 ble:                       # 永远是 primary，device_id 固定为 default
