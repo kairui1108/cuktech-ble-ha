@@ -90,6 +90,14 @@ function buildSandbox() {
             const u = String(url);
             if (init && init.method === 'POST') {
                 posts.push({ url: u, body: JSON.parse(init.body || '{}') });
+                // 小米云批量导入：返回的载荷由用例通过 __xiaomiImport 设定
+                if (u.indexOf('/api/xiaomi/import') >= 0) {
+                    return Promise.resolve({
+                        ok: true, status: 200,
+                        json: () => Promise.resolve(sandbox.__xiaomiImport
+                            || { ok: true, devices: [] }),
+                    });
+                }
                 return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) });
             }
             if (u.indexOf('/api/devices') >= 0) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(DEVICES_PAYLOAD) });
@@ -214,6 +222,90 @@ setTimeout(async () => {
         const before2 = ctx.__posts.length;
         await peek(ctx, 'saveConfig()');
         eq(ctx.__posts.length, before2, '缺 token → 不提交');
+    }
+
+    console.log('\n-- 小米云：勾选多台一次导入 + 名称同步 --');
+    {
+        // 云端清单：desk 是**已配置**的（MAC 大小写/分隔符不同，必须认成同一台），
+        // 另一台是新设备（英文名 → 用它生成合法 id）
+        peek(ctx, `showDeviceList({ cuktech: [
+            { did: 'did-desk', name: '书桌（小米云）', mac: 'AABBCCDDEE02', model: 'njcuk01' },
+            { did: 'did-new', name: 'Bedroom', mac: 'aa:bb:cc:dd:ee:09', model: 'njcuk01' },
+        ] })`);
+        eq(peek(ctx, 'JSON.stringify(_xiaomiDevices.length)'), '2', '清单落在页面上（不是逐台点选）');
+        eq(peek(ctx, 'JSON.stringify(Array.from(_xiaomiSelected))'), '["did-new"]',
+           '默认只勾"还没配置过"的那台（已配置的不会被重复添加）');
+        ok(peek(ctx, 'document.getElementById("xiaomiDevices").innerHTML').indexOf('已配置') >= 0,
+           '已配置的设备在清单里标出来');
+        ok(peek(ctx, 'document.getElementById("xiaomiDevices").innerHTML').indexOf('checkbox') >= 0,
+           '每行是勾选框（多选的前提）');
+
+        // 勾上全部 + 同步名称，一次导入
+        peek(ctx, `_xiaomiSessionId = 'sess1'`);
+        const before = devices();
+        peek(ctx, `document.getElementById('xiaomiSyncNames').checked = true; xiaomiSelectAll(true)`);
+        ctx.__xiaomiImport = {
+            ok: true,
+            devices: [
+                { did: 'did-desk', name: '书桌（小米云）', mac: 'AABBCCDDEE02',
+                  token: 'new-token-desk', model: 'njcuk01', ble_key: 'key-desk' },
+                { did: 'did-new', name: 'Bedroom', mac: 'aa:bb:cc:dd:ee:09',
+                  token: 'new-token-2', model: 'njcuk01', ble_key: 'key-2' },
+            ],
+        };
+        await peek(ctx, 'importXiaomiSelected()');
+
+        const post = ctx.__posts.filter((p) => p.url.indexOf('/api/xiaomi/import') >= 0).pop();
+        ok(!!post, '导入走 /api/xiaomi/import（批量端点）');
+        eq(post.body.dids.sort(), ['did-desk', 'did-new'], '一次把选中的 did 全发出去');
+        eq(post.body.session_id, 'sess1', '会话 id 跟着走');
+
+        const after = devices();
+        const byMac = (list, mac) => list.find((d) =>
+            String(d.mac || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase() === mac);
+        eq(after.length, before.length + 1, '已配置的更新、新的追加（只多一张卡片）');
+        const desk = byMac(after, 'aabbccddee02');
+        eq(desk.token, 'new-token-desk', '按 MAC 匹配到已有卡片并更新 token');
+        eq(desk.ble_key, 'key-desk', 'BLE Key 一起更新');
+        eq(desk.name, '书桌（小米云）', '勾了同步名称 → 覆盖卡片里的旧名字');
+        const fresh = byMac(after, 'aabbccddee09');
+        ok(!!fresh, '新设备被追加进卡片列表');
+        eq(fresh.name, 'Bedroom', '新设备的名称来自云端（同步名称的核心诉求）');
+        eq(fresh.id, 'bedroom', '英文名生成合法设备 id（小写 slug）');
+        eq(fresh.token, 'new-token-2', 'token 写入');
+        eq(fresh.ble_key, 'key-2', 'BLE Key 写入');
+        ok(peek(ctx, 'document.getElementById("xiaomiImportStatus").textContent').indexOf('1') >= 0,
+           '导入结果给用户看（新增/更新计数）');
+    }
+
+    console.log('\n-- 小米云：不勾"同步名称"时保留用户自己起的名字 --');
+    {
+        peek(ctx, `findDeviceIndex(d => normMac(d.mac) === 'aabbccddee02')`);
+        peek(ctx, `_devices[findDeviceIndex(d => normMac(d.mac) === 'aabbccddee02')].name = '我自己起的名字'`);
+        peek(ctx, `showDeviceList({ cuktech: [
+            { did: 'did-desk', name: '书桌（小米云）', mac: 'aabbccddee02', model: 'njcuk01' } ] })`);
+        peek(ctx, `document.getElementById('xiaomiSyncNames').checked = false; xiaomiSelectAll(true)`);
+        ctx.__xiaomiImport = {
+            ok: true,
+            devices: [{ did: 'did-desk', name: '书桌（小米云）', mac: 'aabbccddee02',
+                        token: 'rotated-token', model: 'njcuk01', ble_key: 'key-3' }],
+        };
+        await peek(ctx, 'importXiaomiSelected()');
+        const after = devices();
+        const desk = after.find((d) =>
+            String(d.mac || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase() === 'aabbccddee02');
+        eq(desk.name, '我自己起的名字', '没勾同步名称 → 用户起的名字不能被覆盖');
+        eq(desk.token, 'rotated-token', '但凭据照常更新（换 token 是导入的主要用途）');
+    }
+
+    console.log('\n-- 小米云：没选设备时不该发请求 --');
+    {
+        const before = ctx.__posts.filter((p) => p.url.indexOf('/api/xiaomi/import') >= 0).length;
+        peek(ctx, 'xiaomiSelectAll(false)');
+        await peek(ctx, 'importXiaomiSelected()');
+        eq(ctx.__posts.filter((p) => p.url.indexOf('/api/xiaomi/import') >= 0).length, before,
+           '空选择 → 不发请求（只在界面提示）');
+        eq(peek(ctx, 'JSON.stringify(_xiaomiDevices.length)'), '1', '清单还在（可以改选）');
     }
 
     console.log(failed === 0

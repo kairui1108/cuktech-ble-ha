@@ -547,7 +547,9 @@ class Server:
         self._chart_cache_max_bytes = CHART_CACHE_MAX_BYTES
         self._chart_cache_max_entry_bytes = CHART_CACHE_MAX_ENTRY_BYTES
         self.sse = SSEEmitter()
-        self._xiaomi_sessions: dict[str, tuple[Any, asyncio.TimerHandle | None]] = {}  # session_id -> (client, timer)
+        # 会话形状 {client, timer, devices}：`devices` 在扫码完成后落一次，供批量导入
+        # 用——凭据（token/ble_key）只在服务端内存里过一遍，前端不必拿在手里再回传。
+        self._xiaomi_sessions: dict[str, dict] = {}
         self._start_time = time.time()
         self.bemfa: BemfaClient | None = None
         # 后台任务挂在实例上而不是 aiohttp 的 app_ 里：应用启动完成后再写 app_
@@ -2599,14 +2601,39 @@ class Server:
 
     # ── Xiaomi Cloud API ──
 
+    #: 等扫码的会话寿命（秒）
+    XIAOMI_SCAN_TTL = 300
+    #: 扫码完成后可以导入的窗口（秒）。每次导入都重新计时，够用户分批选设备；
+    #: 别设太短：用户可能先去翻设备铭牌确认 MAC，回来时"会话已过期要重扫"很恼人。
+    XIAOMI_IMPORT_TTL = 300
+
+    def _arm_xiaomi_timer(self, session_id: str, ttl: float) -> None:
+        """给会话（重）挂一个超时清理定时器。
+
+        扫码完成时必须**重挂**而不是取消：等扫码的阶段已经过了，但会话里还留着
+        云客户端与设备清单，没有定时器就等于永久泄漏（`requests.Session` + token）。
+        """
+        entry = self._xiaomi_sessions.get(session_id)
+        if entry is None:
+            return
+        timer = entry.get("timer")
+        if timer and not timer.cancelled():
+            timer.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            entry["timer"] = None
+            return
+        entry["timer"] = loop.call_later(ttl, self._cleanup_xiaomi_session, session_id)
+
     def _cleanup_xiaomi_session(self, session_id: str):
-        """5 分钟超时清理：移除过期 Xiaomi session，释放相关资源。"""
+        """超时清理：移除过期 Xiaomi session，释放相关资源。"""
         entry = self._xiaomi_sessions.pop(session_id, None)
         if entry:
-            client, timer = entry
+            timer = entry.get("timer")
             if timer and not timer.cancelled():
                 timer.cancel()
-            _LOGGER.info("Xiaomi session %s timed out (5 min), cleaned up", session_id[:8])
+            _LOGGER.info("Xiaomi session %s expired, cleaned up", session_id[:8])
 
     async def handle_xiaomi_login(self, request):
         """POST /api/xiaomi/login — start QR code login, return QR URL."""
@@ -2637,9 +2664,11 @@ class Server:
 
             result, client = await loop.run_in_executor(None, _start)
             session_id = _secrets.token_hex(16)
-            # 5 分钟超时：启动延时清理，session 完成（beaconkey 获取）时取消
-            timer = loop.call_later(300, self._cleanup_xiaomi_session, session_id)
-            self._xiaomi_sessions[session_id] = (client, timer)
+            # 等扫码的 5 分钟窗口；扫码完成后改挂"导入窗口"（见 qr_complete）
+            self._xiaomi_sessions[session_id] = {
+                "client": client, "timer": None, "devices": [],
+            }
+            self._arm_xiaomi_timer(session_id, self.XIAOMI_SCAN_TTL)
 
             return web.json_response({
                 "ok": True,
@@ -2667,7 +2696,7 @@ class Server:
         entry = self._xiaomi_sessions.get(session_id)
         if not entry:
             return web.json_response({"ok": False, "error": "会话已过期，请重新获取二维码"}, status=400)
-        client, _timer = entry
+        client = entry["client"]
 
         # 延迟导入（此时客户端实例已存在，模块通常已加载，仅取异常类型）
         try:
@@ -2685,10 +2714,11 @@ class Server:
                 return client.get_devices()
 
             devices = await loop.run_in_executor(None, _complete)
-            # QR 扫码已完成，最耗时的阶段已过，取消超时定时器
-            if _timer and not _timer.cancelled():
-                _timer.cancel()
-            self._xiaomi_sessions[session_id] = (client, None)  # 清除定时器引用，保留 client 供 beaconkey 使用
+            # 设备清单留在服务端会话里：批量导入时按 did 取 BLE Key，前端不必
+            # 把 token 拿在手里回传（见 handle_xiaomi_import）。
+            entry["devices"] = devices
+            # 等扫码的阶段结束 → 改挂"导入窗口"定时器（不能取消，否则会话永久泄漏）
+            self._arm_xiaomi_timer(session_id, self.XIAOMI_IMPORT_TTL)
 
             cuktech_devices = [d for d in devices if "njcuk" in d.model or "fitting" in d.model]
             all_devices = [{"did": d.did, "mac": d.mac, "token": d.token,
@@ -2707,14 +2737,18 @@ class Server:
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def handle_xiaomi_beaconkey(self, request):
-        """POST /api/xiaomi/beaconkey — get BLE key for a device."""
+        """POST /api/xiaomi/beaconkey — 取**一台**设备的 BLE Key。
+
+        保留给脚本/调试；配置页已改走 `/api/xiaomi/import`（批量 + 名称同步）。
+        会话不再用完即弃：导入窗口内可以继续取其它设备（到期由定时器回收）。
+        """
         try:
             data = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
 
-        session_id = data.get("session_id", "").strip()
-        did = data.get("did", "").strip()
+        session_id = str(data.get("session_id", "")).strip()
+        did = str(data.get("did", "")).strip()
 
         if not session_id or not did:
             return web.json_response({"ok": False, "error": "参数不完整"}, status=400)
@@ -2722,9 +2756,7 @@ class Server:
         entry = self._xiaomi_sessions.get(session_id)
         if not entry:
             return web.json_response({"ok": False, "error": "会话已过期，请重新扫码"}, status=400)
-        client, _timer = entry
 
-        # 延迟导入（此时客户端实例已存在，模块通常已加载，仅取异常类型）
         try:
             XiaomiCloudLoginError = _load_xiaomi_cloud()[1]
         except ImportError as e:
@@ -2733,31 +2765,94 @@ class Server:
                 {"ok": False, "error": f"小米云登录依赖缺失: {e}"}, status=503)
 
         try:
-            loop = asyncio.get_running_loop()
-
-            def _get_key():
-                return client.get_beaconkey(did)
-
-            ble_key = await loop.run_in_executor(None, _get_key)
-            # Session completed — cancel timeout timer and clean up
-            if _timer and not _timer.cancelled():
-                _timer.cancel()
-            self._xiaomi_sessions.pop(session_id, None)
-
+            ble_key = await asyncio.get_running_loop().run_in_executor(
+                None, entry["client"].get_beaconkey, did)
+            self._arm_xiaomi_timer(session_id, self.XIAOMI_IMPORT_TTL)
             if ble_key:
                 return web.json_response({"ok": True, "ble_key": ble_key})
             return web.json_response({"ok": False, "error": "未找到 BLE Key"}, status=404)
         except XiaomiCloudLoginError as e:
-            if _timer and not _timer.cancelled():
-                _timer.cancel()
-            self._xiaomi_sessions.pop(session_id, None)
             return web.json_response({"ok": False, "error": str(e)}, status=400)
         except Exception as e:
             _LOGGER.error("Get beaconkey failed: %s", e)
-            if _timer and not _timer.cancelled():
-                _timer.cancel()
-            self._xiaomi_sessions.pop(session_id, None)
             return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    async def handle_xiaomi_import(self, request):
+        """POST /api/xiaomi/import — 一次导入**多台**设备（名称 + token + BLE Key）。
+
+        为什么必须是批量端点：BLE Key 只能**按 did 单取**
+        （`blt_get_beaconkey`），多台设备就是多次云调用。让前端逐台循环发请求意味着
+        N 次网络往返 + N 次会话过期风险，而且要由前端把 token 拿在手里再回传——
+        凭据没必要离开服务端。这里一次调用、服务端内循环、逐台报错。
+
+        请求：`{"session_id": "...", "dids": ["did1", "did2"]}`
+        响应：`{"ok": true, "devices": [{did, name, mac, token, model, ble_key} | {did, error}]}`
+
+        单台失败**不影响**其它台（返回逐台结果，前端据此报告"N 台新增 / M 台失败"）。
+        """
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+
+        session_id = str(data.get("session_id", "")).strip()
+        dids = data.get("dids")
+        if isinstance(dids, str):
+            dids = [dids]
+        if not session_id:
+            return web.json_response({"ok": False, "error": "缺少 session_id"}, status=400)
+        if not isinstance(dids, list) or not dids:
+            return web.json_response({"ok": False, "error": "请至少选择一台设备"}, status=400)
+        dids = [str(d).strip() for d in dids if str(d).strip()]
+        if not dids:
+            return web.json_response({"ok": False, "error": "请至少选择一台设备"}, status=400)
+
+        entry = self._xiaomi_sessions.get(session_id)
+        if not entry:
+            return web.json_response({"ok": False, "error": "会话已过期，请重新扫码"}, status=400)
+
+        try:
+            XiaomiCloudLoginError = _load_xiaomi_cloud()[1]
+        except ImportError as e:
+            _LOGGER.error("Xiaomi cloud client unavailable: %s", e)
+            return web.json_response(
+                {"ok": False, "error": f"小米云登录依赖缺失: {e}"}, status=503)
+
+        known = {d.did: d for d in (entry.get("devices") or [])}
+        client = entry["client"]
+
+        def _fetch_all():
+            out = []
+            for did in dids:
+                dev = known.get(did)
+                if dev is None:
+                    # 不在本次扫码拿到的清单里（伪造的 did / 清单已过期）：明确报错，
+                    # 不要拿个空 token 让配置页把设备写残。
+                    out.append({"did": did, "error": "device_not_in_list"})
+                    continue
+                try:
+                    key = client.get_beaconkey(did) or ""
+                except Exception as e:      # 单台失败不能拖垮整批
+                    out.append({"did": did, "name": dev.name, "mac": dev.mac,
+                                "model": dev.model, "error": str(e)})
+                    continue
+                out.append({"did": dev.did, "name": dev.name, "mac": dev.mac,
+                            "token": dev.token, "model": dev.model, "ble_key": key})
+            return out
+
+        try:
+            results = await asyncio.get_running_loop().run_in_executor(None, _fetch_all)
+        except XiaomiCloudLoginError as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+        except Exception as e:
+            _LOGGER.error("Xiaomi import failed: %s", e)
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+        # 每次导入重挂窗口：允许用户分两批选设备，都算同一次登录
+        self._arm_xiaomi_timer(session_id, self.XIAOMI_IMPORT_TTL)
+        ok_count = len([r for r in results if not r.get("error")])
+        _LOGGER.info("Xiaomi import: %d/%d device(s) resolved", ok_count, len(results))
+        return web.json_response({"ok": True, "devices": results})
 
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -3036,6 +3131,7 @@ app.router.add_post("/api/config", lambda r: get_server().handle_config_save(r))
 app.router.add_post("/api/xiaomi/login", lambda r: get_server().handle_xiaomi_login(r))
 app.router.add_post("/api/xiaomi/qr/complete", lambda r: get_server().handle_xiaomi_qr_complete(r))
 app.router.add_post("/api/xiaomi/beaconkey", lambda r: get_server().handle_xiaomi_beaconkey(r))
+app.router.add_post("/api/xiaomi/import", lambda r: get_server().handle_xiaomi_import(r))
 
 # ── 多设备寻址（§3.7）：同一组 handler 的第二种挂载，**零 handler 复制** ──
 #

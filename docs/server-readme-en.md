@@ -211,7 +211,8 @@ cp config.yaml.example config.yaml
 | `/api/config` | GET/POST | Read/save configuration |
 | `/api/xiaomi/login` | POST | Xiaomi Cloud QR login |
 | `/api/xiaomi/qr/complete` | POST | Complete QR login |
-| `/api/xiaomi/beaconkey` | POST | Get BLE Key |
+| `/api/xiaomi/import` | POST | **Batch** import devices (`dids[]` → name/MAC/token/BLE key each) |
+| `/api/xiaomi/beaconkey` | POST | Get the BLE key of a single device (scripts/debugging) |
 | `/api/log-level` | GET/POST | Log level management |
 | `/api/bemfa` | GET | Bemfa status |
 | `/api/chart` | GET | Chart data |

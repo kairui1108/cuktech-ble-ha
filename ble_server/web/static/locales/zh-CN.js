@@ -319,10 +319,20 @@
             scanned: '已完成扫码',
             scanTimeout: '等待超时，请重新获取二维码',
             noDevices: '未找到设备',
-            selectCharger: '选择充电器设备：',
+            selectCharger: '选择充电器设备（可多选）：',
             fetchingBleKey: '正在获取 BLE Key...',
             bleKeyFailed: '获取 BLE Key 失败: {{msg}}',
-            deviceInfoGot: '已获取设备信息，请检查后保存',
+            xiaomiSelectAll: '全选',
+            xiaomiSelectNone: '全不选',
+            xiaomiSyncNames: '同步小米云设备名称',
+            xiaomiSyncNamesHint: '勾选后用云上的名称覆盖设备卡片里已有的名字',
+            xiaomiConfigured: '已配置',
+            xiaomiImport: '导入选中（{{n}} 台）',
+            xiaomiImportEmpty: '请至少选择一台设备',
+            xiaomiImporting: '正在导入...',
+            xiaomiImportDone: '已新增 {{added}} 台，更新 {{updated}} 台',
+            xiaomiImportDoneWithFailed: '已新增 {{added}} 台，更新 {{updated}} 台，失败 {{failed}} 台',
+            xiaomiImportFailed: '导入失败',
             placeholderC1: 'C口1开关',
             placeholderC2: 'C口2开关',
             placeholderC3: 'C口3开关',
@@ -349,9 +359,7 @@
             confirmRemoveDevice: '删除充电器「{{name}}」？保存并重启后生效。',
             invalidDeviceId: '「{{name}}」的设备 ID 非法：只允许小写字母、数字、_ 和 -，且以字母或数字开头',
             needMacToken: '「{{name}}」缺少 MAC 或 Token',
-            deviceAdded: '已添加一台充电器，填好 MAC / Token 后保存',
-            deviceTarget: '写入目标设备',
-            deviceTargetNew: '新建一台充电器'
+            deviceAdded: '已添加一台充电器，填好 MAC / Token 后保存'
         },
 
         // ── Device switcher（多设备共用，index.html / phone.html）──

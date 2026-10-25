@@ -319,10 +319,20 @@
             scanned: "I've scanned the code",
             scanTimeout: 'Timed out waiting — please get a new QR code',
             noDevices: 'No devices found',
-            selectCharger: 'Select your charger:',
+            selectCharger: 'Select chargers (multiple allowed):',
             fetchingBleKey: 'Fetching BLE Key...',
             bleKeyFailed: 'Failed to get BLE Key: {{msg}}',
-            deviceInfoGot: 'Device info retrieved — please review and save',
+            xiaomiSelectAll: 'Select all',
+            xiaomiSelectNone: 'Clear',
+            xiaomiSyncNames: 'Sync names from Xiaomi Cloud',
+            xiaomiSyncNamesHint: 'Overwrite the names already on the device cards with the ones from the cloud',
+            xiaomiConfigured: 'Configured',
+            xiaomiImport: 'Import {{n}} selected',
+            xiaomiImportEmpty: 'Select at least one device',
+            xiaomiImporting: 'Importing...',
+            xiaomiImportDone: 'Added {{added}}, updated {{updated}}',
+            xiaomiImportDoneWithFailed: 'Added {{added}}, updated {{updated}}, {{failed}} failed',
+            xiaomiImportFailed: 'Import failed',
             placeholderC1: 'USB-C 1 switch',
             placeholderC2: 'USB-C 2 switch',
             placeholderC3: 'USB-C 3 switch',
@@ -348,9 +358,7 @@
             confirmRemoveDevice: 'Remove charger "{{name}}"? It takes effect after saving and restarting.',
             invalidDeviceId: '"{{name}}" has an invalid device ID: lowercase letters, digits, _ and - only, and it must start with a letter or digit',
             needMacToken: '"{{name}}" is missing a MAC or token',
-            deviceAdded: 'Charger added — fill in the MAC / token, then save',
-            deviceTarget: 'Write into',
-            deviceTargetNew: 'New charger'
+            deviceAdded: 'Charger added — fill in the MAC / token, then save'
         },
 
         // ── Device switcher（多设备共用，index.html / phone.html）──

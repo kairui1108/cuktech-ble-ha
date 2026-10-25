@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title data-i18n="pageTitle.config">CUKTECH 配置</title>
 <link rel="icon" href="/static/favicon.ico">
-<script src="/static/locales/zh-CN.js?v=24"></script>
-<script src="/static/locales/en.js?v=24"></script>
+<script src="/static/locales/zh-CN.js?v=25"></script>
+<script src="/static/locales/en.js?v=25"></script>
 <script src="/static/i18n.js?v=6"></script>
 <link rel="stylesheet" href="static/phone.css?v=36">
 <style>
@@ -450,19 +450,6 @@ async function loadDeviceList(bleCfg) {
     });
     _editing = -1;
     renderDeviceList();
-    renderXiaomiTargets();
-}
-
-// 小米云扫码导入的"写入目标设备"（§3.10）：默认写进正在编辑的那张卡片，
-// 没有编辑中的卡片就写进 primary —— 与改造前"只有一组凭据"的直觉一致。
-function renderXiaomiTargets() {
-    const el = document.getElementById('xiaomiTarget');
-    if (!el) return;
-    const options = _devices.map((d, i) =>
-        `<option value="${i}">${escText(deviceLabel(d))}</option>`).join('')
-        + `<option value="new">${escText(I18N.t('config.deviceTargetNew'))}</option>`;
-    el.innerHTML = options;
-    el.value = _editing >= 0 ? String(_editing) : '0';
 }
 
 // Theme (shared with phone.html)
@@ -743,10 +730,17 @@ let _xiaomiServer = '', _xiaomiSessionId = '', _xiaomiQRActive = false;
 
 function openXiaomiModal() {
     document.getElementById('xiaomiModal').style.display = 'flex';
-    document.getElementById('xiaomiLoginForm').style.display = _xiaomiQRActive ? 'none' : 'block';
-    document.getElementById('xiaomiQRForm').style.display = _xiaomiQRActive ? 'block' : 'none';
-    document.getElementById('xiaomiDeviceList').style.display = 'none';
     document.getElementById('xiaomiLoginStatus').textContent = '';
+    // 扫码结果还在（服务端会话 + 本地缓存）就直接回到设备清单：想再同步一台
+    // 设备的名称/凭据时不必重扫二维码，这正是"同步名称"最常用的入口。
+    const hasDevices = _xiaomiDevices.length > 0 && !!_xiaomiSessionId;
+    document.getElementById('xiaomiLoginForm').style.display =
+        (hasDevices || _xiaomiQRActive) ? 'none' : 'block';
+    document.getElementById('xiaomiQRForm').style.display =
+        (!hasDevices && _xiaomiQRActive) ? 'block' : 'none';
+    document.getElementById('xiaomiDeviceList').style.display =
+        hasDevices ? 'block' : 'none';
+    if (hasDevices) renderXiaomiDeviceList();
 }
 
 function closeXiaomiModal() {
@@ -779,6 +773,8 @@ async function xiaomiStartQR() {
         _xiaomiServer = server;
         _xiaomiSessionId = data.session_id;
         _xiaomiQRActive = true;
+        _xiaomiDevices = [];        // 新会话：上一次的清单与勾选作废
+        _xiaomiSelected = new Set();
 
         // Show QR code
         document.getElementById('xiaomiLoginForm').style.display = 'none';
@@ -846,65 +842,184 @@ async function xiaomiCompleteQR() {
     _xiaomiQRActive = false;
 }
 
+// ── 扫码拿到的设备清单（多设备导入）──
+// 清单与勾选状态存在前端，**凭据（token/ble_key）不落地**：导入时前端只发 did，
+// 服务端按 did 现取 BLE Key 再回一份完整结果（/api/xiaomi/import）。
+let _xiaomiDevices = [];          // [{did, name, mac, model}]
+let _xiaomiSelected = new Set();  // 勾选中的 did
+
+// MAC 比较统一口径：小米云给的是小写无分隔（`a4c138...`），用户手填的可能是
+// `A4:C1:38:...`。去分隔 + 小写，避免"同一台设备被当成两台"（那会生成重复设备卡，
+// 服务端 MAC 唯一性校验随后就会拦下整个保存）。
+function normMac(v) {
+    return String(v || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+}
+
+function xiaomiMacOf(d) { return normMac(d.mac); }
+
+// 已配置判定：MAC 已在设备卡片里出现过（primary 也算）
+function xiaomiConfiguredIndex(mac) {
+    const m = normMac(mac);
+    if (!m) return -1;
+    return findDeviceIndex(d => xiaomiMacOf(d) === m);
+}
+
+// 给新导入的设备起一个合法 id（`^[a-z0-9][a-z0-9_-]*$`，与服务端同规则）：
+// 优先用云上的英文名做 slug，中文名 slug 为空就退到 MAC 尾号（稳定、可读、不撞车）。
+function suggestDeviceId(dev) {
+    const used = new Set(_devices.map(d => (d.id || '').toLowerCase()));
+    const slug = String(dev.name || '').toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const base = (slug && /^[a-z0-9]/.test(slug)) ? slug
+        : 'charger' + normMac(dev.mac).slice(-4);
+    let id = base, n = 2;
+    while (used.has(id)) { id = base + '-' + n; n++; }
+    return id;
+}
+
 function showDeviceList(data) {
     document.getElementById('xiaomiLoginForm').style.display = 'none';
     document.getElementById('xiaomiQRForm').style.display = 'none';
     document.getElementById('xiaomiDeviceList').style.display = 'block';
-    renderXiaomiTargets();   // 目标下拉跟着当前设备卡片走（可能刚增删过）
 
-    const list = document.getElementById('xiaomiDevices');
-    const devices = data.cuktech && data.cuktech.length > 0 ? data.cuktech : data.devices;
-    if (devices.length === 0) {
-        list.innerHTML = `<div style="text-align:center;color:var(--text-dim);padding:16px;">${I18N.t('config.noDevices')}</div>`;
-    } else {
-        list.innerHTML = devices.map(d =>
-            `<div class="config-row" style="cursor:pointer;border:1px solid var(--card-border);border-radius:8px;padding:10px;margin-bottom:6px;" onclick="selectDevice('${d.did}','${d.mac}','${d.token}')">
-                <div><div class="config-label">${d.name || d.model}</div><div class="config-hint">${d.model} | ${d.mac}</div></div>
-            </div>`
-        ).join('');
-    }
+    // 优先展示 CUKTECH 设备；一台都没有时退回全部（用户可能用的是别家型号）
+    const devices = (data.cuktech && data.cuktech.length > 0) ? data.cuktech : data.devices;
+    _xiaomiDevices = (devices || []).map(d => ({
+        did: d.did, name: d.name || '', mac: d.mac || '', model: d.model || '',
+    }));
+    // 默认勾上**还没配置过**的那些：一次点击就能把新设备都加进来，而已配置的
+    // 设备不会被误当成新设备重复添加（想同步名称/凭据再手动勾上即可）。
+    _xiaomiSelected = new Set(_xiaomiDevices
+        .filter(d => xiaomiConfiguredIndex(d.mac) < 0)
+        .map(d => d.did));
+    renderXiaomiDeviceList();
 }
 
-async function selectDevice(did, mac, token) {
-    const status = document.getElementById('xiaomiLoginStatus');
+function renderXiaomiDeviceList() {
+    const list = document.getElementById('xiaomiDevices');
+    if (!list) return;
+    if (!_xiaomiDevices.length) {
+        list.innerHTML = `<div style="text-align:center;color:var(--text-dim);padding:16px;">${escText(I18N.t('config.noDevices'))}</div>`;
+        updateXiaomiImportBtn();
+        return;
+    }
+    list.innerHTML = _xiaomiDevices.map(d => {
+        const idx = xiaomiConfiguredIndex(d.mac);
+        const configured = idx >= 0;
+        const checked = _xiaomiSelected.has(d.did);
+        const tag = configured
+            ? `<span class="device-tag">${escText(I18N.t('config.xiaomiConfigured'))}</span>` : '';
+        return `
+        <label class="config-row" style="cursor:pointer;border:1px solid var(--card-border);border-radius:8px;padding:10px;margin-bottom:6px;display:flex;align-items:center;gap:10px;">
+            <input type="checkbox" ${checked ? 'checked' : ''}
+                   onchange="toggleXiaomiDevice('${escText(d.did)}', this.checked)"
+                   style="width:18px;height:18px;flex:none;accent-color:var(--accent);">
+            <div style="min-width:0;">
+                <div class="config-label">${escText(d.name || d.model || d.mac)} ${tag}</div>
+                <div class="config-hint">${escText(d.model)} | ${escText(d.mac)}</div>
+            </div>
+        </label>`;
+    }).join('');
+    updateXiaomiImportBtn();
+}
+
+function toggleXiaomiDevice(did, on) {
+    if (on) _xiaomiSelected.add(did); else _xiaomiSelected.delete(did);
+    updateXiaomiImportBtn();
+}
+
+function xiaomiSelectAll(on) {
+    _xiaomiSelected = on ? new Set(_xiaomiDevices.map(d => d.did)) : new Set();
+    renderXiaomiDeviceList();
+}
+
+function updateXiaomiImportBtn() {
+    const btn = document.getElementById('xiaomiImportBtn');
+    if (!btn) return;
+    const n = _xiaomiSelected.size;
+    btn.textContent = n
+        ? I18N.t('config.xiaomiImport', { n: n })
+        : I18N.t('config.xiaomiImportEmpty');
+    btn.disabled = n === 0;
+}
+
+// 把云上的结果落到设备卡片：**按 MAC 匹配**（不是"写进某张选中卡片"）。
+// 这条规则是整个改动的核心——多设备后"先选目标卡片再点设备"一定会有人用错，
+// 而用错就是把这台的 token 覆盖到另一台上；按 MAC 匹配不存在这个可能。
+function applyXiaomiImport(results, syncNames) {
+    let added = 0, updated = 0, failed = 0;
+    results.forEach(r => {
+        if (r.error || !r.mac || !r.token) { failed++; return; }
+        const idx = xiaomiConfiguredIndex(r.mac);
+        if (idx >= 0) {
+            const d = _devices[idx];
+            d.mac = r.mac;
+            d.token = r.token;
+            if (r.ble_key) d.ble_key = r.ble_key;
+            if (syncNames && r.name && r.name !== d.name) d.name = r.name;
+            updated++;
+        } else {
+            const d = emptyDevice(false);
+            d.id = suggestDeviceId(r);
+            d.name = r.name || '';
+            d.mac = r.mac;
+            d.token = r.token;
+            d.ble_key = r.ble_key || '';
+            _devices.push(d);
+            added++;
+        }
+    });
+    _editing = -1;
+    renderDeviceList();
+    return { added, updated, failed };
+}
+
+async function importXiaomiSelected() {
+    const btn = document.getElementById('xiaomiImportBtn');
+    const status = document.getElementById('xiaomiImportStatus');
+    if (!_xiaomiSelected.size) {
+        status.textContent = I18N.t('config.xiaomiImportEmpty');
+        status.style.color = 'var(--danger)';
+        return;
+    }
+    const syncNames = !!(document.getElementById('xiaomiSyncNames') || {}).checked;
+    btn.disabled = true;
+    btn.textContent = I18N.t('config.xiaomiImporting');
     status.textContent = I18N.t('config.fetchingBleKey');
     status.style.color = 'var(--text-dim)';
-    document.getElementById('xiaomiDeviceList').style.display = 'none';
-    document.getElementById('xiaomiQRForm').style.display = 'block';
 
     try {
-        const res = await fetch(`${API}/api/xiaomi/beaconkey`, {
+        const res = await fetch(`${API}/api/xiaomi/import`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: _xiaomiSessionId, did })
+            body: JSON.stringify({
+                session_id: _xiaomiSessionId,
+                dids: Array.from(_xiaomiSelected),
+            })
         });
         const data = await res.json();
-        const bleKey = data.ok ? data.ble_key : '';
-
-        // 回填"正在编辑的那张卡片"（§3.10），而不是全局唯一字段：
-        // 多设备后同一组输入框已经不存在了，写错目标等于把第二台的凭据
-        // 覆盖到第一台上——那是最坏的一种串台。
-        const sel = document.getElementById('xiaomiTarget');
-        const target = sel ? sel.value : '0';
-        if (target === 'new') {
-            addDevice({ mac: mac, token: token, ble_key: bleKey });
-        } else {
-            const idx = parseInt(target, 10) || 0;
-            const d = _devices[idx] || _devices[0];
-            if (d) {
-                d.mac = mac;
-                d.token = token;
-                d.ble_key = bleKey;
-            }
-            _editing = idx;
-            renderDeviceList();
+        if (!data.ok) {
+            status.textContent = data.error || I18N.t('config.xiaomiImportFailed');
+            status.style.color = 'var(--danger)';
+            updateXiaomiImportBtn();
+            return;
         }
-
-        status.textContent = I18N.t('config.deviceInfoGot');
-        status.style.color = 'var(--success)';
-        setTimeout(closeXiaomiModal, 1500);
+        const sum = applyXiaomiImport(data.devices || [], syncNames);
+        // 两种文案都写死成字面量 t('...')：verify_i18n.py 靠字面量扫 key，
+        // 拼出来的 key（三元里再传参）会被当成"未使用"，也漏掉拼错的保护。
+        const params = { added: sum.added, updated: sum.updated, failed: sum.failed };
+        status.textContent = sum.failed
+            ? I18N.t('config.xiaomiImportDoneWithFailed', params)
+            : I18N.t('config.xiaomiImportDone', params);
+        status.style.color = sum.failed ? 'var(--danger)' : 'var(--success)';
+        // 已配置的设备刷新一下标签（导入后它们不再是"未配置"）
+        renderXiaomiDeviceList();
+        _xiaomiSelected = new Set();
+        updateXiaomiImportBtn();
+        if (!sum.failed) setTimeout(closeXiaomiModal, 1500);
     } catch (e) {
         status.textContent = I18N.t('config.bleKeyFailed', { msg: e.message });
         status.style.color = 'var(--danger)';
+        updateXiaomiImportBtn();
     }
 }
 
@@ -924,10 +1039,7 @@ if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
         // 设备卡片里的文案（主设备标签、编辑/删除按钮、展开的编辑器）全是 JS 拼的，
         // 不进 applyTranslations 的静态扫描范围，切语言后必须重画一次。
         // 输入框的值早已通过 updateDeviceField 同步进 _devices，重画不会丢输入。
-        if (_devices.length) {
-            renderDeviceList();
-            renderXiaomiTargets();
-        }
+        if (_devices.length) renderDeviceList();
     });
 }
 </script>
@@ -972,17 +1084,26 @@ if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
             <div id="xiaomiQRStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);text-align:center;min-height:18px;"></div>
         </div>
 
-        <!-- Device List -->
+        <!-- Device List：勾选后**一次导入多台**（§3.10 多设备） -->
         <div id="xiaomiDeviceList" style="display:none;">
             <div style="font-size:13px;color:var(--text-dim);margin-bottom:10px;" data-i18n="config.selectCharger">选择充电器设备：</div>
-            <!-- 写入目标（§3.10）：扫码拿到的 MAC/Token/BLE Key 回填到哪张设备卡片 -->
-            <div class="config-row" style="padding-top:0;">
-                <div class="config-label" data-i18n="config.deviceTarget">写入目标设备</div>
-                <select class="config-input config-select" id="xiaomiTarget"></select>
+            <div style="display:flex;gap:8px;margin-bottom:8px;">
+                <button type="button" class="device-card-btn" onclick="xiaomiSelectAll(true)" data-i18n="config.xiaomiSelectAll" style="flex:1;"></button>
+                <button type="button" class="device-card-btn" onclick="xiaomiSelectAll(false)" data-i18n="config.xiaomiSelectNone" style="flex:1;"></button>
             </div>
             <div id="xiaomiDevices"></div>
+            <!-- 名称同步：设备卡片里的名字是用户可改的，所以是否覆盖要显式勾选 -->
+            <label class="config-row" style="display:flex;align-items:flex-start;gap:10px;padding-top:10px;cursor:pointer;">
+                <input type="checkbox" id="xiaomiSyncNames" checked style="width:18px;height:18px;flex:none;margin-top:2px;accent-color:var(--accent);">
+                <div>
+                    <div class="config-label" data-i18n="config.xiaomiSyncNames">同步小米云设备名称</div>
+                    <div class="config-hint" data-i18n="config.xiaomiSyncNamesHint">勾选后用云上的名称覆盖设备卡片里已有的名字</div>
+                </div>
+            </label>
+            <div id="xiaomiImportStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);text-align:center;min-height:18px;"></div>
             <div style="margin-top:12px;display:flex;gap:8px;">
                 <button class="btn-save" onclick="closeXiaomiModal()" data-i18n="common.cancel" style="margin-top:0;flex:1;background:rgba(255,255,255,0.06);color:var(--text);">取消</button>
+                <button class="btn-save" id="xiaomiImportBtn" onclick="importXiaomiSelected()" style="margin-top:0;flex:2;"></button>
             </div>
         </div>
     </div>

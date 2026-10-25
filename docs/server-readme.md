@@ -61,14 +61,18 @@ cp config.yaml.example config.yaml
 #    http://<服务器IP>:8199/config.html
 
 # 6. 在配置页面中：
-#    a. 点击「小米云自动获取」→ 用米家 App 扫码 → 自动填充 MAC/Token/BLE Key
+#    a. 点击「小米云自动获取」→ 用米家 App 扫码 → 勾选一台或多台充电器 →
+#       一次导入它们的 MAC/Token/BLE Key（默认同时同步设备名称）
 #    b. 填写 MQTT 配置（如需接入 Home Assistant）
 #    c. 填写巴法云 UID（如需接入小爱同学）
 #    d. 点击「保存配置并重启」
 ```
 
 **配置页面功能：**
-- 小米云 QR 码扫码登录，自动获取设备 MAC、Token、BLE Key
+- 小米云 QR 码扫码登录，**批量导入多台**设备的 MAC、Token、BLE Key（勾选设备后一次导入）
+- 设备名称可从小米云同步（勾选「同步小米云设备名称」；设备超过一台时尤其省事）
+- 导入按 **MAC 匹配**已有设备卡片：同一台设备只更新凭据/名称，不会重复添加
+- 同一台设备换过 Token 后，重新扫码导入即可就地更新，无需手改配置文件
 - BLE / MQTT / 巴法云 / 服务器参数在线修改
 - 巴法云设备显示名称自定义
 - 敏感信息（Token、BLE Key、密码）自动脱敏显示
@@ -187,7 +191,8 @@ docker compose up -d
 | `/api/config` | GET/POST | 读取/保存配置 |
 | `/api/xiaomi/login` | POST | 小米云 QR 码登录 |
 | `/api/xiaomi/qr/complete` | POST | 完成 QR 码登录 |
-| `/api/xiaomi/beaconkey` | POST | 获取 BLE Key |
+| `/api/xiaomi/import` | POST | **批量**导入设备（`dids[]` → 每台的名称/MAC/Token/BLE Key） |
+| `/api/xiaomi/beaconkey` | POST | 获取单台设备的 BLE Key（脚本/调试用） |
 | `/api/log-level` | GET/POST | 日志级别管理 |
 | `/api/bemfa` | GET | 巴法云状态查询 |
 | `/api/chart` | GET | 图表数据 |
