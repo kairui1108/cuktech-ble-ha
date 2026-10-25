@@ -98,6 +98,10 @@ def _setup_logging() -> None:
 _setup_logging()
 _LOGGER = logging.getLogger("cuktech_server")
 
+#: 界面语言是"跨页面的即时偏好"，一旦被浏览器缓存住，用户改了语言也会继续看到
+#: 旧的（真实踩过：页面一半中文一半英文，或者整页英文但设置里写着中文）。
+_NO_STORE = {"Cache-Control": "no-store, max-age=0"}
+
 
 _sse_log = logging.getLogger("cuktech_sse")
 
@@ -1574,7 +1578,7 @@ class Server:
             # 服务级 meta，不经设备 facade（§3.9：web_language 不属于任何设备）
             store = getattr(self, "history_store", None)
             lang = store.get_web_language() if store else "auto"
-            return web.json_response({"ok": True, "language": lang})
+            return web.json_response({"ok": True, "language": lang}, headers=_NO_STORE)
         try:
             data = await request.json()
         except json.JSONDecodeError:
@@ -1593,7 +1597,7 @@ class Server:
             if store:      # 无 store 的手工装配（测试）→ 仅本次生效，不持久化
                 store.set_web_language(canonical)
         _LOGGER.info("Web UI language set to %s", canonical)
-        return web.json_response({"ok": True, "language": canonical})
+        return web.json_response({"ok": True, "language": canonical}, headers=_NO_STORE)
 
     async def handle_charge_limits(self, request):
         """GET/POST /api/charge-limits — 指定充电量后自动关断端口。

@@ -594,6 +594,21 @@ class TestWebLanguageAPI:
         assert server.history.get_web_language() == "zh-CN"
 
     @pytest.mark.asyncio
+    async def test_responses_are_never_cached(self, server):
+        """GET/POST 都带 no-store：语言是即时偏好，被浏览器缓存住就会出现
+        "设置里写着中文、页面还是英文"这种自相矛盾的界面。"""
+        get_req = AsyncMock()
+        get_req.method = "GET"
+        get_result = await server.handle_web_language(get_req)
+        assert "no-store" in get_result.headers["Cache-Control"]
+
+        post_req = AsyncMock()
+        post_req.method = "POST"
+        post_req.json = AsyncMock(return_value={"language": "en"})
+        post_result = await server.handle_web_language(post_req)
+        assert "no-store" in post_result.headers["Cache-Control"]
+
+    @pytest.mark.asyncio
     async def test_post_rejects_invalid_language(self, server):
         """不支持的语言值时拒绝。"""
         request = AsyncMock()
