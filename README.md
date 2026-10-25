@@ -381,6 +381,11 @@ devices:
 - Web UI 出现设备切换器（单设备时隐藏），HA 集成里"一设备一 entry"；
 - 回滚：`./cuktech_ctl.sh history-down`（非 primary 历史归档，幂等）+ `clean-retained`。
 
+> **状态：多设备能力标 Beta。** 单设备路径有逐字节 golden 快照与既有回归锁定，
+> 多设备软件链路（注册/路由/SSE/MQTT/DB/限额/UI/HA）由虚拟充电器与多 entry 测试
+> 覆盖；但"两台真实充电器并发认证、互相干扰"只能在 P5 真机 canary（需要第二台
+> 硬件，连续 72h）通过后解除 Beta 标注。单设备用户不受影响。
+
 ## 依赖
 
 ### BLE Server

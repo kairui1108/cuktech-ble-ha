@@ -134,7 +134,11 @@ body.light .device-add-btn { border-color: rgba(0,0,0,0.16); }
              其余写进 devices: 节。 -->
         <div class="card config-section">
             <div class="config-section-title" style="display:flex;align-items:center;justify-content:space-between;">
-                <span data-i18n="config.devicesSection">充电器</span>
+                <span>
+                    <span data-i18n="config.devicesSection">充电器</span>
+                    <!-- 多设备能力在 P5 真机 canary 通过前标 Beta（README 同口径） -->
+                    <span class="beta-badge" data-i18n="config.multiDeviceBeta" title="">Beta</span>
+                </span>
                 <span onclick="openXiaomiModal()" style="font-size:10px;color:var(--accent);cursor:pointer;" data-i18n="config.xiaomiAuto">小米云自动获取 &#8599;</span>
             </div>
             <div class="config-hint device-list-hint" data-i18n="config.devicesHint">一台主机可同时连接多台充电器；保存后需重启生效</div>

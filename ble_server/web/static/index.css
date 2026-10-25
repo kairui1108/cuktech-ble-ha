@@ -1918,3 +1918,20 @@ html[lang="en"] .port-protocol {
     word-break: break-word;
     line-height: 1.35;
 }
+
+/* 多设备能力 Beta 标注（P5 canary 通过前一直挂着，README 同口径） */
+.beta-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 6px;
+    font-size: 10px;
+    line-height: 15px;
+    font-weight: 600;
+    letter-spacing: .02em;
+    color: #b26a00;
+    background: rgba(255, 170, 0, .16);
+    border: 1px solid rgba(255, 170, 0, .35);
+    vertical-align: middle;
+}
+body.light .beta-badge { color: #8a5200; background: rgba(255, 170, 0, .18); }

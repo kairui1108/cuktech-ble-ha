@@ -332,6 +332,9 @@
 
             // ── 多设备管理（设备卡片列表）──
             devicesSection: '充电器',
+            // 多设备能力在真机 canary 通过前标 Beta：让用户在配置页就知道
+            // "多台真机同时跑"还没被硬件验证过，而不是出事后再解释。
+            multiDeviceBeta: 'Beta',
             devicesHint: '一台主机可同时连接多台充电器；保存后需重启生效',
             addDevice: '添加充电器',
             editDevice: '编辑',

@@ -332,6 +332,8 @@
 
             // ── Multi-device management (device card list) ──
             devicesSection: 'Chargers',
+            // Multi-device is Beta until the two-charger hardware canary passes
+            multiDeviceBeta: 'Beta',
             devicesHint: 'One host can drive several chargers at once; changes apply after a restart',
             addDevice: 'Add charger',
             editDevice: 'Edit',
