@@ -34,16 +34,27 @@ from adapter_coordinator import (  # noqa: E402
 class FakeBluetoothctl:
     """记录 `bluetoothctl` 调用序列（恢复时序就是契约本身）。"""
 
-    def __init__(self, ready_after: int = 1):
+    def __init__(self, ready_after: int = 1, dialect: str = "both"):
         self.calls: list[tuple] = []
         self.ready_after = ready_after
+        # bluetoothctl 的 show 有两种方言（真机实测 BlueZ 5.x 只认不带参数的那个）：
+        #   "both"  → `show` 与 `show <hci>` 都给 Powered:
+        #   "plain" → `show <hci>` 回 "Controller hci0 not available"
+        #   "hci"   → 只有 `show <hci>` 给 Powered:（多适配器老方言）
+        self.dialect = dialect
         self._show_count = 0
 
     async def __call__(self, coord, *args):
         self.calls.append(args)
         if args[:1] == ("show",):
+            scoped = len(args) > 1
+            if scoped and self.dialect == "plain":
+                return f"Controller {args[1]} not available\n".encode()
+            if not scoped and self.dialect == "hci":
+                return b"Controller AA:BB:CC:DD:EE:FF (public)\n"
             self._show_count += 1
-            return b"Powered: yes" if self._show_count >= self.ready_after else b""
+            return (b"Powered: yes\n" if self._show_count >= self.ready_after
+                    else b"Powered: no\n")
         return b""
 
     def verbs(self) -> list[str]:
@@ -68,6 +79,64 @@ def bt(monkeypatch, coord):
 
 async def _noop_sleep(*_a, **_k):
     return None
+
+
+def _capture(coord) -> list:
+    """接管协调器日志，返回 [(level, 已格式化消息)]（断言"说了什么"，不看日志后端）。"""
+    logs: list = []
+    coord._log = lambda level, msg, *a: logs.append(
+        (level, msg % a if a else msg))
+    return logs
+
+
+class TestAdapterReadyProbe:
+    """就绪探测必须认得两种 `bluetoothctl show` 方言（真机日志暴露过的坑）。
+
+    改造前只问 `show <hci>`：BlueZ 5.x 回 "Controller hci0 not available"，于是
+    每次 power cycle 都空转满 15 轮再 "proceeding anyway" —— 而在适配器还没
+    真正就绪时连上去，正是 MiOT 认证失步（"未收到 RCV_OK"）的温床。
+    """
+
+    async def test_plain_dialect_counts_as_ready(self, coord, monkeypatch):
+        fake = FakeBluetoothctl(ready_after=1, dialect="plain")
+        monkeypatch.setattr(ac, "has_bluetoothctl", lambda: True)
+        monkeypatch.setattr(coord, "_bluetoothctl", lambda *a: fake(coord, *a))
+        logs = _capture(coord)
+
+        await coord._power_cycle()
+
+        assert ("show", "hci0") in fake.calls, "先按老写法问 hci"
+        assert ("show",) in fake.calls, "再按不带参数的写法问一次"
+        assert not any("not ready" in m for _lvl, m in logs), \
+            "识别出已就绪就不该再报 'not ready'"
+        assert any("ready after power cycle" in m for _lvl, m in logs)
+
+    async def test_hci_dialect_still_supported(self, coord, monkeypatch):
+        """多适配器老方言（只有 `show <hci>` 给 Powered:）不能被新逻辑弄坏。"""
+        fake = FakeBluetoothctl(ready_after=1, dialect="hci")
+        monkeypatch.setattr(ac, "has_bluetoothctl", lambda: True)
+        monkeypatch.setattr(coord, "_bluetoothctl", lambda *a: fake(coord, *a))
+
+        await coord._power_cycle()
+        assert ("show", "hci0") in fake.calls
+
+    async def test_ready_adapter_stops_probing_early(self, coord, monkeypatch):
+        """就绪即返回：不该把 15 轮探测全跑完（每次都是真 1s 的等待）。"""
+        fake = FakeBluetoothctl(ready_after=2, dialect="plain")
+        monkeypatch.setattr(ac, "has_bluetoothctl", lambda: True)
+        monkeypatch.setattr(coord, "_bluetoothctl", lambda *a: fake(coord, *a))
+
+        await coord._power_cycle()
+        assert len([c for c in fake.calls if c[0] == "show"]) <= 4
+
+    async def test_never_ready_warns_after_all_rounds(self, coord, monkeypatch):
+        fake = FakeBluetoothctl(ready_after=999, dialect="plain")
+        monkeypatch.setattr(ac, "has_bluetoothctl", lambda: True)
+        monkeypatch.setattr(coord, "_bluetoothctl", lambda *a: fake(coord, *a))
+        logs = _capture(coord)
+
+        await coord._power_cycle()
+        assert any("not ready" in m for _lvl, m in logs), "真没就绪仍要告警（不静默放行）"
 
 
 class TestSingleDeviceKeepsLegacySequence:

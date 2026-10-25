@@ -310,8 +310,34 @@ class AdapterCoordinator:
                 # 无论 power cycle 成功与否都必须开门：门闸关着不放行 = 全场停摆
                 self.recovery_gate.set()
 
+    async def _adapter_powered(self, hci: str) -> bool:
+        """适配器电源是否已就绪。
+
+        **两种 `bluetoothctl` 方言都必须试**：BlueZ 5.x 的 `show <hci>` 只接受
+        控制器地址/MAC，传 `hci0` 会回 `Controller hci0 not available`；不带参数
+        的 `show` 才给 `Powered: yes`。改造前只试前者，于是在这类机器上**每次**
+        power cycle 都要空转满 15 轮再 "proceeding anyway"（真机日志实测），
+        而"电源刚上、GATT 还没就绪就连上去"正是认证失步（`未收到 RCV_OK`）的
+        温床——所以这不是日志噪音，是恢复质量问题。
+        """
+        for args in (("show", hci), ("show",)):
+            out = await self._bluetoothctl(*args)
+            if b"Powered: yes" in out:
+                return True
+            if b"Powered: no" in out:
+                return False
+        # sysfs 兜底：bluetoothctl 不可用或输出格式再变时仍能判定
+        try:
+            power_file = f"/sys/class/bluetooth/{hci}/power"
+            if os.path.exists(power_file):
+                with open(power_file) as f:
+                    return f.read().strip() == "1"
+        except Exception:
+            pass
+        return False
+
     async def _power_cycle(self) -> None:
-        """适配器下电/上电 + 就绪探测：命令与时序与旧实现逐条一致。"""
+        """适配器下电/上电 + 就绪探测（命令与时序同旧实现，就绪判定见上）。"""
         if not has_bluetoothctl():
             self._log("info", "bluetoothctl not available, skipping adapter power cycle")
             return
@@ -322,19 +348,9 @@ class AdapterCoordinator:
         hci = _find_ble_adapter()
         for _ in range(self.READY_PROBE_ROUNDS):
             await self.sleep(1)
-            out = await self._bluetoothctl("show", hci)
-            if b"Powered: yes" in out:
+            if await self._adapter_powered(hci):
                 self._log("info", "BT adapter ready after power cycle")
                 return
-            try:
-                power_file = f"/sys/class/bluetooth/{hci}/power"
-                if os.path.exists(power_file):
-                    with open(power_file) as f:
-                        if f.read().strip() == "1":
-                            self._log("info", "BT adapter ready (via sysfs)")
-                            return
-            except Exception:
-                pass
         self._log("warning", "BT adapter not ready after %ds, proceeding anyway",
                   self.READY_PROBE_ROUNDS)
 
