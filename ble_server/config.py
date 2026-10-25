@@ -346,7 +346,7 @@ def config_from_mapping(ycfg: dict) -> Config:
         allowed_devices=list(bemfa_cfg.get("allowed_devices") or [PRIMARY_DEVICE_ID]),
     )
 
-    devices = _parse_devices(ycfg, ble, mqtt)
+    devices = _parse_devices(ycfg, ble)
     cfg = Config(ble=ble, mqtt=mqtt, server=server, bemfa=bemfa, devices=devices)
     validate_device_specs(cfg)
     return cfg
@@ -354,11 +354,14 @@ def config_from_mapping(ycfg: dict) -> Config:
 
 # ── 多设备配置：解析与启动校验（§3.10） ──
 
-def _parse_devices(ycfg: dict, ble: BLEConfig, mqtt: MQTTConfig) -> list:
+def _parse_devices(ycfg: dict, ble: BLEConfig) -> list:
     """把 `devices:` 节解析成 `DeviceConfig` 列表（不含 primary）。
 
-    字段缺失/类型错误在这里就报错，而不是等到 `BLEManager` 构造时炸在
-    `bytes.fromhex(token)` 上——后者的报错信息对用户毫无意义。
+    **字段清洗只有一份实现**（`DeviceConfig.from_mapping`）：这里以前自己抄了一遍
+    键名（只认 `id`，而 from_mapping 认 `id`/`device_id`）、字段清洗与默认
+    `scan_timeout`，两套解析器迟早会漂移——而漂移的后果是"配置页存得进、启动读
+    不出"或者反过来。本函数只保留**它独有的价值**：带 `devices[i]` 下标的报错
+    （YAML 里有几十行时，能直接跳到出错那一条）与列表形状检查。
     """
     raw = ycfg.get("devices")
     if raw in (None, ""):
@@ -372,28 +375,15 @@ def _parse_devices(ycfg: dict, ble: BLEConfig, mqtt: MQTTConfig) -> list:
     for idx, item in enumerate(raw):
         if not isinstance(item, dict):
             raise ValueError(f"配置错误：`devices[{idx}]` 必须是映射（id/mac/token）")
-        device_id = str(item.get("id") or "").strip()
-        if not device_id:
+        spec = DeviceConfig.from_mapping(item, default_scan_timeout=ble.scan_timeout)
+        # 必填校验：报错要能定位到具体哪一条，所以留在这里而不是 from_mapping
+        if not spec.device_id:
             raise ValueError(f"配置错误：`devices[{idx}]` 缺少 `id`（id 即 MQTT 前缀后缀）")
-        mac = str(item.get("mac") or "").strip()
-        token = str(item.get("token") or "").strip()
-        if not mac:
-            raise ValueError(f"配置错误：设备 `{device_id}` 缺少 `mac`")
-        if not token:
-            raise ValueError(f"配置错误：设备 `{device_id}` 缺少 `token`")
-        bemfa_names = {k[len("bemfa_"):]: v for k, v in item.items()
-                       if k.startswith("bemfa_") and v}
-        specs.append(DeviceConfig(
-            device_id=device_id,
-            name=str(item.get("name") or "").strip(),
-            mac=mac,
-            token=token,
-            ble_key=str(item.get("ble_key") or "").strip(),
-            scan_timeout=int(item.get("scan_timeout", ble.scan_timeout)),
-            topic_prefix=str(item.get("topic_prefix") or "").strip(),
-            is_primary=False,
-            bemfa_names=bemfa_names,
-        ))
+        if not spec.mac:
+            raise ValueError(f"配置错误：设备 `{spec.device_id}` 缺少 `mac`")
+        if not spec.token:
+            raise ValueError(f"配置错误：设备 `{spec.device_id}` 缺少 `token`")
+        specs.append(spec)
     return specs
 
 

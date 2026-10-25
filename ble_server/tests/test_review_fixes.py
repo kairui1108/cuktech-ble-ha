@@ -239,3 +239,134 @@ class TestServiceBoundaries:
         s._history_assigned = None
         with pytest.raises(RuntimeError, match="_state_assigned"):
             s._assert_no_assignment()
+
+
+class TestRemovedDeviceLeftovers:
+    """P2：设备从配置里删掉后，retained 幽灵要清，历史数据要留。"""
+
+    @pytest.fixture
+    async def dual(self):
+        async with golden_env(devices=[DESK]) as env:
+            yield env
+
+    async def test_removed_device_retained_cleared_history_kept(self, dual):
+        s = dual.server
+        desk = s.registry.get("desk")
+
+        # 先给 desk 造一条历史会话：删设备**不该**动它（删了不可逆）
+        sid = desk.history.start_session(1, protocol="PD")
+        desk.history.end_session(sid, 1.0, 10.0, 20.0, 0.5, 60)
+        assert desk.history.get_sessions(1), "前置条件：desk 有历史会话"
+
+        # 重启在这里必须被挡住：本用例只验保存路径的行为
+        restarted = []
+
+        async def fake_restart():
+            restarted.append(True)
+
+        s._delayed_restart = fake_restart
+        dual.reset_mqtt()
+
+        payload = {"config": {
+            "ble": {"mac": "AA:BB:CC:DD:EE:01", "token": "c1b1****c162"},
+            "devices": [{"device_id": "default", "mac": "AA:BB:CC:DD:EE:01",
+                         "is_primary": True}],       # ← desk 被删掉了
+        }}
+        resp = await s.handle_config_save(_json_request("POST", "/api/config", payload))
+        assert resp.status == 200, resp.body
+
+        cleared = [p for p in dual.publishes]
+        topics = {p["topic"] for p in cleared}
+        assert "cuktech/charger/desk/status" in topics, f"幽灵 retained 没清掉：{topics}"
+        assert all(p["payload"] == "" and p["retain"] for p in cleared
+                   if p["topic"].startswith("cuktech/charger/desk")), \
+            f"清 retained 必须是空负载 + retain（'null' 不是清除）：{cleared}"
+        assert not any(t.startswith("cuktech/charger/status") for t in topics), \
+            "primary 的主题不该被清（设备还在）"
+
+        assert desk.history.get_sessions(1), "删设备不该删历史数据"
+        assert not restarted, "本用例里重启被替身挡下（真路径会 1s 后重启）"
+
+    async def test_kept_devices_are_not_purged(self, dual):
+        """没删设备时一条清空都不该发（避免每次保存都往 broker 写噪音）。"""
+        s = dual.server
+        s._delayed_restart = _noop_coro
+        dual.reset_mqtt()
+        payload = {"config": {
+            "ble": {"mac": "AA:BB:CC:DD:EE:01", "token": "c1b1****c162"},
+            "devices": [{"device_id": "default", "mac": "AA:BB:CC:DD:EE:01",
+                         "is_primary": True},
+                        {"device_id": "desk", "mac": DESK["mac"],
+                         "token": DESK["token"]}],
+        }}
+        resp = await s.handle_config_save(_json_request("POST", "/api/config", payload))
+        assert resp.status == 200, resp.body
+        assert dual.publishes == [], f"没删设备却发了清除：{dual.publishes}"
+
+
+async def _noop_coro(*args, **kwargs):
+    return None
+
+
+class TestSingleDeviceParser:
+    """P2：`devices:` 只有**一份**解析实现（`DeviceConfig.from_mapping`）。
+
+    以前 `_parse_devices` 自己抄了一遍键名（只认 `id`，而 from_mapping 认
+    `id`/`device_id`）与字段清洗：配置页写得进、启动读不出（或反过来）只是时间问题。
+    """
+
+    def test_parse_devices_accepts_both_key_names(self):
+        from config import BLEConfig, _parse_devices
+
+        specs = _parse_devices(
+            {"devices": [{"id": "desk", "mac": "AA:BB:CC:DD:EE:02", "token": "11" * 16},
+                         {"device_id": "bed", "mac": "AA:BB:CC:DD:EE:03",
+                          "token": "22" * 16}]},
+            BLEConfig(mac="AA:BB:CC:DD:EE:01", token="00" * 16, scan_timeout=7))
+        assert [s.device_id for s in specs] == ["desk", "bed"]
+        assert [s.scan_timeout for s in specs] == [7, 7], "默认 scan_timeout 走 ble 节"
+
+    def test_errors_are_locatable(self):
+        """报错要能定位：缺 id 报下标（那时还没有名字可指），缺 mac/token 报设备名。"""
+        from config import BLEConfig, _parse_devices
+
+        ble = BLEConfig(mac="AA:BB:CC:DD:EE:01", token="00" * 16)
+        with pytest.raises(ValueError, match=r"devices\[1\]"):
+            _parse_devices({"devices": [{"id": "desk", "mac": "AA:BB:CC:DD:EE:02",
+                                         "token": "11" * 16},
+                                        {"mac": "AA:BB:CC:DD:EE:03",
+                                         "token": "22" * 16}]}, ble)     # 缺 id
+        with pytest.raises(ValueError, match=r"`bed` 缺少 `mac`"):
+            _parse_devices({"devices": [{"id": "bed", "token": "22" * 16}]}, ble)
+
+
+class TestRecoveryStateOnDevicesEndpoint:
+    """P2：卡在 L1.5 退避里的设备要能从 `/api/devices` 看出来。"""
+
+    async def test_stuck_device_is_visible_healthy_one_is_untouched(self, monkeypatch):
+        async with golden_env(devices=[DESK]) as env:
+            s = env.server
+            desk = s.registry.get("desk")
+
+            async def fake_l1(mac):
+                return None
+
+            async def fake_l15(mac):
+                return None
+
+            # 不碰真适配器：只跑阶梯的分支判定
+            monkeypatch.setattr(s.adapter, "_l1_disconnect", fake_l1)
+            monkeypatch.setattr(s.adapter, "_l15_remove", fake_l15)
+            s.adapter.set_device_count_provider(lambda: 3)
+            s.adapter.register_connection(s.primary.mac)      # 别人还在线 → 升不上去
+
+            for _ in range(3):
+                await s.adapter.recover_device(desk.mac)
+
+            resp = await s.handle_devices(mock_request("GET", "/api/devices"))
+            by_id = {d["id"]: d for d in json.loads(resp.body)["devices"]}
+            assert "recovery" in by_id["desk"], f"退避中的设备必须可见：{by_id['desk']}"
+            assert by_id["desk"]["recovery"]["level"] == "L1.5"
+            assert by_id["desk"]["recovery"]["count"] >= 1
+            assert "recovery" not in by_id["default"], \
+                "健康设备不该多出这个键（响应要逐字节不变）"

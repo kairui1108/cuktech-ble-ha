@@ -26,8 +26,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import adapter_coordinator as ac  # noqa: E402
 import ha_server  # noqa: E402
 from adapter_coordinator import (  # noqa: E402
-    LEVEL_ADAPTER, LEVEL_DEVICE, LEVEL_INPROCESS, LEVEL_PROCESS, LEVEL_REMOVE,
-    AdapterCoordinator,
+    L15_BACKOFF_ALERT, LEVEL_ADAPTER, LEVEL_DEVICE, LEVEL_INPROCESS, LEVEL_PROCESS,
+    LEVEL_REMOVE, AdapterCoordinator,
 )
 
 
@@ -203,6 +203,61 @@ class TestMultiDeviceDoesNotHurtOthers:
         await multi.recover_device("AA:BB:CC:DD:EE:01")
         targets = {c[1] for c in bt.calls if c[0] in ("disconnect", "remove")}
         assert targets == {"AA:BB:CC:DD:EE:01"}
+
+
+class TestL15BackoffVisibility:
+    """P2：多设备时 L1.5 升不上去，必须**看得见**。
+
+    退避是无限重试：`_l15_failures` 只增不减、也没有升级路径（L2 会掐断别人、
+    L3 整进程重启更贵）。以前界面上只有 connected=false，运维完全不知道设备
+    是在"退避中"还是"根本没配好"。
+    """
+
+    @pytest.fixture
+    def multi(self, coord):
+        coord.set_device_count_provider(lambda: 3)
+        return coord
+
+    async def test_stuck_in_backoff_is_recorded(self, multi):
+        multi.note_connected("AA:BB:CC:DD:EE:02")     # 另一台还在线 → 阶梯升不上去
+        await multi.recover_device("AA:BB:CC:DD:EE:01")
+        await multi.recover_device("AA:BB:CC:DD:EE:01")
+        state = multi.backoff_state("AA:BB:CC:DD:EE:01")
+        assert state is not None, "卡在退避里必须留下状态"
+        assert state["level"] == LEVEL_REMOVE
+        assert state["count"] >= 1
+        assert "connected" in state["reason"]
+        # MAC 大小写不敏感（日志与配置里两种写法都见过）
+        assert multi.backoff_state("aa:bb:cc:dd:ee:01")["count"] == state["count"]
+
+    async def test_alert_is_logged_exactly_once(self, multi):
+        """第 `L15_BACKOFF_ALERT` 次"卡住"时报 error，且只报一次（不刷屏）。
+
+        计数口径：第 1 次 recover 只到 L1，第 2 次进 L1.5 才建立退避状态（count=1），
+        所以"连续 N 次卡住"需要 N+1 次 recover。
+        """
+        logs = _capture(multi)
+        multi.note_connected("AA:BB:CC:DD:EE:02")
+        for _ in range(L15_BACKOFF_ALERT + 1):
+            await multi.recover_device("AA:BB:CC:DD:EE:01")
+        errors = [msg for level, msg in logs if level == "error"]
+        assert len(errors) == 1, errors
+        assert "backoff" in errors[0]
+        await multi.recover_device("AA:BB:CC:DD:EE:01")       # 继续退避，不该刷屏
+        assert len([m for lvl, m in logs if lvl == "error"]) == 1
+
+    async def test_healthy_device_has_no_state(self, multi):
+        multi.note_connected("AA:BB:CC:DD:EE:02")
+        await multi.recover_device("AA:BB:CC:DD:EE:01")       # 只到 L1，还在正常阶梯里
+        assert multi.backoff_state("AA:BB:CC:DD:EE:01") is None
+
+    async def test_reconnect_clears_backoff(self, multi):
+        multi.note_connected("AA:BB:CC:DD:EE:02")
+        await multi.recover_device("AA:BB:CC:DD:EE:01")
+        await multi.recover_device("AA:BB:CC:DD:EE:01")
+        assert multi.backoff_state("AA:BB:CC:DD:EE:01") is not None
+        multi.note_connected("AA:BB:CC:DD:EE:01")              # 连上了 = 退避结束
+        assert multi.backoff_state("AA:BB:CC:DD:EE:01") is None
 
 
 class TestQuiesceGate:
@@ -470,16 +525,25 @@ class TestManagerIntegration:
         await mgr._force_disconnect_bluetooth()
         assert seen == ["AA:BB:CC:DD:EE:01"]
 
-    async def test_manager_without_adapter_keeps_legacy_power_cycle(self):
-        """无协调器（老单测直接构造 manager）仍走改造前的整机级实现。"""
+    async def test_manager_without_adapter_does_not_touch_the_adapter(self):
+        """无协调器时**不做**任何适配器级恢复（整机级实现已删除）。
+
+        回归要点：旧的 `_legacy_force_disconnect_bluetooth` 会 power cycle 整个适配器，
+        多设备时等于把别人的连接一起掐掉（违反 §3.5"只有协调器能动适配器"），
+        而且它的就绪探测仍只认 `Powered: yes` 这一种方言。现在无协调器 = 什么都不做。
+        """
         from ble_manager import BLEManager
         from config import load_config
         from state import ChargerState
 
         cfg = load_config()
         mgr = BLEManager("AA:BB:CC:DD:EE:01", "00" * 16, ChargerState(), cfg)
-        with patch("ble_manager._has_bluetoothctl", return_value=False):
-            await mgr._force_disconnect_bluetooth()      # 不该抛异常
+        assert mgr.adapter is None
+        with patch("asyncio.create_subprocess_exec",
+                   side_effect=AssertionError("无协调器时不该调用 bluetoothctl")):
+            await mgr._force_disconnect_bluetooth()      # 不该抛异常、也不该碰适配器
+        assert not hasattr(mgr, "_legacy_force_disconnect_bluetooth"), \
+            "整机级恢复必须彻底删掉，不能留成可复用的死代码"
 
 
 class TestManagerGateAndStagger:

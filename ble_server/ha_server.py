@@ -826,6 +826,48 @@ class Server:
     def history(self, value):
         self._history_assigned = value
 
+    # ── 设备被移除后的残留清理（§3.6/§3.10） ──
+
+    def _mqtt_clear_retained(self, topic: str) -> bool:
+        """清掉一条 retained 消息（**空负载** + retain）。
+
+        不能用 `mqtt_publish(topic, None, retain=True)`：那个函数会
+        `json.dumps(None)` → 往 retained 里塞一个字符串 "null"，订阅方看到的仍是
+        一条"有内容"的消息。清除 retained 的唯一正确形状是空 payload。
+        """
+        if not (self.mqtt_client and self.mqtt_client.is_connected()):
+            return False
+        try:
+            self.mqtt_client.publish(topic, "", retain=True)
+            return True
+        except Exception:
+            self._mqtt_publish_failures += 1
+            return False
+
+    def purge_removed_devices(self, removed) -> list[str]:
+        """设备从配置里消失后，清掉它在 broker 上的 retained 状态。
+
+        为什么必须清：`{prefix}/status`、`.../port/c1` 等都是 retained 的，设备没了
+        它们还留在 broker 上——HA / MQTT Explorer 会看到一个**永远停在最后一次上报**
+        的幽灵设备，用户以为设备还在。清理是幂等的：同 id 加回来，几秒内就被真实
+        状态覆盖。
+
+        **历史数据一个字不动**：那是用户数据，删了不可逆。同 id 重新加回来时曲线与
+        会话会原样回来；确需清库走 `clean_retained.py` / `history_down.py`。
+        """
+        cleared: list[str] = []
+        for rt in removed:
+            ns = rt.topics
+            topics = [ns.status, ns.settings, ns.port, ns.ble, ns.charge_event]
+            topics += [ns.port_topic(name) for name in PORT_NAMES.values()]
+            for topic in topics:
+                if self._mqtt_clear_retained(topic):
+                    cleared.append(topic)
+            _LOGGER.warning(
+                "[%s] 设备已从配置移除：清理 %d 条 retained 主题（历史数据保留，"
+                "同 id 加回即恢复）", rt.device_id, len(topics))
+        return cleared
+
     def mqtt_publish(self, topic, payload, retain=False):
         """Publish to all enabled MQTT clients (multiplex)."""
         # HA MQTT
@@ -1024,11 +1066,20 @@ class Server:
 
         无遗留消费者，因此它的存在本身不构成字节一致性破坏——"老面不变"指的是
         老端点的响应。单设备时返回一台 primary，Web UI 据此隐藏切换器（§3.12）。
+
+        `recovery` 只在**卡在 L1.5 退避里**的设备上加：多设备且有活连接时阶梯升不
+        上去（L2 会掐断别人），它会无限重试，运维在界面上只看得到 connected=false。
+        正常设备不带这个键，响应逐字节不变。
         """
-        return web.json_response({
-            "ok": True,
-            "devices": [rt.describe() for rt in self.registry],
-        })
+        adapter = getattr(self, "adapter", None)
+        devices = []
+        for rt in self.registry:
+            item = rt.describe()
+            state = adapter.backoff_state(rt.mac) if adapter is not None else None
+            if state:
+                item["recovery"] = state
+            devices.append(item)
+        return web.json_response({"ok": True, "devices": devices})
 
     async def handle_bemfa(self, request):
         """GET /api/bemfa - get Bemfa status."""
@@ -2342,7 +2393,7 @@ class Server:
             # 是 _delayed_restart() 之后进程被 load_config 拒绝启动、Web UI 一起
             # 消失，用户只能手改 YAML 才能救回来。宁可现在 400，也不写一个起不来的文件。
             try:
-                load_config(tmp_path)
+                validated = load_config(tmp_path)
             except Exception as e:
                 with contextlib.suppress(OSError):
                     tmp_path.unlink()
@@ -2350,6 +2401,13 @@ class Server:
                 return web.json_response({"ok": False, "error": str(e)}, status=400)
 
             os.replace(tmp_path, config_path)
+
+            # 设备被删掉后的残留：清它的 retained（否则 broker 上留下幽灵设备），
+            # 但保留历史数据。放在重启之前——重启会断 MQTT，那时就发不出清了。
+            kept_ids = {spec.device_id for spec in validated.device_specs()}
+            removed = [rt for rt in self.registry if rt.device_id not in kept_ids]
+            if removed:
+                self.purge_removed_devices(removed)
 
             _LOGGER.info("Config saved to %s, restarting...", config_path)
 

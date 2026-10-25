@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import time
 import shutil
 
 #: 恢复级别（与 §3.5 表格一一对应；顺序即"只能升级不能跳级"的顺序）
@@ -51,6 +52,15 @@ L1_FAILURES_BEFORE_REMOVE = 1
 
 #: 同样的 MAC 连续多少次 L1.5 失败后才有资格申请 L2（除非 N=1）
 L15_FAILURES_BEFORE_ADAPTER = 1
+
+#: 同一 MAC 连续这么多次"卡在 L1.5 退避里（升级不上去）"就对外报 stuck。
+#: 取 3：L1 + L1.5 各自吸收一次抖动，第三次还回不来就不是抖动了。
+L15_BACKOFF_ALERT = 3
+
+
+def _key(mac) -> str:
+    """失败计数/退避状态的键：MAC 大小写不敏感（日志与配置里两种写法都见过）。"""
+    return str(mac or "").strip().lower()
 
 
 def has_bluetoothctl() -> bool:
@@ -82,6 +92,10 @@ class AdapterCoordinator:
         self._l15_failures: dict[str, int] = {}
         # 认证卡死中的设备数：≥2 台同时卡住 = 适配器级故障，必须升级为进程重启
         self._stuck_devices: set[str] = set()
+        # 卡在 L1.5 退避里的设备：{mac_lower: {count, since, last_at, reason, alerted}}
+        # 多设备 + 他人有活连接时阶梯**升不上去**（L2 会掐断别人、L3 整进程重启更贵），
+        # 于是它会一直重试且计数只增不减——不记录的话运维完全看不见"它在退避"。
+        self._l15_backoff: dict[str, dict] = {}
         # 注入点：L3 进程内重建 / 进程重启（由 Server 提供，本模块不拥有 runtime）
         self._rebuild_hook = None
         self._process_restart_hook = None
@@ -277,6 +291,7 @@ class AdapterCoordinator:
             self._log("warning",
                       "L1.5 recovery for %s (removed BlueZ cache; adapter left alone "
                       "because other devices are still connected)", mac)
+            self._declare_backoff(mac, "other devices still connected")
             return LEVEL_REMOVE
 
         if not self._can_reset_adapter():
@@ -284,11 +299,15 @@ class AdapterCoordinator:
                       "L1.5 recovery for %s — adapter power cycle skipped "
                       "(N=%d, %d live connection(s))", mac, self.device_count,
                       len(self.live_connections))
+            self._declare_backoff(
+                mac, f"adapter reset not allowed (N={self.device_count}, "
+                     f"{len(self.live_connections)} live)")
             return LEVEL_REMOVE
 
         await self.recover_adapter()
         self._l1_failures.pop(mac, None)
         self._l15_failures.pop(mac, None)
+        self.clear_backoff(mac)
         return LEVEL_ADAPTER
 
     async def recover_adapter(self) -> None:
@@ -375,6 +394,7 @@ class AdapterCoordinator:
         self._stuck_devices.discard(mac)
         self._l1_failures.pop(mac, None)
         self._l15_failures.pop(mac, None)
+        self.clear_backoff(mac)
         return LEVEL_INPROCESS
 
     async def _escalate_process(self, reason: str) -> str:
@@ -385,16 +405,54 @@ class AdapterCoordinator:
         await self._process_restart_hook()
         return LEVEL_PROCESS
 
+    # ── L1.5 退避（多设备时"升不上去"的可见状态）──
+
+    def _declare_backoff(self, mac: str, reason: str) -> dict:
+        """记一次"这台设备卡在 L1.5 退避里"（阶梯升不上去，只能无限重试）。"""
+        key = _key(mac)
+        now = time.time()
+        entry = self._l15_backoff.get(key)
+        if entry is None:
+            entry = {"mac": str(mac), "count": 0, "since": now, "last_at": now,
+                     "level": LEVEL_REMOVE, "reason": reason, "alerted": False}
+            self._l15_backoff[key] = entry
+        entry["count"] += 1
+        entry["last_at"] = now
+        entry["reason"] = reason
+        if entry["count"] >= L15_BACKOFF_ALERT and not entry["alerted"]:
+            entry["alerted"] = True
+            self._log("error",
+                      "%s is stuck in %s backoff (%d attempts, %s): the ladder cannot "
+                      "escalate while other devices are connected — needs attention",
+                      mac, LEVEL_REMOVE, entry["count"], reason)
+        return entry
+
+    def backoff_state(self, mac: str) -> dict | None:
+        """这台设备的退避状态（None = 正常）。`/api/devices` 用它对外暴露。
+
+        只在**卡住**时才有内容，正常设备的响应因此逐字节不变。
+        """
+        entry = self._l15_backoff.get(_key(mac))
+        return dict(entry) if entry else None
+
+    def clear_backoff(self, mac: str) -> None:
+        self._l15_backoff.pop(_key(mac), None)
+
     # ── 测试/排障：清掉某台设备的失败计数（例如它成功连上之后）──
     def note_connected(self, mac: str) -> None:
         self.register_connection(mac)
         self._stuck_devices.discard(mac)
         self._l1_failures.pop(mac, None)
         self._l15_failures.pop(mac, None)
+        self.clear_backoff(mac)
 
 
 def _find_ble_adapter() -> str:
-    """自动检测支持 BLE 的适配器名（hci0/hci1…）：与 `BLEManager._find_ble_adapter` 同源。"""
+    """自动检测支持 BLE 的适配器名（hci0/hci1…）。
+
+    这里是**唯一**一份：`BLEManager` 里那份同源副本已随"整机级恢复"一起删除
+    （它属于违反 §3.5 红线的死代码，且就绪探测还是旧单方言版本）。
+    """
     if not os.path.exists("/sys/class/bluetooth"):
         return "hci0"
     import glob

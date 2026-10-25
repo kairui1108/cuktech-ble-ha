@@ -244,9 +244,9 @@ class TestConfigDevicesApi:
             "空的可选字段不该写进 YAML"
 
         # 写出来的东西必须能被生产解析器吃下去（否则重启即崩）
-        from config import _parse_devices, BLEConfig, MQTTConfig
+        from config import _parse_devices, BLEConfig
         ble = BLEConfig(**saved["ble"])
-        specs = _parse_devices(saved, ble, MQTTConfig(**saved["mqtt"]))
+        specs = _parse_devices(saved, ble)
         assert [s.device_id for s in specs] == ["desk", "bed"]
         assert specs[0].bemfa_names == {"ble": "desk_ble"}
 

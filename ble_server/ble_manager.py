@@ -1639,22 +1639,9 @@ class BLEManager:
         self._close_active_sessions(END_REASON_SHUTDOWN)
         self._stop_event.set()
         await self._disconnect()
-        if _has_bluetoothctl():
-            await self._force_disconnect_bluetooth()
-
-    def _find_ble_adapter(self):
-        """自动检测支持 BLE 的蓝牙适配器名称（如 hci0, hci1）"""
-        if not os.path.exists("/sys/class/bluetooth"):
-            return "hci0"
-        import glob
-        hci_devs = sorted(glob.glob("/sys/class/bluetooth/hci*"))
-        for hci_dir in hci_devs:
-            hci_name = os.path.basename(hci_dir)
-            if ":" in hci_name:
-                continue
-            if os.path.isdir(os.path.join(hci_dir, "device")):
-                return hci_name
-        return "hci0"
+        # 恢复/清理一律交给协调器：它自己判断 bluetoothctl 是否可用（不再在这里
+        # 做存在性门闸——那会让"协调器可用但 bluetoothctl 不在"时静默跳过 L1）。
+        await self._force_disconnect_bluetooth()
 
     async def _connect(self):
         """连接入口：门闸 + 连接信号量包住整个"扫描/连接/认证"窗口（§3.4/§3.5）。
@@ -1828,6 +1815,25 @@ class BLEManager:
         # bluetoothctl disconnect MAC 由 _force_disconnect_bluetooth() 统一处理
         # 此处不再重复调用，避免设备收到多次断连通知导致状态混乱
 
+    async def _bluetoothctl_scan_off(self):
+        """停止适配器上残留的扫描（`bluetoothctl scan off`）。
+
+        只服务"无协调器"的直连路径（单测直接构造 manager）：生产路径的扫描由
+        协调器统一管（`AdapterCoordinator.find_device` 内部先做 scan_cleanup）。
+        这里**只**停扫描，绝不碰适配器电源——"只有协调器能动适配器"是 §3.5 的红线。
+        """
+        if not _has_bluetoothctl():
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "bluetoothctl", "scan", "off",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=5)
+        except Exception:
+            pass
+
     async def _scan_for_device(self):
         """找这台设备的 BLE 对象（协调器存在时走共享扫描，否则走老路径）。
 
@@ -1846,7 +1852,7 @@ class BLEManager:
                 raise ConnectionError(f"BLE scan failed: {e}")
 
         # 先清理 BlueZ 残留扫描状态（避免 InProgress 错误）
-        await self._stop_ble_scan()
+        await self._bluetoothctl_scan_off()
         # 等待 BlueZ 清理扫描状态，避免与 BleakScanner 内部扫描冲突
         await asyncio.sleep(0.5)
 
@@ -1864,101 +1870,24 @@ class BLEManager:
 
         return found
 
-    async def _stop_ble_scan(self):
-        """Cancel any lingering BLE scan on the adapter before starting a new one.
-        Prevents [org.bluez.Error.InProgress] Operation already in progress.
-        """
-        if not _has_bluetoothctl():
-            return
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "bluetoothctl", "scan", "off",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
-        except Exception:
-            pass
-
     async def _force_disconnect_bluetooth(self):
-        """恢复这台设备的 BLE 链路（分级恢复的入口，§3.5）。
+        """恢复这台设备的 BLE 链路（分级恢复的唯入口，§3.5）。
 
-        有协调器时交给它：L1 只断开**自己**，必要时 L1.5 清本 MAC 的 BlueZ 缓存，
-        只有"N=1 或全员离线"才允许 L2 适配器 power cycle（且带 quiesce 门闸）。
-        没有协调器时退回改造前的整机级实现——单设备 N=1 的时序必须保持一致。
+        恢复**只**由协调器做：L1 只断开自己 → L1.5 清本 MAC 的 BlueZ 缓存 →
+        只有"N=1 或全员离线"才允许 L2 适配器 power cycle（带 quiesce 门闸）。
+
+        没有协调器时这里**什么都不做**：改造前那套"整机级 power cycle"已删除。
+        它违反"唯一允许碰适配器的是协调器"这条红线（多设备时重启一台会掐掉别人
+        的连接），而且它里面的就绪探测还是旧单方言版本（只认 `Powered: yes`），
+        与 6658b16 修好的协调器版本不一致——留着就是给未来的人一个陷阱。
+        生产路径恒有协调器（`Server._make_manager` 一定传 adapter）；只有单测
+        直接构造 manager 时才为 None，那些用例本就 mock 掉了这个方法。
         """
-        if self.adapter is not None:
-            level = await self.adapter.recover_device(self.mac)
-            self.log.info("Recovered via %s (adapter coordinator)", level)
+        if self.adapter is None:
+            self.log.debug("no adapter coordinator attached; skipping link recovery")
             return
-        await self._legacy_force_disconnect_bluetooth()
-
-    async def _legacy_force_disconnect_bluetooth(self):
-        """改造前的整机级恢复：`scan off` → disconnect → power cycle。
-
-        仅在 Linux + bluetoothctl 可用时执行；其它平台由 bleak 层处理断连，
-        适配器电源循环属于 Linux 特有的 BlueZ 恢复手段，跳过不影响功能。
-        """
-        if not _has_bluetoothctl():
-            self.log.info("bluetoothctl not available, skipping adapter power cycle")
-            return
-        # 先停止残留扫描，再断开已有连接，最后重置适配器
-        await self._stop_ble_scan()
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "bluetoothctl", "disconnect", self.mac,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
-            # 等待 BLE Link Layer disconnect 完成
-            await asyncio.sleep(1)
-        except Exception as e:
-            self.log.warning("bluetoothctl disconnect failed: %s", e)
-        # 重置蓝牙适配器以清理残留状态
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "bluetoothctl", "power", "off",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
-            # 等待 BLE 芯片完全下电
-            await asyncio.sleep(3)
-            proc = await asyncio.create_subprocess_exec(
-                "bluetoothctl", "power", "on",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
-            # 等待适配器就绪，最多15秒
-            hci = self._find_ble_adapter()
-            for _ in range(15):
-                await asyncio.sleep(1)
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        "bluetoothctl", "show", hci,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
-                    if b"Powered: yes" in stdout:
-                        self.log.info("BT adapter ready after power cycle")
-                        break
-                except Exception:
-                    try:
-                        power_file = f"/sys/class/bluetooth/{hci}/power"
-                        if os.path.exists(power_file):
-                            with open(power_file) as f:
-                                if f.read().strip() == "1":
-                                    self.log.info("BT adapter ready (via sysfs)")
-                                    break
-                    except Exception:
-                        pass
-            else:
-                self.log.warning("BT adapter not ready after 15s, proceeding anyway")
-        except Exception as e:
-            self.log.warning("bluetoothctl power cycle failed: %s", e)
+        level = await self.adapter.recover_device(self.mac)
+        self.log.info("Recovered via %s (adapter coordinator)", level)
 
     async def _connect_and_run(self):
         await self._connect()
