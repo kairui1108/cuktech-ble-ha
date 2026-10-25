@@ -30,6 +30,7 @@ from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS
 from ble_manager import (
     BLEManager, set_status_cache_invalidator, END_REASON_SHUTDOWN, END_REASON_LINK_LOSS,
 )
+from adapter_coordinator import AdapterCoordinator
 from energy import MAX_LIMIT_WH, LIMIT_MODES
 from history import PortHistory, DeviceHistory
 from log_utils import install_log_filter
@@ -397,6 +398,30 @@ class RuntimeSupervisor:
         self._task = None
         self.rt.task = None
 
+    async def schedule_rebuild(self, rebuild_resources) -> None:
+        """在**独立任务**里做 L3 进程内重建（§3.5）。
+
+        为什么不就地做：重建要从"停这个 manager 的任务"开始，而重建请求往往就是
+        这个任务自己发出来的（认证卡死路径）——就地做等于 await 自己的取消。
+        这里只负责调度，调用方（manager）随后自行退出重连循环。
+        """
+        if self._rebuild_task is not None and not self._rebuild_task.done():
+            _LOGGER.info("[%s] 重建已在进行中，忽略重复请求", self.rt.device_id)
+            return
+        self._rebuild_task = asyncio.create_task(
+            self._do_rebuild(rebuild_resources),
+            name=f"rebuild-{self.rt.device_id}")
+
+    async def _do_rebuild(self, rebuild_resources) -> None:
+        try:
+            await self.stop()                 # 停任务（request_stop 里按 link_loss 收尾会话）
+            await rebuild_resources(self.rt)  # 换 manager + 重挂钩子
+            self._rebuilds = 0                # 重建成功：清连续失败计数
+            self.start()
+        except Exception as e:
+            _LOGGER.error("[%s] 进程内重建失败：%s: %s",
+                          self.rt.device_id, type(e).__name__, e)
+
     def _spawn(self) -> None:
         self._task = asyncio.create_task(self._run(), name=f"ble-{self.rt.device_id}")
         self.rt.task = self._task
@@ -478,6 +503,13 @@ class Server:
         self._history_assigned = None
         # 虚拟充电器注入点（§7 P1）：可传单个工厂或 {device_id: 工厂}
         self._controller_factory = controller_factory
+        # 共享 BLE 适配器协调器（§3.4/§3.5，P2）：进程内**唯一**允许触碰适配器/
+        # bluetoothctl 的模块。必须在 _build_runtime 之前建好——每个 manager 都要拿它。
+        self.adapter = AdapterCoordinator(
+            connect_limit=2,
+            startup_stagger_sec=self.config.server.startup_stagger_sec,
+            log=_LOGGER,
+        )
         # 共享存储 + 设备注册表（primary 在首位，运行期静态不变）
         self._history_store = PortHistory(
             db_path=self.config.server.history_db_path,
@@ -498,6 +530,11 @@ class Server:
         self._chart_cache: OrderedDict = OrderedDict()
         self._chart_cache_ttl = 10
         self._chart_cache_max = 10
+        # 协调器的判定依赖"现在有几台设备 / 重建找得到 rt"，所以钩子在 registry 建好
+        # 之后才接（above 的 _build_runtime 已经跑完）。
+        self.adapter.set_device_count_provider(lambda: len(self.registry))
+        self.adapter.set_rebuild_hook(self._rebuild_device_inprocess)
+        self.adapter.set_process_restart_hook(self._restart)
         self._chart_cache_max_bytes = CHART_CACHE_MAX_BYTES
         self._chart_cache_max_entry_bytes = CHART_CACHE_MAX_ENTRY_BYTES
         self.sse = SSEEmitter()
@@ -548,6 +585,7 @@ class Server:
             device_id=spec.device_id,
             topics=topics,
             controller_factory=factory,
+            adapter=self.adapter,
         )
 
     # ── 装配面：每台设备的 10 项钩子（§3.2 P0-1） ──
@@ -610,7 +648,13 @@ class Server:
             await self._restart()
             return
         _LOGGER.error("[%s] 认证卡死，进程内重建该设备（其他设备不受影响）", rt.device_id)
-        await rt.supervisor.stop()
+        # 关键：**不能就地重建**。本方法是从该设备的 manager 任务里被调用的，而重建
+        # 第一步就是 `supervisor.stop()` → cancel 掉那个任务 → 等于 await 自己的取消，
+        # 重建永远走不完（P1 遗留的自取消死锁）。所以交给 supervisor 的独立任务。
+        await rt.supervisor.schedule_rebuild(self._rebuild_device_resources)
+
+    async def _rebuild_device_resources(self, rt: DeviceRuntime) -> None:
+        """L3 重建的资源层部分（此任务已停、会话已按 link_loss 收尾）。"""
         # 队列里等待响应的命令全部失败收尾，否则调用方会挂到超时
         while True:
             try:
@@ -618,13 +662,21 @@ class Server:
             except asyncio.QueueEmpty:
                 break
             fut = item[2] if isinstance(item, tuple) and len(item) > 2 else None
-            if fut is not None and not fut.done():
+            if fut is not None and not fut.done() and not fut.cancelled():
                 fut.set_exception(ConnectionError("device restarting"))
         rt.manager._close_active_sessions(END_REASON_LINK_LOSS)
         rt.manager = self._make_manager(rt.spec, rt.state, rt.topics)
+        # 重挂**全部** 10 项钩子：新 manager 是干净实例，漏一项这台设备就残废
         self.mount_device_hooks(rt)
-        rt.supervisor.start()
         _LOGGER.info("[%s] 设备重建完成", rt.device_id)
+
+    async def _rebuild_device_inprocess(self, mac: str) -> None:
+        """协调器 L3 钩子：按 MAC 找到 runtime 并重建（§3.5）。"""
+        for rt in self.registry:
+            if rt.mac.lower() == str(mac).lower():
+                await self.restart_device(rt)
+                return
+        _LOGGER.warning("L3 rebuild requested for unknown MAC %s", mac)
 
     def _assert_no_assignment(self) -> None:
         """P0-2 第③条：生产构造后三个槽位必须为空，否则 ContextVar 已失效。"""
@@ -2716,7 +2768,7 @@ async def on_startup(app_):
         s.history_store.connect()
         # connect() 内部已经以 `close_stale_sessions(None)`（全设备）收尾了上次强杀/
         # 崩溃遗留的未闭合会话，这里不再重复调用：清理只有一个入口。
-        stagger = float(getattr(s.config.server, "startup_stagger_sec", 0.0) or 0.0)
+        stagger = float(s.adapter.startup_stagger_sec or 0.0)
         for index, rt in enumerate(s.registry):
             # 10 项钩子，见 mount_device_hooks —— 缺一项设备 2 就残废
             s.mount_device_hooks(rt)

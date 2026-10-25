@@ -1392,6 +1392,19 @@ class BLEManager:
             {"connected": False, "error": "auth_stuck_restarting"}, retain=True)
         # 给 MQTT/SSE 一点时间把上面这条状态发出去，再重启
         await asyncio.sleep(self.AUTH_STUCK_NOTIFY_SEC)
+        if self.adapter is not None:
+            # §3.5 L3：N=1 仍是进程重启（与现状一致）；N>1 先做进程内 per-device
+            # 重建——重启进程会把其它好设备一起拽下来。升级条件（≥2 台同时卡住 /
+            # 适配器级错误签名）由协调器判定。
+            level = await self.adapter.restart_device(self.mac)
+            if level != "L3-inprocess":
+                return          # 已（或试图）重启进程，本方法不再返回
+            # 进程内重建已由 supervisor 排进独立任务：这里**主动退出**重连循环，
+            # 让重建任务能够干净地 cancel 本任务（不退出就会两边抢适配器）。
+            self.log.warning("In-process rebuild scheduled for %s; exiting this "
+                             "reconnect loop", self.mac)
+            self._stop_event.set()
+            return
         if self._restart_handler is not None:
             await self._restart_handler()
             self.log.error("Restart handler returned without restarting the process")
@@ -1552,24 +1565,23 @@ class BLEManager:
         return "hci0"
 
     async def _connect(self):
+        """连接入口：门闸 + 连接信号量包住整个"扫描/连接/认证"窗口（§3.4/§3.5）。
+
+        - 门闸：适配器正在 L2 恢复时所有 manager 停在门口等放行——否则"一台设备
+          故障"会被各自的退避重连放大成"全场熔断"；
+        - 信号量：并发连接/认证上限（默认 2），10 台同时上电不是认证风暴。
+        无协调器时（单测直接构造 manager）两条都退化为直通，行为与改造前一致。
+        """
+        if self.adapter is None:
+            return await self._connect_locked()
+        await self.adapter.wait_recovery_gate()
+        async with self.adapter.connect_slot():
+            return await self._connect_locked()
+
+    async def _connect_locked(self):
         self.log.info("Scanning for charger...")
 
-        # 先清理 BlueZ 残留扫描状态（避免 InProgress 错误）
-        await self._stop_ble_scan()
-        # 等待 BlueZ 清理扫描状态，避免与 BleakScanner 内部扫描冲突
-        await asyncio.sleep(0.5)
-
-        from bleak import BleakScanner
-        try:
-            found = await BleakScanner.find_device_by_address(
-                self.mac, timeout=self.config.ble.scan_timeout)
-        except Exception as e:
-            err_str = str(e)
-            self.log.error("BLE scan failed: %s", e)
-            # InProgress 错误 → 适配器状态异常，需要 power cycle
-            if 'InProgress' in err_str:
-                await self._force_disconnect_bluetooth()
-            raise ConnectionError(f"BLE scan failed: {e}")
+        found = await self._scan_for_device()
 
         # macOS/CoreBluetooth never exposes a peripheral's real BLE MAC --
         # it substitutes a randomized per-host UUID instead (privacy), so
@@ -1580,7 +1592,9 @@ class BLEManager:
         # match on that payload instead -- it carries the real MAC in
         # little-endian form (bytes[-6:]), which lets us confirm we've
         # found *this* charger and not some other Xiaomi device.
-        if not found and sys.platform == "darwin":
+        if not found and self.adapter is None and sys.platform == "darwin":
+            # 老路径的 macOS 兜底（协调器存在时 MiBeacon 匹配已在 find_device 里做掉）
+            from bleak import BleakScanner
             try:
                 devices = await BleakScanner.discover(
                     timeout=self.config.ble.scan_timeout, return_adv=True)
@@ -1640,6 +1654,10 @@ class BLEManager:
         self._last_notify_time = 0.0  # reset so quality shows "无" until first push
         await self.state.set_connection(True, True)
         self._invalidate()
+        if self.adapter is not None:
+            # 登记活链路：协调器据此判断"能不能下电"（§3.5 L2 准入条件），
+            # 顺便清掉这台设备的分级恢复失败计数。
+            self.adapter.note_connected(self.mac)
         self.log.info("Authenticated!")
 
         # 立即推送连接状态，前端无需等待 15 个 PIID 读完
@@ -1697,6 +1715,8 @@ class BLEManager:
             except Exception:
                 pass
             self.ctrl = None
+            if self.adapter is not None:
+                self.adapter.unregister_connection(self.mac)
             self._ble_connect_time = 0.0  # reset uptime on disconnect
             self._last_notify_time = 0.0  # reset push tracking on disconnect
             self._total_frames = 0       # reset frame counter on disconnect
@@ -1716,6 +1736,42 @@ class BLEManager:
         # bluetoothctl disconnect MAC 由 _force_disconnect_bluetooth() 统一处理
         # 此处不再重复调用，避免设备收到多次断连通知导致状态混乱
 
+    async def _scan_for_device(self):
+        """找这台设备的 BLE 对象（协调器存在时走共享扫描，否则走老路径）。
+
+        两种途径的失败语义完全一致：扫描异常 → `ConnectionError("BLE scan failed")`，
+        找不到 → 返回 None 由调用方按 "Charger not found" 处理。
+        """
+        if self.adapter is not None:
+            try:
+                return await self.adapter.find_device(
+                    self.mac, self.config.ble.scan_timeout)
+            except Exception as e:
+                err_str = str(e)
+                self.log.error("BLE scan failed: %s", e)
+                if 'InProgress' in err_str:
+                    await self._force_disconnect_bluetooth()
+                raise ConnectionError(f"BLE scan failed: {e}")
+
+        # 先清理 BlueZ 残留扫描状态（避免 InProgress 错误）
+        await self._stop_ble_scan()
+        # 等待 BlueZ 清理扫描状态，避免与 BleakScanner 内部扫描冲突
+        await asyncio.sleep(0.5)
+
+        from bleak import BleakScanner
+        try:
+            found = await BleakScanner.find_device_by_address(
+                self.mac, timeout=self.config.ble.scan_timeout)
+        except Exception as e:
+            err_str = str(e)
+            self.log.error("BLE scan failed: %s", e)
+            # InProgress 错误 → 适配器状态异常，需要 power cycle
+            if 'InProgress' in err_str:
+                await self._force_disconnect_bluetooth()
+            raise ConnectionError(f"BLE scan failed: {e}")
+
+        return found
+
     async def _stop_ble_scan(self):
         """Cancel any lingering BLE scan on the adapter before starting a new one.
         Prevents [org.bluez.Error.InProgress] Operation already in progress.
@@ -1733,7 +1789,20 @@ class BLEManager:
             pass
 
     async def _force_disconnect_bluetooth(self):
-        """使用 bluetoothctl 强制断开蓝牙连接并重置适配器。
+        """恢复这台设备的 BLE 链路（分级恢复的入口，§3.5）。
+
+        有协调器时交给它：L1 只断开**自己**，必要时 L1.5 清本 MAC 的 BlueZ 缓存，
+        只有"N=1 或全员离线"才允许 L2 适配器 power cycle（且带 quiesce 门闸）。
+        没有协调器时退回改造前的整机级实现——单设备 N=1 的时序必须保持一致。
+        """
+        if self.adapter is not None:
+            level = await self.adapter.recover_device(self.mac)
+            self.log.info("Recovered via %s (adapter coordinator)", level)
+            return
+        await self._legacy_force_disconnect_bluetooth()
+
+    async def _legacy_force_disconnect_bluetooth(self):
+        """改造前的整机级恢复：`scan off` → disconnect → power cycle。
 
         仅在 Linux + bluetoothctl 可用时执行；其它平台由 bleak 层处理断连，
         适配器电源循环属于 Linux 特有的 BlueZ 恢复手段，跳过不影响功能。
@@ -1809,9 +1878,17 @@ class BLEManager:
 
         # Start 1-second background timer for port_history + energy accumulation
         self._port_timer_task = asyncio.ensure_future(self._port_timer())
+        # §3.13：timer 静默死掉 = 历史/能量停写而界面照常"在线"（最隐蔽的假活）。
+        # 这里不把它交给 supervisor 当第二个被监管任务（两个任务各自触发重建会
+        # 互相踩），而是让它的死亡把主循环推去重建链路——同一个持有者，同一个收尾。
+        self._port_timer_dead = False
+        self._port_timer_task.add_done_callback(self._on_port_timer_done)
 
         try:
             while not self._stop_event.is_set():
+                if self._port_timer_dead:
+                    # 采样 timer 已经死了：重建链路（会话/能量/历史都依赖它）
+                    raise ConnectionError("port timer died, rebuilding link")
                 await self._process_commands()
 
                 if not self.ctrl:
@@ -1905,6 +1982,14 @@ class BLEManager:
                     await self._port_timer_task
                 except asyncio.CancelledError:
                     pass
+
+    def _on_port_timer_done(self, task) -> None:
+        """端口采样 timer 意外退出 → 打 ERROR 并请求重建链路（§3.13）。"""
+        if task.cancelled() or self._stop_event.is_set():
+            return
+        exc = task.exception()
+        self.log.error("Port timer exited unexpectedly (%r); forcing reconnect", exc)
+        self._port_timer_dead = True
 
     async def _port_timer(self):
         """1-second timer: write port_history + energy + charge_points for ports

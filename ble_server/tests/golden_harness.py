@@ -302,6 +302,10 @@ async def golden_env(*, mqtt_enabled: bool = True, apply_startup: bool = True,
         ha_server._server = server
         if not mqtt_enabled:
             server.config.mqtt.enabled = False
+        # 启动错峰（§3.4）在生产默认 2s/台；测试里归零，否则每加一台设备就多睡 2s，
+        # 而且会让"启动即断言"的用例变成时序赌博。
+        server.config.server.startup_stagger_sec = 0.0
+        server.adapter.startup_stagger_sec = 0.0
         env = GoldenEnv(server, config_path, db_path, None)
         if apply_startup:
             await ha_server.on_startup(None)

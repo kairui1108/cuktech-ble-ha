@@ -140,17 +140,24 @@ async def virtual_fleet(monkeypatch):
     """3 台虚拟充电器（primary + desk + bed），跑真 `on_startup` + 真 `start()`。"""
     from golden_harness import GOLDEN_MAC
 
-    # BLE 扫描是唯一的真实硬件依赖：用 controller_factory 注入 + 假扫描绕开它
+    # BLE 扫描是唯一的真实硬件依赖：用 controller_factory 注入 + 假扫描绕开它。
+    # P2 起扫描统一走 AdapterCoordinator（一次 discover 服务所有等待者），所以这里
+    # 替换的是 `BleakScanner.discover` —— 顺带也就测到了扫描合并这条路径。
     import bleak
 
-    class _Dev:
-        address = GOLDEN_MAC
+    class _Adv:
+        service_data: dict = {}
 
-    async def fake_find(address, timeout=None):
-        return _Dev()
+    found = {mac: (type("Dev", (), {"address": mac})(), _Adv())
+             for mac in [GOLDEN_MAC, DEVICES[0]["mac"], DEVICES[1]["mac"]]}
+    scanned = {"count": 0}
 
-    monkeypatch.setattr(bleak.BleakScanner, "find_device_by_address",
-                        staticmethod(fake_find))
+    async def fake_discover(timeout=None, return_adv=False, **kwargs):
+        scanned["count"] += 1
+        return dict(found)
+
+    monkeypatch.setattr(bleak.BleakScanner, "discover",
+                        staticmethod(fake_discover))
 
     # 三台设备各自把 c1 设成不同读数，用来证明路由不串台
     chargers = {
@@ -190,6 +197,7 @@ async def virtual_fleet(monkeypatch):
             await asyncio.sleep(0.1)
         env.factory = factory
         env.chargers = chargers
+        env.scanned = scanned
         yield env
 
 

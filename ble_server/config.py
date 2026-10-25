@@ -174,6 +174,9 @@ class ServerConfig:
     history_db_path: str = "port_history.db"
     reconnect_base_delay: float = 1.0
     reconnect_max_delay: float = 300.0
+    # 启动错峰（§3.4）：第 index 台设备启动前等 index × 该值。N=1 恒为 0 延迟，
+    # 所以单设备时序与改造前完全一致；多设备时避免"10 台同时上电 → 认证风暴"。
+    startup_stagger_sec: float = 2.0
 
 
 @dataclass
@@ -301,6 +304,7 @@ def load_config() -> Config:
         history_db_path=os.environ.get("CUKTECH_HISTORY_DB_PATH", server_cfg.get("history_db_path", "port_history.db")),
         reconnect_base_delay=reconnect_base_delay,
         reconnect_max_delay=reconnect_max_delay,
+        startup_stagger_sec=float(server_cfg.get("startup_stagger_sec", 2.0)),
     )
 
     bemfa_cfg = ycfg.get("bemfa", {})
