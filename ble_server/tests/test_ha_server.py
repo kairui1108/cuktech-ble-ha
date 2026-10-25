@@ -864,9 +864,12 @@ class TestShutdownPreservesOnceLimit:
     async def test_on_shutdown_source_passes_shutdown_reason(self):
         """静态断言：on_shutdown 里必须显式传 shutdown 原因（防止回归成无参调用）。"""
         import inspect
+        import re
         import ha_server
         src = inspect.getsource(ha_server.on_shutdown)
-        assert "_close_active_sessions(END_REASON_SHUTDOWN)" in src, \
+        # 公开方法名（`.close_active_sessions`）而不是私有 `._close_active_sessions`：
+        # 服务层不再伸手改 manager 的私有方法，但"必须显式传 shutdown 原因"这条不变。
+        assert re.search(r"\.close_active_sessions\(END_REASON_SHUTDOWN\)", src), \
             "on_shutdown 必须以 END_REASON_SHUTDOWN 关闭会话，否则关机误消费 once 限额"
 
 

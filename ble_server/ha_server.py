@@ -24,9 +24,10 @@ from pathlib import Path
 from aiohttp import web
 
 from config import (
-    load_config, LOG_LEVELS, PRIMARY_DEVICE_ID, DeviceConfig, TopicNamespace,
+    load_config, config_from_mapping, LOG_LEVELS, PRIMARY_DEVICE_ID, DeviceConfig,
+    TopicNamespace,
 )
-from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS, PIID_RANGES, PROTOCOL_SWITCH_BITS
+from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS, PIID_RANGES
 from ble_manager import (
     BLEManager, set_status_cache_invalidator, END_REASON_SHUTDOWN, END_REASON_LINK_LOSS,
 )
@@ -362,6 +363,10 @@ class RuntimeSupervisor:
         self._rebuilds = 0
         self._rebuild_task: asyncio.Task | None = None
 
+    def set_startup_delay(self, seconds: float) -> None:
+        """设置启动错峰（§3.4）。装配顺序在注册表填满后才确定，所以是 setter。"""
+        self._startup_delay = float(seconds or 0.0)
+
     @property
     def task(self) -> asyncio.Task | None:
         return self._task
@@ -456,7 +461,7 @@ class RuntimeSupervisor:
     def _publish_offline(self) -> None:
         """立刻发布该设备 offline（MQTT retained + scoped SSE）——"假在线"的对手。"""
         try:
-            self.rt.manager._publish_status(
+            self.rt.manager.publish_status(
                 {"connected": False, "error": "task_exited"}, retain=True)
         except Exception as e:
             _LOGGER.warning("[%s] offline 发布失败：%s", self.rt.device_id, e)
@@ -592,6 +597,27 @@ class Server:
             adapter=self.adapter,
         )
 
+    def emit_device_event(self, event_type: str, data: dict) -> None:
+        """发一条**带设备归属**的 SSE（§3.8）。只给设备维度的 handler 用。
+
+        为什么不能直接 `self.sse.emit(...)`：共享出口不知道事件属于哪台设备，多设备
+        时前端 `deviceOf(msg)` 会把它归给 primary，于是"给 B 拨协议开关，A 的界面跟着
+        变"——命令打对了，展示串了。设备归属只有 `DeviceSSEEmitter` 知道。
+
+        退化路径：手工装配（`Server.__new__`，17 处老测试）或钩子未挂的 manager 没有
+        出口，此时退回共享 `sse`，与改造前逐字节一致（单设备事件流本来就不该带
+        device 字段）。
+        """
+        try:
+            manager = self.current_runtime().manager
+        except (AttributeError, RuntimeError):
+            manager = None            # registry 尚未装配
+        if manager is not None and manager.sse_emitter is not None:
+            manager.emit_event(event_type, data)
+            return
+        if hasattr(self, "sse"):
+            self.sse.emit(event_type, data)
+
     # ── 装配面：每台设备的 10 项钩子（§3.2 P0-1） ──
 
     def mount_device_hooks(self, rt: DeviceRuntime) -> None:
@@ -668,7 +694,7 @@ class Server:
             fut = item[2] if isinstance(item, tuple) and len(item) > 2 else None
             if fut is not None and not fut.done() and not fut.cancelled():
                 fut.set_exception(ConnectionError("device restarting"))
-        rt.manager._close_active_sessions(END_REASON_LINK_LOSS)
+        rt.manager.close_active_sessions(END_REASON_LINK_LOSS)
         rt.manager = self._make_manager(rt.spec, rt.state, rt.topics)
         # 重挂**全部** 10 项钩子：新 manager 是干净实例，漏一项这台设备就残废
         self.mount_device_hooks(rt)
@@ -683,15 +709,21 @@ class Server:
         _LOGGER.warning("L3 rebuild requested for unknown MAC %s", mac)
 
     def _assert_no_assignment(self) -> None:
-        """P0-2 第③条：生产构造后三个槽位必须为空，否则 ContextVar 已失效。"""
+        """P0-2 第③条：生产构造后三个槽位必须为空，否则 ContextVar 已失效。
+
+        **故意用 raise 而不是 assert**：它守的是"per-device 路由静默失效"这条最危险
+        的红线（界面照常响应，只是所有命令都打到 primary）。`python -O` 会把 assert
+        整条删掉，于是最该拦住的那种部署反而没有任何检查——宁可启动崩掉。
+        """
         leaked = [name for name, val in (
             ("_ble_assigned", self._ble_assigned),
             ("_state_assigned", self._state_assigned),
             ("_history_assigned", self._history_assigned),
         ) if val is not None]
-        assert not leaked, (
-            f"生产 __init__ 给 {leaked} 赋了值：`ble`/`state`/`history` 的 getter 会永久"
-            "短路，per-device 路由静默失效（设计文档 §3.3 P0-2）")
+        if leaked:
+            raise RuntimeError(
+                f"生产 __init__ 给 {leaked} 赋了值：`ble`/`state`/`history` 的 getter 会永久"
+                "短路，per-device 路由静默失效（设计文档 §3.3 P0-2）")
 
     @property
     def history_store(self):
@@ -1344,9 +1376,9 @@ class Server:
                 # 同步本地状态，确保后续 GET 读到最新值
                 if result and result.get("ok"):
                     await state.update_protocol_extend(new_val)
-                    if hasattr(self, 'sse'):
-                        self.sse.emit("protocol", {"switches": state.protocol_switches,
-                                                    "protocol_extend": new_val})
+                    self.emit_device_event(
+                        "protocol", {"switches": state.protocol_switches,
+                                     "protocol_extend": new_val})
                 self.invalidate_status_cache()
                 return web.json_response(result)
             else:
@@ -1356,9 +1388,9 @@ class Server:
             result = await self.ble.send_command("set", (21, new_val))
             if result and result.get("ok"):
                 await state.update_protocol_extend(new_val)
-                if hasattr(self, 'sse'):
-                    self.sse.emit("protocol", {"switches": state.protocol_switches,
-                                               "protocol_extend": new_val})
+                self.emit_device_event(
+                    "protocol", {"switches": state.protocol_switches,
+                                 "protocol_extend": new_val})
             return web.json_response(result)
         except Exception as e:
             _LOGGER.error("Protocol switch error: %s", e)
@@ -1972,7 +2004,16 @@ class Server:
             window_sec = float(self.ble.PERMANENT_RETAIN_SEC)
 
         loop = asyncio.get_running_loop()
+        # 归属校验先行：别的设备的 sid、以及根本不存在的 sid，一律 404。
+        # 以前这里靠 `get_session_points` 的"非本设备 → 空列表"返回 200 + no_curve，
+        # 前端与排障者看到的是"这次会话没有曲线"，而真实原因是"这不是你的会话"
+        # ——和同组的 /sessions/{id}/export（404）自相矛盾（§3.9）。
+        # 常供会话的曲线只在内存窗口里、可能还没有 DB 行，所以窗口命中就不判 404。
+        session = await loop.run_in_executor(None, self.history.get_session, sid)
         win = self.ble.get_permanent_session_window(sid, window_sec, to_ts)
+        if win is None and session is None:
+            return web.json_response(
+                {"ok": False, "error": "session not found"}, status=404)
         if win is not None:
             points = win["points"]
             if target > 0 and len(points) > target:
@@ -1992,7 +2033,6 @@ class Server:
         if not points:
             # 长期供电会话不落曲线点：明确告诉前端"是没存曲线"，不是加载失败
             resp["no_curve"] = True
-        session = await loop.run_in_executor(None, self.history.get_session, sid)
         # 服务端是常供与否的唯一权威，且必须**每次都给出**（含 false）：
         # 端口中途退出常供后，前端若只"见到 true 才置位"会一直挂着旧标题与
         # "没有曲线"提示。DB 回落分支同样要回答这个问题。
@@ -2295,6 +2335,20 @@ class Server:
             tmp_path = config_path.with_suffix(".tmp")
             with open(tmp_path, "w") as f:
                 yaml.dump(existing, f, allow_unicode=True, default_flow_style=False)
+
+            # ── 不变式：**保存 = 启动可接受**（§3.10）──
+            # 落盘前用与启动**完全相同**的入口（load_config）把这份文件试算一遍。
+            # 保存期的分节校验再全也可能漏掉某种组合，而漏掉的代价不是"保存失败"，
+            # 是 _delayed_restart() 之后进程被 load_config 拒绝启动、Web UI 一起
+            # 消失，用户只能手改 YAML 才能救回来。宁可现在 400，也不写一个起不来的文件。
+            try:
+                load_config(tmp_path)
+            except Exception as e:
+                with contextlib.suppress(OSError):
+                    tmp_path.unlink()
+                _LOGGER.error("Config rejected before write: %s", e)
+                return web.json_response({"ok": False, "error": str(e)}, status=400)
+
             os.replace(tmp_path, config_path)
 
             _LOGGER.info("Config saved to %s, restarting...", config_path)
@@ -2313,6 +2367,27 @@ class Server:
     #: `devices:` 节允许落盘的字段（与 `DeviceConfig.from_mapping` 对齐）
     _DEVICE_KEYS = ("id", "name", "mac", "token", "ble_key", "topic_prefix", "bemfa_ble")
 
+    def _effective_sections(self, existing: dict) -> dict:
+        """合成"本次要写入的那份配置"的有效 YAML 视图，用来跑启动校验。
+
+        两个来源：**盘上待写的内容优先**（它含本次修改，比如换了 mqtt.topic_prefix），
+        进程当前配置补齐缺项（前端拿不到明文凭证，`existing` 里通常没有 token/
+        password——缺项不等于"没配"，照启动口径填上现在的有效值）。
+
+        用 `asdict(self.config)` 而不是手抄字段清单：抄一份就多一处会漂移的地方，
+        而这条校验的全部意义就是"与启动同一口径"。
+        """
+        from dataclasses import asdict
+        merged = asdict(self.config)
+        merged.pop("devices", None)          # 由调用方给"本次要落盘"的形态
+        for section, values in (existing or {}).items():
+            current = merged.get(section)
+            if isinstance(values, dict) and isinstance(current, dict):
+                current.update(values)
+            else:
+                merged[section] = values
+        return merged
+
     def _apply_devices_payload(self, existing: dict, devices) -> str | None:
         """把前端的设备数组写回 yaml 结构；返回错误消息（None = 成功）。
 
@@ -2327,8 +2402,6 @@ class Server:
         primary 不可删除；写盘前用**生产校验规则**验一遍——多设备配错的代价是
         "控制到错误的充电器"，不能落盘再说。
         """
-        from config import DeviceConfig, Config as _Cfg, validate_device_specs
-
         if devices is None:
             return None                      # 前端没提交设备列表：保持 YAML 原样
         if not isinstance(devices, list):
@@ -2345,8 +2418,12 @@ class Server:
                 val = primary.get(key)
                 if val is None:
                     continue
-                if key in ("token", "ble_key") and "****" in str(val):
-                    continue             # 打码值 = 用户没改，保留原值
+                if key in ("token", "ble_key") and ("****" in str(val)
+                                                    or not str(val).strip()):
+                    # 打码值 = 用户没改；空串 = 用户清空了输入框（页面拿不到明文，
+                    # 清框是很容易的误操作）。两者都必须按 no-op 处理——凭证擦除
+                    # 是不可逆的，救回来只能手改 YAML。B 形的 extras 一直是这么判的。
+                    continue
                 if key == "name" and not str(val).strip():
                     continue             # 清空名字按 no-op（宁可不变也不误删）
                 ble_section[key] = val
@@ -2400,20 +2477,15 @@ class Server:
                 return f"配置错误：设备 `{dev_id}` 缺少 token（新增设备必须填 token）"
 
         # ── 用生产校验规则验一遍（id 规则 / MAC 全局唯一 / 前缀 / token hex）──
+        #
+        # 走 `config_from_mapping`（= `load_config` 的实现体），而不是拿进程启动时的
+        # `self.config.mqtt` 拼一份临时 Config：同一份 payload 里既改 mqtt.topic_prefix
+        # 又带设备前缀时，旧基前缀会让"前缀撞车"校验判成通过，写盘后重启才被拒——
+        # 那时服务已经重启，Web UI 也没了，用户只能手改 YAML（§3.10 最怕的形态）。
         try:
-            ble_probe = dict(self.config.ble.__dict__)
-            ble_probe.update({k: v for k, v in (existing.get("ble") or {}).items()
-                              if k in ble_probe})
-            probe = _Cfg(
-                ble=type(self.config.ble)(**ble_probe),
-                mqtt=self.config.mqtt,
-                server=self.config.server,
-                bemfa=self.config.bemfa,
-                devices=[DeviceConfig.from_mapping(d, default_scan_timeout=
-                                                   self.config.ble.scan_timeout)
-                         for d in extras],
-            )
-            validate_device_specs(probe)
+            probe = self._effective_sections(existing)
+            probe["devices"] = extras       # 校验的是**本次要落盘**的形态
+            config_from_mapping(probe)
         except ValueError as e:
             return str(e)
         except Exception as e:      # 形如 token 不是 hex 之类
@@ -2963,7 +3035,7 @@ async def on_startup(app_):
             # 10 项钩子，见 mount_device_hooks —— 缺一项设备 2 就残废
             s.mount_device_hooks(rt)
             # 启动错峰（§3.4）：N 台同时上电时的认证风暴防护，成本为零
-            rt.supervisor._startup_delay = stagger * index
+            rt.supervisor.set_startup_delay(stagger * index)
         await s.setup_mqtt()
         if s.mqtt_client:
             s.setup_mqtt_subscriptions()
@@ -3001,7 +3073,7 @@ async def on_shutdown(app_):
     #    拔出/充电自然结束）才消费 once 限额，服务停止不是用户意图终止。
     for rt in s.registry:
         with contextlib.suppress(Exception):
-            rt.manager._close_active_sessions(END_REASON_SHUTDOWN)
+            rt.manager.close_active_sessions(END_REASON_SHUTDOWN)
     if s.bemfa:
         try:
             await asyncio.wait_for(s.bemfa.stop(), timeout=3.0)

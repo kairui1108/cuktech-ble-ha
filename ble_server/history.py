@@ -1,5 +1,4 @@
 """CUKTECH BLE Server - SQLite history storage for port data."""
-import asyncio
 import csv
 import io
 import json
@@ -7,7 +6,7 @@ import logging
 import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 

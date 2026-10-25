@@ -31,13 +31,22 @@ _RESERVED_DEVICE_IDS = frozenset({
 })
 
 
-def _load_yaml_config():
-    """Load config from YAML file if exists."""
-    config_path = Path(os.environ.get("CUKTECH_CONFIG_PATH", str(Path(__file__).parent / "config.yaml")))
-    if not config_path.exists():
-        config_path = Path.cwd() / "config.yaml"
-    if not config_path.exists():
-        return {}
+def _load_yaml_config(path=None):
+    """Load config from YAML file if exists.
+
+    `path` 显式指定时只读这一个文件（保存前试算用）：此时**不允许**回退到 cwd，
+    否则"验的是别的文件"这种事故会静默发生。
+    """
+    if path is not None:
+        config_path = Path(path)
+        if not config_path.exists():
+            return {}
+    else:
+        config_path = Path(os.environ.get("CUKTECH_CONFIG_PATH", str(Path(__file__).parent / "config.yaml")))
+        if not config_path.exists():
+            config_path = Path.cwd() / "config.yaml"
+        if not config_path.exists():
+            return {}
     try:
         import yaml
         with open(config_path) as f:
@@ -250,9 +259,21 @@ class Config:
         return TopicNamespace(prefix.rstrip("/"))
 
 
-def load_config() -> Config:
-    """Load config from YAML file, then override with environment variables."""
-    ycfg = _load_yaml_config()
+def load_config(path=None) -> Config:
+    """Load config from YAML file, then override with environment variables.
+
+    `path` 让"保存配置前试算"走**与启动完全同一条路**（§3.10 不变式：保存 =
+    启动可接受）。另写一份校验必然与这里漂移，而漂移的代价是"存得进去、起不来"
+    ——重启被 load_config 拒绝，Web UI 也就跟着没了，用户只能手改 YAML 救回来。
+    """
+    return config_from_mapping(_load_yaml_config(path))
+
+
+def config_from_mapping(ycfg: dict) -> Config:
+    """把 YAML 映射解析成 Config（env 覆盖 + `validate_device_specs` 都在这里）。
+
+    启动（`load_config`）与"保存前试算"共用同一条实现，不各写一份。
+    """
 
     ble_cfg = ycfg.get("ble", {})
     mqtt_cfg = ycfg.get("mqtt", {})

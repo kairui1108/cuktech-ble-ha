@@ -21,7 +21,7 @@ except ImportError:
     from cuktech_ble.controller import CuktechBLEController, CHAR_CMD_RECV, CHAR_FW_VERSION, AuthConnectionError
     from cuktech_ble.protocol import READABLE_SETTINGS_PIIDS, UUID_FE95, mac_str_to_bytes
 
-from state import ChargerState, PORT_NAMES, PORT_BITS, PORT_DEFAULT, decode_port, decode_pdo_caps
+from state import PORT_NAMES, PORT_BITS, PORT_DEFAULT, decode_port, decode_pdo_caps
 from energy import (limit_reached, normalize_charge_limit, DEFAULT_LIMIT_MODE,
                     LIMIT_MODE_ONCE)
 from log_utils import device_tag
@@ -334,6 +334,24 @@ class BLEManager:
         """Emit SSE event if emitter is connected. Sync — emitter uses threading.Lock internally."""
         if self._sse_emitter:
             self._sse_emitter.emit(event_type, data)
+
+    @property
+    def sse_emitter(self):
+        """本设备的 SSE 出口（未挂装配面时为 None）。
+
+        Server 的设备维度 handler 需要**先看有没有**再决定发不发：没有出口时
+        `_sse_emit` 是静默 no-op，直接调它会让"没挂钩子"退化成"事件悄悄丢了"。
+        """
+        return self._sse_emitter
+
+    def emit_event(self, event_type: str, data: dict) -> None:
+        """按**本设备**的归属发一条 SSE（§3.8）。
+
+        服务层的设备维度 handler 走这里，而不是共享的 `Server.sse`：后者不带设备
+        归属，多设备时前端 `deviceOf(msg)` 会把事件算到 primary 头上——写操作是对的，
+        错的是展示（B 设备拨了协议开关，A 设备的界面跟着变）。
+        """
+        self._sse_emit(event_type, data)
 
     def set_history(self, history):
         self._history = history
@@ -2687,6 +2705,20 @@ class BLEManager:
         if pt is None:
             return
         await self._process_decrypted_frame(pt)
+
+    # ── 服务层（Server / supervisor）用的公开出口 ──
+    #
+    # 下面两件事原本是服务层直接伸手改私有方法（`manager._publish_status(...)`、
+    # `manager._close_active_sessions(...)`）。DeviceRuntime 与 Server 的边界因此只是
+    # 名义上的——内部一改名就是跨模块静默失效。语义清楚的公开方法让边界变成代码。
+
+    def publish_status(self, payload, retain=False):
+        """发布本设备的状态（MQTT retained + scoped SSE）。"""
+        self._publish_status(payload, retain=retain)
+
+    def close_active_sessions(self, reason: str = END_REASON_UNKNOWN):
+        """按指定原因收尾本设备所有未闭合会话（停机/链路丢失/重建）。"""
+        self._close_active_sessions(reason)
 
     def _publish_status(self, payload, retain=False):
         if self._mqtt_publish:
