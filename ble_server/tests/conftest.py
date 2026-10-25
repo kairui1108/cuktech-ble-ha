@@ -199,9 +199,15 @@ def make_config(*, ble: dict | None = None, devices: list[dict] | None = None,
             history_db_path=server.get("history_db_path", "port_history.db"),
         ),
     )
-    # P0 阶段 `Config` 还没有 `devices` 字段：用属性赋值先给出形状（P1 把它变成
-    # dataclass 字段，并换成真 `DeviceConfig` 对象，值语义一致）。
-    cfg.devices = list(devices or [])
+    # P1 起 `devices` 是真 `DeviceConfig` 列表（不是裸 dict）：校验规则与 registry
+    # 都消费这个类型，测试脚手架必须与生产同形，否则"通过了测试但配置解析会炸"。
+    from config import DeviceConfig
+
+    cfg.devices = [
+        d if isinstance(d, DeviceConfig)
+        else DeviceConfig.from_mapping(d, default_scan_timeout=cfg.ble.scan_timeout)
+        for d in (devices or [])
+    ]
     return cfg
 
 

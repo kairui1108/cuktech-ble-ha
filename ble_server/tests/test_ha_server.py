@@ -125,8 +125,10 @@ class TestHandleChart:
         """
         from collections import OrderedDict
         server._chart_cache = OrderedDict()
-        server._chart_cache["1.0:20"] = (0, "stale", b"x" * 4096, 0)   # 队首且已过期
-        server._chart_cache["2.0:20"] = (0, "stale2", b"y" * 4096, 0)
+        # P1 起缓存键带设备维度（§3.7）：`{device_id}:{hours}:{interval}`。
+        # 单设备时 device_id = primary 的 "default"，其余语义不变。
+        server._chart_cache["default:1.0:20"] = (0, "stale", b"x" * 4096, 0)   # 队首且已过期
+        server._chart_cache["default:2.0:20"] = (0, "stale2", b"y" * 4096, 0)
         server._chart_cache_max = 50
         server._chart_cache_max_entry_bytes = 10 ** 9
         server._chart_cache_max_bytes = 5000           # 总量已超上限，必触发淘汰
@@ -136,8 +138,8 @@ class TestHandleChart:
         request.headers = {}
         await server.handle_chart(request)
 
-        assert "1.0:20" in server._chart_cache, "刚重算的条目被淘汰了"
-        assert "2.0:20" not in server._chart_cache, "应淘汰更旧的那条"
+        assert "default:1.0:20" in server._chart_cache, "刚重算的条目被淘汰了"
+        assert "default:2.0:20" not in server._chart_cache, "应淘汰更旧的那条"
 
     @pytest.mark.asyncio
     async def test_chart_oversized_body_not_cached(self, server):
@@ -977,11 +979,19 @@ class TestNoAppStateWrites:
         assert 'app_["ble_task"]' not in src
         assert 'app_["backfill_task"]' not in src
 
-    def test_tasks_are_server_attributes(self):
+    def test_tasks_are_owned_by_supervisor(self):
+        """P1 起任务持有归 `rt.supervisor`（§3.2/§3.13），`Server._ble_task` 已删除。
+
+        这条断言的方向反了过来：以前要求 handle_enable **必须**碰 `self._ble_task`，
+        现在要求它**绝不**碰 —— 直接 cancel/create 任务会被 supervisor 的 done 回调
+        当成"意外退出"，立刻触发一次重建，等于启停变成自杀式重启。
+        """
         import inspect
         import ha_server
         enable_src = inspect.getsource(ha_server.Server.handle_enable)
-        assert "self._ble_task" in enable_src
+        assert "self._ble_task" not in enable_src, "handle_enable 不得直接持有任务"
+        assert "supervisor.start()" in enable_src
+        assert "supervisor.stop()" in enable_src
         assert "app_" not in enable_src, "handle_enable 仍在写 app state"
 
 

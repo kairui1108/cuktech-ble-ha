@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "healthy": true,
+  "components": {
+    "ble": false,
+    "mqtt": true,
+    "bemfa": false
+  },
+  "uptime_ms": "<UPTIME_MS>",
+  "devices": {
+    "default": {
+      "connected": true,
+      "authenticated": true
+    },
+    "desk": {
+      "connected": true,
+      "authenticated": true
+    }
+  }
+}

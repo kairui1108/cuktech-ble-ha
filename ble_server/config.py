@@ -5,6 +5,7 @@ YAML file takes precedence over environment variables.
 """
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,17 @@ LOG_LEVELS = {
     "warning": logging.WARNING,
     "error": logging.ERROR,
 }
+
+# primary 设备的固定标识（§3.10）。history/meta/legacy topic 的兼容全部锚定在它上面，
+# 因此**不可配置**：老库里的行、老 HA entry 的 topic、老 Web UI 的请求都默认它。
+PRIMARY_DEVICE_ID = "default"
+
+# 设备 id 会成为 MQTT 前缀的一段，必须与保留字冲突安全（§3.6：`{base}/{id}/...`）
+_DEVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_RESERVED_DEVICE_IDS = frozenset({
+    "all", "set", "port", "status", "settings", "ble", "charge_event",
+    PRIMARY_DEVICE_ID,
+})
 
 
 def _load_yaml_config():
@@ -40,6 +52,8 @@ class BLEConfig:
     token: str = ""
     ble_key: str = ""
     scan_timeout: int = 10
+    # 显示名（可选）：多设备时 Web UI/HA 用它区分；为空则回落 "default"。
+    name: str = ""
 
     def __post_init__(self):
         if not self.mac or self.mac == "XX:XX:XX:XX:XX:XX":
@@ -57,6 +71,96 @@ class MQTTConfig:
     password: str = ""
     keepalive: int = 60
     topic_prefix: str = "cuktech/charger"
+
+
+@dataclass
+class DeviceConfig:
+    """一台充电器的配置（§3.10）。
+
+    primary 由老 `ble:` 节合成，`device_id` 固定 `default`；其余来自 `devices:` 节。
+    两类在同一个类型里表达，因为**下游（registry/manager/topic）看待它们没有区别**。
+    """
+
+    device_id: str = PRIMARY_DEVICE_ID
+    name: str = ""
+    mac: str = ""
+    token: str = ""
+    ble_key: str = ""
+    scan_timeout: int = 10
+    topic_prefix: str = ""          # 空 = 派生自 mqtt.topic_prefix（非 primary）
+    is_primary: bool = False
+    bemfa_names: dict = field(default_factory=dict)   # 可选覆盖 Bemfa 实体名（§3.11）
+
+    @property
+    def display_name(self) -> str:
+        return self.name or self.device_id
+
+    @classmethod
+    def from_mapping(cls, item: dict, *, default_scan_timeout: int = 10) -> "DeviceConfig":
+        """从 `devices:` 节的一项（或等价的 dict）构造。
+
+        接受 `id` 与 `device_id` 两种键：配置文件/schema 里叫 `id`（短、YAML 友好），
+        程序里叫 `device_id`（与 registry 键、history 列一致）。两种写法都收，避免
+        调用方记两套名字。
+        """
+        device_id = str(item.get("id") or item.get("device_id") or "").strip()
+        bemfa_names = {k[len("bemfa_"):]: v for k, v in item.items()
+                       if k.startswith("bemfa_") and v}
+        return cls(
+            device_id=device_id,
+            name=str(item.get("name") or "").strip(),
+            mac=str(item.get("mac") or "").strip(),
+            token=str(item.get("token") or "").strip(),
+            ble_key=str(item.get("ble_key") or "").strip(),
+            scan_timeout=int(item.get("scan_timeout", default_scan_timeout)),
+            topic_prefix=str(item.get("topic_prefix") or "").strip(),
+            is_primary=False,
+            bemfa_names=bemfa_names,
+        )
+
+
+@dataclass(frozen=True)
+class TopicNamespace:
+    """一台设备的 MQTT 命名空间（§3.6：前缀即设备）。
+
+    primary 的 `prefix` 就是 `mqtt.topic_prefix`，因此 `status`/`port/c1`… 与今天
+    **逐字节一致**——primary 不是"镜像"legacy 主题，它**就是** legacy 命名空间；
+    其他设备是 `{base}/{device_id}`，结构与 legacy 同形（HA 侧单一 schema）。
+    """
+
+    prefix: str
+
+    @property
+    def status(self) -> str:
+        return f"{self.prefix}/status"
+
+    @property
+    def settings(self) -> str:
+        return f"{self.prefix}/settings"
+
+    @property
+    def port(self) -> str:
+        return f"{self.prefix}/port"
+
+    @property
+    def set(self) -> str:
+        return f"{self.prefix}/set"
+
+    @property
+    def ble(self) -> str:
+        return f"{self.prefix}/ble"
+
+    @property
+    def charge_event(self) -> str:
+        return f"{self.prefix}/charge_event"
+
+    def port_topic(self, port_name: str) -> str:
+        return f"{self.prefix}/port/{port_name}"
+
+    @property
+    def command_topics(self) -> tuple[str, str, str]:
+        """订阅侧的三条命令 topic（§3.6：精确匹配，不用 wildcard，避免串台）。"""
+        return (self.set, self.port, self.ble)
 
 
 @dataclass
@@ -90,6 +194,9 @@ class Config:
     mqtt: MQTTConfig = field(default_factory=MQTTConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     bemfa: BemfaConfig = field(default_factory=BemfaConfig)
+    # 附加设备（`devices:` 节）。**不含 primary**：primary 永远由 `ble:` 节合成，
+    # 所以 `devices` 为空列表 = 单设备部署，行为与改造前 100% 一致。
+    devices: list = field(default_factory=list)
 
     @property
     def topic_port(self):
@@ -107,6 +214,35 @@ class Config:
     def topic_charge_event(self):
         return f"{self.mqtt.topic_prefix}/charge_event"
 
+    # ── 设备视图（§3.10：primary 来自 ble: 节，其余来自 devices:） ──
+
+    def primary_device(self) -> DeviceConfig:
+        return DeviceConfig(
+            device_id=PRIMARY_DEVICE_ID,
+            name=self.ble.name or "",
+            mac=self.ble.mac,
+            token=self.ble.token,
+            ble_key=self.ble.ble_key,
+            scan_timeout=self.ble.scan_timeout,
+            topic_prefix=self.mqtt.topic_prefix,
+            is_primary=True,
+        )
+
+    def device_specs(self) -> list:
+        """registry 的唯一输入：primary 在前，附加设备按配置顺序在后。"""
+        specs = [self.primary_device()]
+        for dev in self.devices:
+            specs.append(dev if isinstance(dev, DeviceConfig)
+                         else DeviceConfig.from_mapping(dev, default_scan_timeout=self.ble.scan_timeout))
+        return specs
+
+    def topics_for(self, spec: DeviceConfig) -> TopicNamespace:
+        """解析一台设备的 topic 前缀（§3.10：空 = 自动派生 `{base}/{id}`）。"""
+        if spec.is_primary or spec.device_id == PRIMARY_DEVICE_ID:
+            return TopicNamespace(self.mqtt.topic_prefix)
+        prefix = (spec.topic_prefix or "").strip() or f"{self.mqtt.topic_prefix}/{spec.device_id}"
+        return TopicNamespace(prefix.rstrip("/"))
+
 
 def load_config() -> Config:
     """Load config from YAML file, then override with environment variables."""
@@ -121,6 +257,7 @@ def load_config() -> Config:
         token=os.environ.get("CUKTECH_DEVICE_TOKEN", ble_cfg.get("token", "")),
         ble_key=os.environ.get("CUKTECH_DEVICE_BLE_KEY", ble_cfg.get("ble_key", "")),
         scan_timeout=ble_cfg.get("scan_timeout", 10),
+        name=ble_cfg.get("name", ""),
     )
 
     try:
@@ -180,4 +317,128 @@ def load_config() -> Config:
         modified=bemfa_cfg.get("modified", False),
     )
 
-    return Config(ble=ble, mqtt=mqtt, server=server, bemfa=bemfa)
+    devices = _parse_devices(ycfg, ble, mqtt)
+    cfg = Config(ble=ble, mqtt=mqtt, server=server, bemfa=bemfa, devices=devices)
+    validate_device_specs(cfg)
+    return cfg
+
+
+# ── 多设备配置：解析与启动校验（§3.10） ──
+
+def _parse_devices(ycfg: dict, ble: BLEConfig, mqtt: MQTTConfig) -> list:
+    """把 `devices:` 节解析成 `DeviceConfig` 列表（不含 primary）。
+
+    字段缺失/类型错误在这里就报错，而不是等到 `BLEManager` 构造时炸在
+    `bytes.fromhex(token)` 上——后者的报错信息对用户毫无意义。
+    """
+    raw = ycfg.get("devices")
+    if raw in (None, ""):
+        return []
+    if raw == []:
+        # 显式空节：等价单设备（无附加设备）。给配置工具留一个"确实没有附加设备"的表达。
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("配置错误：`devices` 必须是列表（每项一台附加充电器）")
+    specs: list = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"配置错误：`devices[{idx}]` 必须是映射（id/mac/token）")
+        device_id = str(item.get("id") or "").strip()
+        if not device_id:
+            raise ValueError(f"配置错误：`devices[{idx}]` 缺少 `id`（id 即 MQTT 前缀后缀）")
+        mac = str(item.get("mac") or "").strip()
+        token = str(item.get("token") or "").strip()
+        if not mac:
+            raise ValueError(f"配置错误：设备 `{device_id}` 缺少 `mac`")
+        if not token:
+            raise ValueError(f"配置错误：设备 `{device_id}` 缺少 `token`")
+        bemfa_names = {k[len("bemfa_"):]: v for k, v in item.items()
+                       if k.startswith("bemfa_") and v}
+        specs.append(DeviceConfig(
+            device_id=device_id,
+            name=str(item.get("name") or "").strip(),
+            mac=mac,
+            token=token,
+            ble_key=str(item.get("ble_key") or "").strip(),
+            scan_timeout=int(item.get("scan_timeout", ble.scan_timeout)),
+            topic_prefix=str(item.get("topic_prefix") or "").strip(),
+            is_primary=False,
+            bemfa_names=bemfa_names,
+        ))
+    return specs
+
+
+def validate_device_specs(cfg: Config) -> None:
+    """启动期设备校验（§3.10）。有问题一律 raise ValueError，绝不"能跑就先跑"。
+
+    多设备串台的代价是**控制到错误的充电器**（安全事故），所以宁可拒绝启动。
+    """
+    specs = cfg.device_specs()
+    primary = specs[0]
+    extras = specs[1:]
+
+    if extras and not (cfg.ble.mac and cfg.ble.token):
+        raise ValueError(
+            "配置错误：primary 设备必须在 `ble:` 节配置（mac/token）；"
+            "`devices:` 只是附加设备")
+
+    # ── id ──
+    seen_ids = {PRIMARY_DEVICE_ID}
+    for spec in extras:
+        if not _DEVICE_ID_RE.match(spec.device_id):
+            raise ValueError(
+                f"配置错误：设备 id `{spec.device_id}` 非法（只允许小写字母/数字/_-，且以字母或数字开头）")
+        if spec.device_id in _RESERVED_DEVICE_IDS:
+            raise ValueError(
+                f"配置错误：设备 id `{spec.device_id}` 与保留字冲突"
+                f"（{', '.join(sorted(_RESERVED_DEVICE_IDS))}）")
+        if spec.device_id in seen_ids:
+            raise ValueError(f"配置错误：设备 id `{spec.device_id}` 重复")
+        seen_ids.add(spec.device_id)
+
+    # ── mac：全局唯一（跨节） ──
+    seen_macs: dict = {}
+    for spec in specs:
+        mac = (spec.mac or "").strip().upper()
+        if not mac:
+            continue
+        if mac in seen_macs:
+            raise ValueError(
+                f"配置错误：MAC {spec.mac} 同时出现在 "
+                f"`{seen_macs[mac]}` 与 `{spec.device_id}`")
+        seen_macs[mac] = spec.device_id
+
+    # ── token：必须是合法 hex（BLEManager 构造即 bytes.fromhex） ──
+    for spec in extras:
+        token = (spec.token or "").strip()
+        try:
+            if len(token) % 2:
+                raise ValueError
+            bytes.fromhex(token)
+        except ValueError:
+            raise ValueError(
+                f"配置错误：设备 `{spec.device_id}` 的 token 不是合法十六进制串") from None
+
+    # ── topic 前缀：唯一，且不得与任何其他设备的 topic 撞车 ──
+    #
+    # 注意：**前缀互相嵌套是合法的、也是默认形态**（§3.6：primary=`cuktech/charger`，
+    # 设备 2=`cuktech/charger/desk`）。命令订阅是精确匹配（`{prefix}/set`，无 wildcard），
+    # 所以 `cuktech/charger/desk/set` 不会被 primary 的 `cuktech/charger/set` 收走。
+    # 真正危险的是"某台设备的前缀正好等于另一台设备的某个 topic"——那才会真串台，
+    # 例如显式配 `topic_prefix: cuktech/charger/port`（等于 primary 的端口命令主题）。
+    namespaces = [(spec.device_id, cfg.topics_for(spec)) for spec in specs]
+
+    def _all_topics(ns) -> set:
+        return {ns.status, ns.settings, ns.port, ns.set, ns.ble, ns.charge_event}
+
+    for i, (id_a, ns_a) in enumerate(namespaces):
+        for id_b, ns_b in namespaces[i + 1:]:
+            a, b = ns_a.prefix.rstrip("/"), ns_b.prefix.rstrip("/")
+            if a == b:
+                raise ValueError(
+                    f"配置错误：设备 `{id_a}` 与 `{id_b}` 的 MQTT 前缀相同（{a}）")
+            if b in _all_topics(ns_a) or a in _all_topics(ns_b):
+                raise ValueError(
+                    f"配置错误：设备 `{id_a}`（{a}）与 `{id_b}`（{b}）的 MQTT 主题重叠"
+                    f"（一方的前缀正好是另一方的某个主题）")
+

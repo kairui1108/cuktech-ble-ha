@@ -787,7 +787,11 @@ class TestAuthFailureRetry:
         等于退回"退出等外部管理器"，而本机没有管理器。
         """
         src = (Path(__file__).parent.parent / "ha_server.py").read_text(encoding="utf-8")
-        assert "s.ble.set_restart_handler(s._restart)" in src, "ha_server 必须注册重启处理器"
+        # P1 起每台设备注册**自己的**处理器（§3.3 红线 4：捕获 rt，不捕获 s.ble），
+        # 不再是 primary 的 s._restart —— 否则设备 2 认证卡死会把整场打下线。
+        assert "set_restart_handler(self.make_restart_handler(rt))" in src, \
+            "ha_server 必须按设备注册重启处理器"
+        assert "def make_restart_handler(self, rt" in src
         assert "async def _restart(self)" in src, "_restart 必须仍是异步方法（处理器按协程调用）"
 
 

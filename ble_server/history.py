@@ -25,6 +25,10 @@ _LOGGER = logging.getLogger("cuktech_history")
 
 DEFAULT_RETENTION_DAYS = 2
 DEFAULT_DB_PATH = "port_history.db"
+# primary 设备的存储身份（§3.10：history/meta/legacy topic 的兼容都锚定在这个 id 上）。
+# 老库升级后所有既有行都归它，因此它同时是"未指定设备"的含义 —— 单设备部署下
+# 所有 SQL 的行为与加列之前完全一致。
+DEFAULT_DEVICE_ID = "default"
 
 
 class PortHistory:
@@ -104,7 +108,7 @@ class PortHistory:
 
     def _create_tables(self):
         """Create database tables and run migrations."""
-        self._conn.executescript("""
+        self._conn.executescript(f"""
             CREATE TABLE IF NOT EXISTS port_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp REAL NOT NULL,
@@ -113,11 +117,14 @@ class PortHistory:
                 current REAL,
                 power REAL,
                 active INTEGER,
-                protocol TEXT
+                protocol TEXT,
+                device_id TEXT NOT NULL DEFAULT '{DEFAULT_DEVICE_ID}'
             );
             CREATE INDEX IF NOT EXISTS idx_port_history_port ON port_history(port);
             CREATE INDEX IF NOT EXISTS idx_port_history_timestamp ON port_history(timestamp);
             CREATE INDEX IF NOT EXISTS idx_port_history_port_time ON port_history(port, timestamp);
+            -- device_id 相关索引**不在这里建**：旧库此刻还没有该列，建索引会直接
+            -- 抛 "no such column" 让启动失败。ALTER 迁移之后再统一建（见 _create_tables 末尾）。
 
             CREATE TABLE IF NOT EXISTS charge_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,10 +138,12 @@ class PortHistory:
                 avg_current REAL DEFAULT 0,
                 duration_sec INTEGER DEFAULT 0,
                 protocol TEXT DEFAULT '',
-                created_at REAL DEFAULT (strftime('%s','now'))
+                created_at REAL DEFAULT (strftime('%s','now')),
+                device_id TEXT NOT NULL DEFAULT '{DEFAULT_DEVICE_ID}'
             );
             CREATE INDEX IF NOT EXISTS idx_charge_sessions_port ON charge_sessions(port);
             CREATE INDEX IF NOT EXISTS idx_charge_sessions_start ON charge_sessions(start_time);
+            -- idx_charge_sessions_device 同样挪到 ALTER 之后（旧库无 device_id 列）。
 
             CREATE TABLE IF NOT EXISTS charge_points (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,8 +169,43 @@ class PortHistory:
         except sqlite3.OperationalError:
             self._conn.execute("ALTER TABLE charge_points ADD COLUMN protocol TEXT DEFAULT ''")
             self._conn.commit()
+        # Migration（§3.9）：旧库加 device_id 列。DEFAULT 'default' 让既有行自动归到
+        # primary 设备——这正是"旧 history.db 无缝保留"的实现点：不需要回填脚本，
+        # 不需要备份迁移，历史曲线/会话在升级后仍然只属于那台老设备。
+        for table in ("port_history", "charge_sessions"):
+            try:
+                self._conn.execute(f"SELECT device_id FROM {table} LIMIT 1")
+            except sqlite3.OperationalError:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN device_id "
+                    f"TEXT NOT NULL DEFAULT '{DEFAULT_DEVICE_ID}'")
+                _LOGGER.info("Migrated %s: added device_id column (default %r)",
+                             table, DEFAULT_DEVICE_ID)
+        self._conn.commit()
+        # 索引在 ALTER 之后单独建：老库的 CREATE INDEX IF NOT EXISTS 已在上面跑过，
+        # 但那时列还不存在，必须再建一次。
+        self._conn.executescript(f"""
+            CREATE INDEX IF NOT EXISTS idx_port_history_device_port_time
+                ON port_history(device_id, port, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_charge_sessions_device
+                ON charge_sessions(device_id, start_time);
+        """)
+        self._conn.commit()
 
     # ── Runtime meta storage (single source for runtime toggles) ──
+
+    @staticmethod
+    def meta_key(key: str, device_id: str = DEFAULT_DEVICE_ID) -> str:
+        """meta 键的设备命名空间（§3.9）。
+
+        primary（`default`）**保持裸键**：旧库里的 `charge_limit_wh` /
+        `session_recording` / `permanent_ports` / `full_off_ports` 就是这些键，
+        升级后 primary 必须原样读到自己的设置。其他设备用 `{device_id}:{key}`。
+        非 primary 不回落到裸键——那会让设备 2 继承设备 1 的限额（串台）。
+        """
+        if not device_id or device_id == DEFAULT_DEVICE_ID:
+            return key
+        return f"{device_id}:{key}"
 
     def get_meta(self, key: str, default: str = "") -> str:
         """Read a runtime meta value from the DB. Returns default if absent/failed."""
@@ -189,14 +233,15 @@ class PortHistory:
             except Exception as e:
                 _LOGGER.error("Failed to write meta %s: %s", key, e)
 
-    def get_session_recording(self) -> bool:
+    def get_session_recording(self, *, device_id: str = DEFAULT_DEVICE_ID) -> bool:
         """Whether charge session recording is enabled (DB meta, default True)."""
-        value = self.get_meta("session_recording", "true").strip().lower()
+        value = self.get_meta(self.meta_key("session_recording", device_id), "true").strip().lower()
         return value not in ("0", "false", "no", "off")
 
-    def set_session_recording(self, enabled: bool) -> None:
+    def set_session_recording(self, enabled: bool, *, device_id: str = DEFAULT_DEVICE_ID) -> None:
         """Persist the charge session recording toggle (DB meta, survives restart)."""
-        self.set_meta("session_recording", "true" if enabled else "false")
+        self.set_meta(self.meta_key("session_recording", device_id),
+                      "true" if enabled else "false")
 
     # ── 端口模式集合（长期供电 / 充满即停，按端口名持久化） ──
 
@@ -217,9 +262,9 @@ class PortHistory:
         wanted = {str(n).strip().lower() for n in names}
         return [name for name in PORT_NAMES.values() if name in (wanted & valid)]
 
-    def _get_port_set(self, key: str) -> list:
+    def _get_port_set(self, key: str, device_id: str = DEFAULT_DEVICE_ID) -> list:
         """读取端口名集合（JSON 数组存 meta）；缺失/损坏一律回落空列表。"""
-        raw = self.get_meta(key, "")
+        raw = self.get_meta(self.meta_key(key, device_id), "")
         if not raw:
             return []
         try:
@@ -229,26 +274,26 @@ class PortHistory:
             return []
         return self._clean_port_names(stored)
 
-    def _set_port_set(self, key: str, names) -> list:
+    def _set_port_set(self, key: str, names, device_id: str = DEFAULT_DEVICE_ID) -> list:
         """写入端口名集合，返回归一后的列表（与读取对称，保证往返一致）。"""
         clean = self._clean_port_names(names)
-        self.set_meta(key, json.dumps(clean))
+        self.set_meta(self.meta_key(key, device_id), json.dumps(clean))
         return clean
 
-    def get_permanent_ports(self) -> list:
+    def get_permanent_ports(self, *, device_id: str = DEFAULT_DEVICE_ID) -> list:
         """长期供电设备端口（不写充电曲线点，会话统计照常记录）。"""
-        return self._get_port_set(self.PERMANENT_PORTS_META_KEY)
+        return self._get_port_set(self.PERMANENT_PORTS_META_KEY, device_id)
 
-    def set_permanent_ports(self, names) -> list:
-        return self._set_port_set(self.PERMANENT_PORTS_META_KEY, names)
+    def set_permanent_ports(self, names, *, device_id: str = DEFAULT_DEVICE_ID) -> list:
+        return self._set_port_set(self.PERMANENT_PORTS_META_KEY, names, device_id)
 
-    def get_full_off(self) -> dict:
+    def get_full_off(self, *, device_id: str = DEFAULT_DEVICE_ID) -> dict:
         """充满后自动关闭端口的端口 → 模式（once/always）。
 
         存储形状是 {端口名: mode}；兼容旧版本的数组形状（当时没有模式，语义等价于
         always：一直有效直到用户关掉），读到数组时统一升级成 always。
         """
-        raw = self.get_meta(self.FULL_OFF_PORTS_META_KEY, "")
+        raw = self.get_meta(self.meta_key(self.FULL_OFF_PORTS_META_KEY, device_id), "")
         if not raw:
             return {}
         try:
@@ -266,7 +311,7 @@ class PortHistory:
         # 旧形状：["c1"] → {"c1": "always"}
         return {name: LIMIT_MODE_ALWAYS for name in self._clean_port_names(stored)}
 
-    def set_full_off(self, entries) -> dict:
+    def set_full_off(self, entries, *, device_id: str = DEFAULT_DEVICE_ID) -> dict:
         """写入 {端口名: mode}，返回归一后的字典（与读取对称）。"""
         if isinstance(entries, (list, tuple, set, frozenset)) or isinstance(entries, str):
             entries = {name: LIMIT_MODE_ALWAYS for name in self._clean_port_names(entries)}
@@ -275,11 +320,15 @@ class PortHistory:
             for name in self._clean_port_names(list(entries.keys())):
                 _, mode = normalize_charge_limit(0, entries.get(name))
                 clean[name] = mode
-        self.set_meta(self.FULL_OFF_PORTS_META_KEY, json.dumps(clean))
+        self.set_meta(self.meta_key(self.FULL_OFF_PORTS_META_KEY, device_id), json.dumps(clean))
         return clean
 
     def get_web_language(self) -> str:
         """Web UI language preference (DB meta, default 'auto' = follow system).
+
+        **服务级 meta，刻意不做设备命名空间**（§3.9）：语言属于浏览器/服务，不属于
+        某台充电器。调用方因此走 `s.history_store` 而不是 `s.history`（facade），
+        免得看起来像"按设备读"却读到别人的设置。
 
         Returns 'auto' (follow system), 'zh-CN' or 'en'.
         """
@@ -298,7 +347,7 @@ class PortHistory:
 
     LIMIT_META_KEY = "charge_limit_wh"
 
-    def get_charge_limits(self) -> dict:
+    def get_charge_limits(self, *, device_id: str = DEFAULT_DEVICE_ID) -> dict:
         """读取各端口充电量阈值，返回 {port_name: {"wh": float, "mode": str}}。
 
         meta 缺失/JSON 损坏/字段类型非法时逐端口回落禁用（wh=0），不抛异常。
@@ -306,7 +355,7 @@ class PortHistory:
         """
         limits = {name: {"wh": 0.0, "mode": DEFAULT_LIMIT_MODE}
                   for name in PORT_NAMES.values()}
-        raw = self.get_meta(self.LIMIT_META_KEY, "")
+        raw = self.get_meta(self.meta_key(self.LIMIT_META_KEY, device_id), "")
         if not raw:
             return limits
         try:
@@ -329,11 +378,13 @@ class PortHistory:
             limits[name] = {"wh": wh, "mode": mode}
         return limits
 
-    def set_charge_limits(self, limits: dict) -> None:
+    def set_charge_limits(self, limits: dict, *,
+                          device_id: str = DEFAULT_DEVICE_ID) -> None:
         """Persist per-port charge limits as JSON in the meta table.
 
         入参形如 {port_name: {"wh": float, "mode": str}}；未知键忽略，
         非法值归一为禁用（与 get_charge_limits 对称，保证往返一致）。
+        device_id 为关键字参数并置于末尾（保持单设备调用点不变）。
         """
         clean = {}
         for name in PORT_NAMES.values():
@@ -343,7 +394,7 @@ class PortHistory:
             else:
                 wh, mode = normalize_charge_limit(entry, None)
             clean[name] = {"wh": wh, "mode": mode}
-        self.set_meta(self.LIMIT_META_KEY, json.dumps(clean))
+        self.set_meta(self.meta_key(self.LIMIT_META_KEY, device_id), json.dumps(clean))
 
     def _checkpoint_wal(self) -> bool:
         """WAL 达到阈值才回写主库（按阈值触发，而非无条件周期性回写）。
@@ -391,8 +442,8 @@ class PortHistory:
         try:
             if self._pending:
                 self._conn.executemany(
-                    """INSERT INTO port_history (timestamp, port, voltage, current, power, active, protocol)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO port_history (timestamp, port, voltage, current, power, active, protocol, device_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     self._pending,
                 )
                 self._pending.clear()
@@ -422,12 +473,18 @@ class PortHistory:
             except Exception:
                 pass
 
-    def record_port_data(self, port: int, data: dict):
+    def record_port_data(self, port: int, data: dict, *,
+                         device_id: str = DEFAULT_DEVICE_ID):
         """Record port data to database (synchronous, called from async via executor).
 
         批量缓冲：攒到 BATCH_SIZE 或距上次提交超过 BATCH_INTERVAL 再批量写入，
         大幅降低高频采样下的 COMMIT 次数与写放大。读取路径会自动 flush 未落盘
         的缓冲行，保证"写入后立即读取可见"。
+
+        `device_id` 是**关键字参数且排在最后**（§3.9 的签名约束）：`port` 无默认值、
+        `device_id` 有默认值，位置参数顺序不允许；而且既有 540 个用例都以
+        `record_port_data(port, data)` 调用，加在第一位会全挂。缺省值 = primary，
+        因此单设备部署的写入与加列之前逐字节等价。
         """
         if not self._conn:
             return
@@ -439,6 +496,7 @@ class PortHistory:
             data.get("power"),
             1 if data.get("active") else 0,
             data.get("protocol"),
+            device_id,
         )
         with self._db_lock:
             self._pending.append(row)
@@ -451,7 +509,9 @@ class PortHistory:
         self,
         port: int,
         hours: int = 24,
-        interval: Optional[int] = None
+        interval: Optional[int] = None,
+        *,
+        device_id: str = DEFAULT_DEVICE_ID,
     ) -> list[dict]:
         """Query port history with optional downsampling.
 
@@ -459,6 +519,7 @@ class PortHistory:
             port: Port number (1-4)
             hours: Number of hours to query
             interval: Aggregation interval in seconds (None = raw data)
+            device_id: 只返回该设备的采样（缺省 primary ⇒ 与加列前一致）
         """
         if not self._conn:
             return []
@@ -478,23 +539,24 @@ class PortHistory:
                     MAX(active) as active,
                     COUNT(*) as samples
                 FROM port_history
-                WHERE port = ? AND timestamp >= ?
+                WHERE port = ? AND timestamp >= ? AND device_id = ?
                 GROUP BY bucket
                 ORDER BY bucket""",
-                (interval, interval, port, cutoff)
+                (interval, interval, port, cutoff, device_id)
             ).fetchall()
         else:
             rows = self._conn.execute(
                 """SELECT timestamp, voltage, current, power, active, protocol
                 FROM port_history
-                WHERE port = ? AND timestamp >= ?
+                WHERE port = ? AND timestamp >= ? AND device_id = ?
                 ORDER BY timestamp""",
-                (port, cutoff)
+                (port, cutoff, device_id)
             ).fetchall()
 
         return [dict(row) for row in rows]
 
-    def get_statistics(self, port: int, hours: int = 24) -> dict:
+    def get_statistics(self, port: int, hours: int = 24, *,
+                       device_id: str = DEFAULT_DEVICE_ID) -> dict:
         """Get statistical summary for a port."""
         if not self._conn:
             return {}
@@ -521,15 +583,15 @@ class PortHistory:
                          SELECT timestamp, power,
                                 LAG(timestamp) OVER (ORDER BY timestamp) as prev_ts
                          FROM port_history
-                         WHERE port = ? AND timestamp >= ? AND active = 1
+                         WHERE port = ? AND timestamp >= ? AND active = 1 AND device_id = ?
                      ) p
                      WHERE p.prev_ts IS NOT NULL),
                 0) as energy_wh
             FROM port_history
-            WHERE port = ? AND timestamp >= ?""",
+            WHERE port = ? AND timestamp >= ? AND device_id = ?""",
             # 采样断档上限 30s：闲置/掉线期间相邻两个采样点可能相隔很久, 不封顶会
             # 把这段空档按某个功率"积分"成能量（凭空计费）。
-            (self.ENERGY_GAP_CAP_SEC, port, cutoff, port, cutoff)
+            (self.ENERGY_GAP_CAP_SEC, port, cutoff, device_id, port, cutoff, device_id)
         ).fetchone()
 
         if not row or row["samples"] == 0:
@@ -560,7 +622,8 @@ class PortHistory:
             "active_ratio": round(row["active_count"] / row["samples"], 2) if row["samples"] > 0 else 0,
         }
 
-    def export_csv(self, port: int, hours: int = 24) -> str:
+    def export_csv(self, port: int, hours: int = 24, *,
+                   device_id: str = DEFAULT_DEVICE_ID) -> str:
         """Export port history as CSV string."""
         if not self._conn:
             return ""
@@ -571,9 +634,9 @@ class PortHistory:
         rows = self._conn.execute(
             """SELECT timestamp, voltage, current, power, active, protocol
             FROM port_history
-            WHERE port = ? AND timestamp >= ?
+            WHERE port = ? AND timestamp >= ? AND device_id = ?
             ORDER BY timestamp""",
-            (port, cutoff)
+            (port, cutoff, device_id)
         ).fetchall()
 
         output = io.StringIO()
@@ -593,13 +656,17 @@ class PortHistory:
 
         return output.getvalue()
 
-    def export_session_csv(self, session_id: int) -> str:
+    def export_session_csv(self, session_id: int, *,
+                           device_id: Optional[str] = None) -> str:
         """把**单个充电会话**的采样点导成 CSV。
 
         与 export_csv(port, hours) 的区别：那个按端口+时间窗导原始采样（包含会话之间的
         空载片段），这个只导某一次会话的点（充电曲线本体），供会话详情浮层的"导出"用。
         第一行是会话元信息（# 开头的注释行，Excel/Numbers 会当文本行保留），
         之后是标准表头 + 采样点。
+
+        `device_id` 非 None 时校验会话归属（§3.9）：不属于该设备一律按"不存在"处理，
+        不泄露"这个 id 存在"。None = 内部路径，不校验。
         """
         if not self._conn or not session_id:
             return ""
@@ -608,11 +675,11 @@ class PortHistory:
 
         sess = self._conn.execute(
             """SELECT id, port, start_time, end_time, total_wh, avg_power_w, peak_power_w,
-                      avg_voltage, avg_current, duration_sec, protocol
+                      avg_voltage, avg_current, duration_sec, protocol, device_id
                FROM charge_sessions WHERE id = ?""",
             (session_id,),
         ).fetchone()
-        if not sess:
+        if not sess or (device_id is not None and sess["device_id"] != device_id):
             return ""
 
         pts = self._conn.execute(
@@ -644,7 +711,8 @@ class PortHistory:
             ])
         return output.getvalue()
 
-    def query_history_multi(self, start_port: int, end_port: int, hours: float, interval: int) -> list[dict]:
+    def query_history_multi(self, start_port: int, end_port: int, hours: float, interval: int,
+                            *, device_id: str = DEFAULT_DEVICE_ID) -> list[dict]:
         """Query history for multiple ports in a single query."""
         if not self._conn:
             return []
@@ -660,10 +728,10 @@ class PortHistory:
                 AVG(power) as power,
                 COUNT(*) as samples
             FROM port_history
-            WHERE port >= ? AND port <= ? AND timestamp >= ?
+            WHERE port >= ? AND port <= ? AND timestamp >= ? AND device_id = ?
             GROUP BY port, bucket
             ORDER BY port, bucket""",
-            (interval, interval, start_port, end_port, cutoff)
+            (interval, interval, start_port, end_port, cutoff, device_id)
         ).fetchall()
 
         return [dict(row) for row in rows]
@@ -671,7 +739,8 @@ class PortHistory:
     # ── Charge Session Management ──
 
     def start_session(self, port: int, protocol: str = "",
-                      start_time: Optional[float] = None) -> int:
+                      start_time: Optional[float] = None, *,
+                      device_id: str = DEFAULT_DEVICE_ID) -> int:
         """Start a new charge session, return session_id.
 
         start_time 显式传入时用它（开会话时会把起判前那 30s 回填进本会话，起点必须
@@ -682,10 +751,10 @@ class PortHistory:
         with self._db_lock:
             try:
                 cursor = self._conn.execute(
-                    """INSERT INTO charge_sessions (port, start_time, protocol)
-                       VALUES (?, ?, ?)""",
+                    """INSERT INTO charge_sessions (port, start_time, protocol, device_id)
+                       VALUES (?, ?, ?, ?)""",
                     (port, time.time() if start_time is None else float(start_time),
-                     protocol),
+                     protocol, device_id),
                 )
                 self._conn.commit()
                 return cursor.lastrowid
@@ -881,7 +950,7 @@ class PortHistory:
             wh += (p0 + p1) / 2.0 * dt / 3600.0
         return wh, peak
 
-    def close_stale_sessions(self) -> int:
+    def close_stale_sessions(self, device_id: Optional[str] = None) -> int:
         """收尾上一次进程遗留的未闭合会话（end_time IS NULL），返回处理条数。
 
         正常关机时 BLEManager._close_active_sessions 会把它们写完整；只有被强杀
@@ -891,14 +960,21 @@ class PortHistory:
 
         启动清理的唯一入口是 connect()（运行中不能调用：那时 end_time IS NULL
         就是"正在充电"的正常状态）。
+
+        `device_id=None`（缺省）= **全设备**收尾，正是 connect() 要的语义：多设备下
+        若按某一台收尾，其他设备崩溃遗留的行会永远挂在库里（幽灵会话、once 限额
+        永不释放）。`DeviceHistory` facade 传自己的 id，只收本设备。
         """
         if not self._conn:
             return 0
+        device_clause = "" if device_id is None else " AND device_id = ?"
+        device_params: tuple = () if device_id is None else (device_id,)
         with self._db_lock:
             self._flush_pending()
             rows = self._conn.execute(
                 """SELECT id, start_time, total_wh, peak_power_w
-                   FROM charge_sessions WHERE end_time IS NULL""").fetchall()
+                   FROM charge_sessions WHERE end_time IS NULL""" + device_clause,
+                device_params).fetchall()
         closed = 0
         for row in rows:
             sid = row["id"]
@@ -942,8 +1018,9 @@ class PortHistory:
                 _LOGGER.error("Failed to delete session: %s", e)
 
     def get_sessions(self, port: Optional[int] = None, period: str = "today",
-                     limit: int = 10, offset: int = 0) -> tuple:
-        """Query charge sessions."""
+                     limit: int = 10, offset: int = 0, *,
+                     device_id: str = DEFAULT_DEVICE_ID) -> tuple:
+        """Query charge sessions（只返回 `device_id` 名下的会话）。"""
         if not self._conn:
             return [], 0
 
@@ -966,8 +1043,9 @@ class PortHistory:
         query = """SELECT id, port, start_time, end_time, total_wh, avg_power_w,
                    peak_power_w, avg_voltage, avg_current, duration_sec, protocol,
                    COUNT(*) OVER() AS total
-                   FROM charge_sessions WHERE start_time >= ? AND total_wh > 0"""
-        params = [cutoff]
+                   FROM charge_sessions
+                   WHERE start_time >= ? AND total_wh > 0 AND device_id = ?"""
+        params = [cutoff, device_id]
 
         if port is not None:
             query += " AND port = ?"
@@ -985,10 +1063,14 @@ class PortHistory:
 
         return [dict(row) for row in rows], total
 
-    def get_session(self, session_id: int) -> Optional[dict]:
+    def get_session(self, session_id: int, *, device_id: Optional[str] = None) -> Optional[dict]:
         """单个会话行（详情浮层用）。
 
         长期供电会话不保存曲线点，但会话统计照常落库，因此详情要能单独取回这一行。
+
+        `device_id` 非 None 时校验归属，不匹配按"不存在"返回 None（§3.9：会话级读
+        也必须校验，否则 `/api/device/desk/sessions/<primary 的 id>` 能越权读到
+        primary 的历史）。
         """
         if not self._conn:
             return None
@@ -996,23 +1078,38 @@ class PortHistory:
         # handle_session_points 在 executor 线程上调用，与 record_charge_point 的
         # 写并发访问同一条 sqlite 连接（check_same_thread=False）。只锁住 flush
         # 的话，紧接着的 SELECT 仍可能读到写事务的中间态。
+        sql = """SELECT id, port, start_time, end_time, total_wh, avg_power_w,
+                          peak_power_w, avg_voltage, avg_current, duration_sec, protocol
+                   FROM charge_sessions WHERE id = ?"""
+        params: tuple = (session_id,)
+        if device_id is not None:
+            # 归属校验放进 WHERE 而不是取回来再比对：返回的 dict 形状必须与加列前
+            # 完全一致（`/api/sessions` 会把它直接透给前端，多一个 device_id 就是
+            # 外部可见变化，见 §3.8）。
+            sql += " AND device_id = ?"
+            params = (session_id, device_id)
         with self._db_lock:
             self._flush_pending()   # 缓冲中的点要先落盘，否则详情取不到最近几秒
-            row = self._conn.execute(
-                """SELECT id, port, start_time, end_time, total_wh, avg_power_w,
-                          peak_power_w, avg_voltage, avg_current, duration_sec, protocol
-                   FROM charge_sessions WHERE id = ?""",
-                (session_id,),
-            ).fetchone()
+            row = self._conn.execute(sql, params).fetchone()
         return dict(row) if row else None
 
-    def get_session_points(self, session_id: int) -> list[dict]:
-        """Get all data points for a charge session."""
+    def get_session_points(self, session_id: int, *,
+                           device_id: Optional[str] = None) -> list[dict]:
+        """Get all data points for a charge session.
+
+        归属校验同 get_session：先确认会话属于该设备，否则返回空列表。
+        """
         if not self._conn:
             return []
         # 同上：flush 与 SELECT 必须在同一把锁内，否则能读到写事务中间态。
         with self._db_lock:
             self._flush_pending()   # 缓冲中的点要先落盘，否则详情图会缺最近几秒
+            if device_id is not None:
+                owner = self._conn.execute(
+                    "SELECT device_id FROM charge_sessions WHERE id = ?",
+                    (session_id,)).fetchone()
+                if not owner or owner["device_id"] != device_id:
+                    return []
             rows = self._conn.execute(
                 """SELECT timestamp, voltage, current, power, protocol
                    FROM charge_points WHERE session_id = ?
@@ -1039,14 +1136,15 @@ class PortHistory:
             return time.time() - 30 * 86400, None
         return 0.0, None
 
-    def get_energy_stats(self, period: str = "today") -> dict:
-        """Get aggregated energy statistics."""
+    def get_energy_stats(self, period: str = "today", *,
+                         device_id: str = DEFAULT_DEVICE_ID) -> dict:
+        """Get aggregated energy statistics（只统计该设备名下的会话）。"""
         if not self._conn:
             return {"period": period, "total_wh": 0, "session_count": 0}
 
         start, end = self._period_window(period)
-        where = "start_time >= ?" + (" AND start_time < ?" if end is not None else "")
-        params = [start] if end is None else [start, end]
+        where = "start_time >= ?" + (" AND start_time < ?" if end is not None else "") + " AND device_id = ?"
+        params = ([start] if end is None else [start, end]) + [device_id]
 
         row = self._conn.execute(
             f"""SELECT
@@ -1081,7 +1179,8 @@ class PortHistory:
                         for r in by_port},
         }
 
-    def get_protocol_stats(self, period: str = "today") -> dict:
+    def get_protocol_stats(self, period: str = "today", *,
+                           device_id: str = DEFAULT_DEVICE_ID) -> dict:
         """按充电协议聚合电量与会话数（"快充到底跑没跑上"）。
 
         口径与 get_energy_stats 完全一致（同一个 _period_window），所以卡片上两个
@@ -1092,8 +1191,8 @@ class PortHistory:
             return {"period": period, "protocols": [], "total_wh": 0, "session_count": 0}
 
         start, end = self._period_window(period)
-        where = "start_time >= ?" + (" AND start_time < ?" if end is not None else "")
-        params = [start] if end is None else [start, end]
+        where = "start_time >= ?" + (" AND start_time < ?" if end is not None else "") + " AND device_id = ?"
+        params = ([start] if end is None else [start, end]) + [device_id]
 
         rows = self._conn.execute(
             f"""SELECT COALESCE(NULLIF(TRIM(protocol), ''), 'unknown') AS proto,
@@ -1116,3 +1215,131 @@ class PortHistory:
             "total_wh": round(sum(p["wh"] for p in protocols), 2),
             "session_count": sum(p["count"] for p in protocols),
         }
+
+
+class DeviceHistory:
+    """共享 `PortHistory` 的**按设备视图**（设计文档 §3.2）。
+
+    存在理由：`BLEManager` 有 12 处 `self._history.*` 写入、`Server` 有 16 处
+    `self.history.*` 调用，签名全部保持"无 device 参数"的样子——由本 facade 在内部
+    代填 `device_id`。这样两个调用方一行不改，也不会串设备。
+
+    两条纪律：
+
+    1. **显式白名单，不用 `__getattr__` 兜底**。P0-1 的失败模式就是"漏了一项装配、
+       而且静默"：隐式代理会让"忘了给某个写入带 device_id"变成一个永远不会被发现的
+       bug（写进 default 行，界面上看起来只是"历史少了一段"）。写清单意味着新增
+       PortHistory 方法时这里会 AttributeError，逼人做决定。
+    2. **不代理连接生命周期**。`connect()/close()/flush()` 属于共享 store，绝不能
+       经某台设备的视图去关——`close_all()` 关闭共享连接会顺手掐掉其它设备。
+       服务级 meta（`web_language`）同理不经此视图（§3.9）。
+    """
+
+    __slots__ = ("store", "device_id")
+
+    def __init__(self, store: "PortHistory", device_id: str = DEFAULT_DEVICE_ID):
+        self.store = store
+        self.device_id = device_id or DEFAULT_DEVICE_ID
+
+    # ── 采样写入 / 查询（设备维度）──
+    def record_port_data(self, port: int, data: dict):
+        return self.store.record_port_data(port, data, device_id=self.device_id)
+
+    def query_history(self, port: int, hours: int = 24, interval: Optional[int] = None):
+        return self.store.query_history(port, hours, interval, device_id=self.device_id)
+
+    def query_history_multi(self, start_port: int, end_port: int, hours: float, interval: int):
+        return self.store.query_history_multi(
+            start_port, end_port, hours, interval, device_id=self.device_id)
+
+    def get_statistics(self, port: int, hours: int = 24):
+        return self.store.get_statistics(port, hours, device_id=self.device_id)
+
+    def export_csv(self, port: int, hours: int = 24):
+        return self.store.export_csv(port, hours, device_id=self.device_id)
+
+    # ── 会话（设备维度）──
+    def start_session(self, port: int, protocol: str = "",
+                      start_time: Optional[float] = None) -> int:
+        return self.store.start_session(port, protocol, start_time,
+                                        device_id=self.device_id)
+
+    def get_sessions(self, port: Optional[int] = None, period: str = "today",
+                     limit: int = 10, offset: int = 0):
+        return self.store.get_sessions(port, period, limit, offset,
+                                       device_id=self.device_id)
+
+    def get_energy_stats(self, period: str = "today"):
+        return self.store.get_energy_stats(period, device_id=self.device_id)
+
+    def get_protocol_stats(self, period: str = "today"):
+        return self.store.get_protocol_stats(period, device_id=self.device_id)
+
+    def close_stale_sessions(self) -> int:
+        """只收本设备的遗留会话（store.connect() 里的那个是 None=全设备）。"""
+        return self.store.close_stale_sessions(self.device_id)
+
+    # ── 会话级读：带归属校验（§3.9 越权读）──
+    def get_session(self, session_id: int):
+        return self.store.get_session(session_id, device_id=self.device_id)
+
+    def get_session_points(self, session_id: int):
+        return self.store.get_session_points(session_id, device_id=self.device_id)
+
+    def export_session_csv(self, session_id: int):
+        return self.store.export_session_csv(session_id, device_id=self.device_id)
+
+    # ── 会话级写：sid 已锁定归属，不再校验（传 None 的语义同 PortHistory）──
+    def record_charge_point(self, session_id: int, voltage: float,
+                            current: float, power: float, protocol: str = ""):
+        return self.store.record_charge_point(session_id, voltage, current, power, protocol)
+
+    def record_charge_points(self, session_id: int, rows) -> int:
+        return self.store.record_charge_points(session_id, rows)
+
+    def end_session(self, session_id: int, total_wh: float, peak_power_w: float,
+                    avg_voltage: float, avg_current: float, duration_sec: int,
+                    end_time: Optional[float] = None):
+        return self.store.end_session(session_id, total_wh, peak_power_w,
+                                      avg_voltage, avg_current, duration_sec, end_time)
+
+    def delete_session(self, session_id: int):
+        return self.store.delete_session(session_id)
+
+    def compute_session_avg_vi(self, session_id: int) -> tuple:
+        return self.store.compute_session_avg_vi(session_id)
+
+    def compute_session_totals(self, session_id: int) -> tuple:
+        return self.store.compute_session_totals(session_id)
+
+    # ── 设备级 meta（§3.9：非 primary 走 `{id}:{key}` 命名空间）──
+    def get_session_recording(self) -> bool:
+        return self.store.get_session_recording(device_id=self.device_id)
+
+    def set_session_recording(self, enabled: bool) -> None:
+        return self.store.set_session_recording(enabled, device_id=self.device_id)
+
+    def get_permanent_ports(self) -> list:
+        return self.store.get_permanent_ports(device_id=self.device_id)
+
+    def set_permanent_ports(self, names) -> list:
+        return self.store.set_permanent_ports(names, device_id=self.device_id)
+
+    def get_full_off(self) -> dict:
+        return self.store.get_full_off(device_id=self.device_id)
+
+    def set_full_off(self, entries) -> dict:
+        return self.store.set_full_off(entries, device_id=self.device_id)
+
+    def get_charge_limits(self) -> dict:
+        return self.store.get_charge_limits(device_id=self.device_id)
+
+    def set_charge_limits(self, limits: dict) -> None:
+        return self.store.set_charge_limits(limits, device_id=self.device_id)
+
+    # ── 缓冲区可见性（只读触发，不拥有缓冲）──
+    def flush(self) -> None:
+        return self.store.flush()
+
+    def __repr__(self) -> str:  # 日志/断言里能看出是哪个设备的视图
+        return f"<DeviceHistory device_id={self.device_id!r} store={id(self.store):#x}>"
