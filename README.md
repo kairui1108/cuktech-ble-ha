@@ -338,6 +338,11 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 | `/api/export/{port}` | GET | CSV 导出 |
 | `/api/charge-limits` | GET/POST | 充电量限额读写（HA 集成委托模式对接端点） |
 | `/api/log-level` | GET/POST | 日志级别管理 |
+| `/api/devices` | GET | 设备清单（多设备发现；单设备返回 1 台） |
+
+**多设备寻址（可选）**：所有端点都支持 `?device=<id>`，也支持路径形式
+`/api/device/<id>/…`（HA 集成用路径形式，因为 404 可探测回退）。不传 = primary，
+老调用方行为完全不变。
 
 ## MQTT 主题
 
@@ -348,6 +353,33 @@ cp -r ha_integration/custom_components/cuktech_charger /config/custom_components
 | `cuktech/charger/status` | 连接状态（retain + LWT） |
 | `cuktech/charger/set` | 设置命令（订阅） |
 | `cuktech/charger/port` | 端口控制命令（订阅）；Python 服务端与 ESP32 固件均订阅，充电量限额断电亦复用此主题 |
+
+配置了 `devices:` 之后，每台附加设备使用自己的前缀 `{topic_prefix}/{device_id}`
+（或该设备显式配置的 `topic_prefix`），叶子主题形状不变——也就是 ESP32 固件
+"每台设备配不同前缀"的接入方式原样适用；primary 永远是 `cuktech/charger`。
+
+## 多设备（同一块 BLE 网卡接多台充电器）
+
+`config.yaml` 加一个 `devices:` 节即可（不写 = 单设备，行为与以前逐字节一致）：
+
+```yaml
+ble:                       # 永远是 primary，device_id 固定为 default
+  mac: "AA:BB:CC:DD:EE:01"
+  token: "..."
+
+devices:
+  - id: desk               # topic 后缀兼设备标识
+    name: "书桌充电器"
+    mac: "AA:BB:CC:DD:EE:02"
+    token: "..."
+```
+
+- 每台设备独立的 BLE 连接/状态/会话/限额/历史（`history.db` 里按 `device_id` 分区，
+  老库升级自动归到 primary，曲线无缝保留）；
+- 一台故障只重建那一台：`AdapterCoordinator` 分级恢复（L1 断开 → L1.5 清 BlueZ
+  缓存 → L2 适配器下电，仅当只有一台或全员离线时才下电）；
+- Web UI 出现设备切换器（单设备时隐藏），HA 集成里"一设备一 entry"；
+- 回滚：`./cuktech_ctl.sh history-down`（非 primary 历史归档，幂等）+ `clean-retained`。
 
 ## 依赖
 

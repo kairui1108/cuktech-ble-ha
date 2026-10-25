@@ -2,6 +2,20 @@
 const API = window.location.origin;
 let _sessionChart = null;
 
+// 统一请求出口：多设备时按当前设备取数（device-store.js 负责拼 ?device=）。
+// 缺了它（别的嵌入页没引 device-store）就退回裸 fetch —— 单设备语义不变。
+function chApi(path, opts) {
+    return (typeof DeviceStore !== 'undefined' && DeviceStore.api)
+        ? DeviceStore.api(path, opts)
+        : fetch(path, opts);
+}
+
+function chCurrentDevice() {
+    return (typeof DeviceStore !== 'undefined' && DeviceStore.current)
+        ? DeviceStore.current()
+        : 'default';
+}
+
 // Format timestamp to local time string
 function fmtTime(ts) {
     if (!ts) return '--';
@@ -35,7 +49,7 @@ function esc(v) {
 // Fetch energy stats
 async function fetchEnergyStats(period) {
     try {
-        const res = await fetch(`${API}/api/energy/stats?period=${period || 'today'}`);
+        const res = await chApi(`${API}/api/energy/stats?period=${period || 'today'}`);
         return await res.json();
     } catch (e) { return { total_wh: 0, session_count: 0, avg_power_w: 0 }; }
 }
@@ -45,7 +59,7 @@ async function fetchSessions(port, period, limit, page) {
     try {
         let url = `${API}/api/sessions?period=${period || 'today'}&limit=${limit || 10}&page=${page || 1}`;
         if (port) url += `&port=${port}`;
-        const res = await fetch(url);
+        const res = await chApi(url);
         return await res.json();
     } catch (e) { return { sessions: [], total: 0, page: 1, pages: 1 }; }
 }
@@ -155,7 +169,7 @@ async function fetchSessionPoints(sessionId) {
         if (_dsTarget > 0) q.push(`downsample=${_dsTarget}`);
         // 常供会话不再传 window/to：服务端缺省就是"内存保留时长（1 小时）+ 贴最新"，
         // 界面也没有窗口控件可以改变它。
-        const res = await fetch(`${API}/api/sessions/${sessionId}/points${q.length ? '?' + q.join('&') : ''}`);
+        const res = await chApi(`${API}/api/sessions/${sessionId}/points${q.length ? '?' + q.join('&') : ''}`);
         // fetch 不对 4xx/5xx reject：不检查 status 的话，服务端 400（例如 to 越界）
         // 的错误体会被当成正常响应解析，面板静默变空白且没有任何提示。
         // 返回 null 让调用方区分"加载失败"与"这次会话真的没有点"。
@@ -467,7 +481,27 @@ function startChargeHistoryAutoRefresh(containerId, statsId, period, interval, p
     // Listen for CustomEvent dispatched by main SSE handler (avoids second SSE connection)
     if (!window._chSseListening) {
         window._chSseListening = true;
-        window.addEventListener('sse-session-end', () => refreshChargeHistory());
+        window.addEventListener('sse-session-end', (e) => {
+            // 按设备过滤：列表是按 ?device= 取的，别的设备结束会话与它无关。
+            // 不过滤就等于每台设备充完电都把当前设备的列表白刷一遍。
+            const dev = (e && e.detail && e.detail.device) || 'default';
+            if (dev !== chCurrentDevice()) return;
+            refreshChargeHistory();
+        });
+    }
+    // 切换设备 = 换一份历史：页码/详情/指纹全部作废，否则会把上一台的
+    // "第 3 页"和数据指纹带过来，出现该刷新的不刷新、或翻到不存在的页。
+    if (!window._chDeviceListening) {
+        window._chDeviceListening = true;
+        window.addEventListener('device-changed', () => {
+            _chPage = 1;
+            _chActiveCount = 0;
+            _chSignature = '';
+            _chStatsSig = '';
+            _currentSessionId = null;
+            closeSessionDetail();
+            refreshChargeHistory(true);
+        });
     }
 }
 

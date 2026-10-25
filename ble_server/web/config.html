@@ -55,6 +55,62 @@ body.light .config-input {
 .status-dot-sm { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
 .status-dot-sm.ok { background: #34C759; }
 .status-dot-sm.err { background: #FF3B30; }
+
+/* ── 设备卡片列表（多设备，§3.12）──
+   卡片头永远只显示"连接灯 + 名字 + MAC"，编辑时在下面展开凭据表单：
+   一眼能看到配了几台，又不至于把五组输入框全铺开。 */
+.device-list-hint { padding: 0 4px 8px; }
+.device-card {
+    border: 1px solid rgba(255,255,255,0.10); border-radius: 12px;
+    margin-bottom: 8px; overflow: hidden;
+}
+body.light .device-card { border-color: rgba(0,0,0,0.10); }
+/* 展开态高亮用端口蓝 --c1：本页没有 --accent（那是 index.css 的令牌），
+   直接写 var(--accent) 会解析失败、边框颜色不生效 */
+.device-card.is-editing { border-color: var(--c1); }
+.device-card-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.device-led {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: var(--text-dim); opacity: 0.5;
+}
+.device-led.on { background: #34C759; opacity: 1; }
+.device-card-main { flex: 1; min-width: 0; }
+.device-card-name {
+    font-size: 15px; color: var(--text);
+    display: flex; align-items: center; gap: 6px; min-width: 0;
+}
+.device-card-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-card-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.device-tag {
+    font-size: 10px; padding: 1px 6px; border-radius: 6px; flex: none;
+    background: rgba(255,255,255,0.10); color: var(--text-dim);
+}
+body.light .device-tag { background: rgba(0,0,0,0.06); }
+.device-card-btn {
+    flex: none; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+    font-size: 12px; background: rgba(255,255,255,0.08); color: var(--text);
+    border: 1px solid rgba(255,255,255,0.10);
+    -webkit-tap-highlight-color: transparent;
+}
+body.light .device-card-btn { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.10); }
+.device-card-btn.danger { color: var(--limit-danger); }
+.device-card-body { padding: 0 12px 4px; }
+.device-card-body[hidden] { display: none; }
+.device-card-body .config-row:last-child { border-bottom: none; }
+/* 折叠时整块不渲染：display:none 由 [hidden] 负责，避免和 flex/grid 样式打架 */
+.device-add-btn {
+    width: 100%; margin-top: 4px; padding: 10px;
+    border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px;
+    background: transparent; color: var(--text-dim); font-size: 13px;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+body.light .device-add-btn { border-color: rgba(0,0,0,0.16); }
+.device-add-btn:active { opacity: 0.7; }
 </style>
 </head>
 <body>
@@ -72,24 +128,21 @@ body.light .config-input {
 
     <div class="bottom-view" style="padding-top:12px;">
 
-        <!-- BLE Config -->
+        <!-- 充电器（设备列表，§3.12）：
+             原来是一组固定凭据表单；多设备后一台充电器一张卡片。
+             第一张恒为 primary（由配置文件 ble: 节提供，不可删除），
+             其余写进 devices: 节。 -->
         <div class="card config-section">
             <div class="config-section-title" style="display:flex;align-items:center;justify-content:space-between;">
-                <span data-i18n="config.bleDevice">BLE 设备</span>
+                <span data-i18n="config.devicesSection">充电器</span>
                 <span onclick="openXiaomiModal()" style="font-size:10px;color:var(--accent);cursor:pointer;" data-i18n="config.xiaomiAuto">小米云自动获取 &#8599;</span>
             </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.mac">MAC 地址</div><div class="config-hint" data-i18n="config.macHint">充电器蓝牙 MAC 地址</div></div>
-                <input class="config-input" id="ble_mac" placeholder="AA:BB:CC:DD:EE:FF">
-            </div>
-            <div class="config-row">
-                <div><div class="config-label">Token</div><div class="config-hint" data-i18n="config.tokenHint">设备认证 Token (十六进制)</div></div>
-                <input class="config-input" id="ble_token" placeholder="Token">
-            </div>
-            <div class="config-row">
-                <div><div class="config-label">BLE Key</div><div class="config-hint" data-i18n="config.bleKeyHint">加密密钥 (十六进制)</div></div>
-                <input class="config-input" id="ble_key" placeholder="BLE Key">
-            </div>
+            <div class="config-hint device-list-hint" data-i18n="config.devicesHint">一台主机可同时连接多台充电器；保存后需重启生效</div>
+            <div id="deviceList"></div>
+            <button type="button" class="device-add-btn" onclick="addDevice()">
+                <span aria-hidden="true">+</span>
+                <span data-i18n="config.addDevice">添加充电器</span>
+            </button>
         </div>
 
         <!-- MQTT Config -->
@@ -215,6 +268,193 @@ let _configStatus = 'loading';   // 'loading' | 'loaded' | 'error'
 let _configStatusMsg = '';
 let _saving = false;
 
+// ── 设备列表（多设备，§3.12）──
+// 一台充电器一条记录；DOM 里的输入框是它的编辑视图，两边的同步方向只有
+// "输入 → _devices"（每个输入框都挂了 updateDeviceField），所以重绘卡片不会丢输入。
+//   is_primary 的那台由配置文件 `ble:` 节提供（不可删除），其余写进 `devices:` 节。
+let _devices = [];
+let _editing = -1;        // 展开编辑的卡片下标；-1 = 全部收起
+const DEVICE_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;   // 与服务端 validate_device_specs 同一套规则
+
+function emptyDevice(isPrimary) {
+    return {
+        id: isPrimary ? 'default' : '',
+        name: '', mac: '', token: '', ble_key: '',
+        topic_prefix: '', bemfa_ble: '',
+        is_primary: !!isPrimary, connected: false
+    };
+}
+
+function findDeviceIndex(pred) {
+    for (let i = 0; i < _devices.length; i++) if (pred(_devices[i], i)) return i;
+    return -1;
+}
+
+function updateDeviceField(index, field, value) {
+    const d = _devices[index];
+    if (!d) return;
+    d[field] = value;
+    // 名字/MAC 直接投影到卡片头，避免"改了输入框、上面那行还是旧的"
+    if (field === 'name' || field === 'mac' || field === 'id') {
+        const head = document.getElementById(`device-name-${index}`);
+        const sub = document.getElementById(`device-sub-${index}`);
+        if (head) head.textContent = deviceLabel(d);
+        if (sub) sub.textContent = d.mac || I18N.t('config.mac');
+    }
+}
+
+function deviceLabel(d) {
+    return d.name || d.id || I18N.t('config.addDevice');
+}
+
+// 卡片列表：编辑态与在线状态都只是"改写已有节点"，整块 innerHTML 只在
+// 设备增删或展开项变化时重建（用户正在输入时不能重建）。
+function renderDeviceList() {
+    const host = document.getElementById('deviceList');
+    if (!host) return;
+    host.innerHTML = _devices.map((d, i) => {
+        const open = i === _editing;
+        const macText = d.mac || I18N.t('config.mac');
+        return `
+        <div class="device-card${open ? ' is-editing' : ''}" id="device-card-${i}">
+            <div class="device-card-head" onclick="toggleDeviceEditor(${i})">
+                <span class="device-led${d.connected ? ' on' : ''}" aria-hidden="true"></span>
+                <div class="device-card-main">
+                    <div class="device-card-name">
+                        <span id="device-name-${i}">${escText(deviceLabel(d))}</span>
+                        ${d.is_primary ? `<span class="device-tag">${escText(I18N.t('config.primaryTag'))}</span>` : ''}
+                    </div>
+                    <div class="device-card-sub" id="device-sub-${i}">${escText(macText)}</div>
+                </div>
+                <button type="button" class="device-card-btn" onclick="event.stopPropagation();toggleDeviceEditor(${i})">${escText(I18N.t('config.editDevice'))}</button>
+                ${d.is_primary ? '' : `<button type="button" class="device-card-btn danger" onclick="event.stopPropagation();removeDevice(${i})">${escText(I18N.t('config.removeDevice'))}</button>`}
+            </div>
+            <div class="device-card-body" id="device-body-${i}"${open ? '' : ' hidden'}>
+                ${open ? deviceEditorHtml(d, i) : ''}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// 展开的编辑区：字段与顺序按 §3.12 的清单（name / mac / token / ble_key /
+// topic_prefix / bemfa 实体名）。
+// 文案在这里就用 I18N.t() 取好（而不是写 data-i18n 交给 applyTranslations）：
+// 这段 HTML 是在 JS 里拼出来的，静态扫描（verify_i18n.py）看不到 <script> 里的
+// 标签，只有 t('...') 这种字面量调用能被扫到；切语言时整块卡片由
+// I18N.onChange 重画一次，所以也不需要事后翻译。
+function deviceEditorHtml(d, i) {
+    // 每个输入框都挂了 oninput：DOM 是编辑视图，_devices 才是保存时的数据源
+    const attrs = (key) => `id="device-${i}-${key}" value="${escText(d[key] || '')}" `
+        + `oninput="updateDeviceField(${i}, '${key}', this.value)"`;
+    const row = (label, hint, inputHtml) => `
+        <div class="config-row">
+            <div><div class="config-label">${escText(label)}</div>`
+            + (hint ? `<div class="config-hint">${escText(hint)}</div>` : '')
+            + `</div>${inputHtml}
+        </div>`;
+    let html = row(I18N.t('config.deviceName'), I18N.t('config.deviceNameHint'),
+        `<input class="config-input" ${attrs('name')}>`);
+    // primary 的 id 固定为 default（history/meta/legacy topic 都锚在它上面，§3.10）
+    if (!d.is_primary) {
+        html += row(I18N.t('config.deviceId'), I18N.t('config.deviceIdHint'),
+            `<input class="config-input" ${attrs('id')} placeholder="desk" autocapitalize="off" autocorrect="off" spellcheck="false">`);
+    }
+    html += row(I18N.t('config.mac'), I18N.t('config.macHint'),
+        `<input class="config-input" ${attrs('mac')} placeholder="AA:BB:CC:DD:EE:FF">`);
+    html += row(I18N.t('config.tokenHint'), '',
+        `<input class="config-input" ${attrs('token')} placeholder="Token">`);
+    html += row(I18N.t('config.bleKeyHint'), '',
+        `<input class="config-input" ${attrs('ble_key')} placeholder="BLE Key">`);
+    if (!d.is_primary) {
+        html += row(I18N.t('config.topicPrefix'), I18N.t('config.topicAutoHint'),
+            `<input class="config-input" ${attrs('topic_prefix')} placeholder="${escText(I18N.t('config.topicAuto'))}">`);
+        html += row(I18N.t('config.bleStatusName'), '',
+            `<input class="config-input" ${attrs('bemfa_ble')}>`);
+    }
+    return html;
+}
+
+function toggleDeviceEditor(index) {
+    _editing = (_editing === index) ? -1 : index;
+    renderDeviceList();
+}
+
+function addDevice(prefill) {
+    const d = emptyDevice(false);
+    if (prefill) Object.assign(d, prefill);
+    _devices.push(d);
+    _editing = _devices.length - 1;
+    renderDeviceList();
+    if (!prefill) showToast(I18N.t('config.deviceAdded'));
+}
+
+function removeDevice(index) {
+    const d = _devices[index];
+    if (!d) return;
+    // 前端提示（服务端也会校验，§3.10）：primary 来自 ble: 节，删掉它等于没有主设备
+    if (d.is_primary) { showToast(I18N.t('config.primaryUndeletable')); return; }
+    if (!confirm(I18N.t('config.confirmRemoveDevice', { name: deviceLabel(d) }))) return;
+    _devices.splice(index, 1);
+    _editing = -1;
+    renderDeviceList();
+}
+
+function escText(v) {
+    return String(v === undefined || v === null ? '' : v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/**
+ * 设备清单来源是 GET /api/devices（§3.7）：它是**运行时真值**，primary 恒在首位、
+ * 带 id/name/mac/connected。凭据（token/ble_key）不在它里面，只有 primary 的能从
+ * GET /api/config 的 ble 节拿到（而且是掩码形式：掩码值再提交回去会被服务端忽略）。
+ * 非 primary 设备的 token/ble_key 因此显示为空 —— 用户不重填就当"保持不变"，
+ * 由服务端 YAML 合并保住原值（见保存时的 payload 说明）。
+ */
+async function loadDeviceList(bleCfg) {
+    let list = [];
+    try {
+        const res = await fetch(`${API}/api/devices`);
+        const data = await res.json();
+        if (data && data.ok && Array.isArray(data.devices)) list = data.devices;
+    } catch (e) {
+        // 旧服务端没有 /api/devices：退回"只有一台 primary"的老形态
+    }
+    if (!list.length) list = [{ id: 'default', name: '', mac: bleCfg.mac || '', is_primary: true }];
+
+    _devices = list.map((d, idx) => {
+        const isPrimary = idx === 0 || !!d.is_primary;
+        const dev = emptyDevice(isPrimary);
+        dev.id = isPrimary ? 'default' : (d.id || '');
+        // 名字等于 id 说明"没单独起名"（服务端回退成 id），留空才对得上
+        dev.name = (d.name && d.name !== dev.id) ? d.name : '';
+        dev.mac = d.mac || '';
+        dev.topic_prefix = d.topic_prefix || '';
+        dev.connected = !!d.connected;
+        if (isPrimary) {
+            dev.token = (bleCfg && bleCfg.token) || '';
+            dev.ble_key = (bleCfg && bleCfg.ble_key) || '';
+        }
+        return dev;
+    });
+    _editing = -1;
+    renderDeviceList();
+    renderXiaomiTargets();
+}
+
+// 小米云扫码导入的"写入目标设备"（§3.10）：默认写进正在编辑的那张卡片，
+// 没有编辑中的卡片就写进 primary —— 与改造前"只有一组凭据"的直觉一致。
+function renderXiaomiTargets() {
+    const el = document.getElementById('xiaomiTarget');
+    if (!el) return;
+    const options = _devices.map((d, i) =>
+        `<option value="${i}">${escText(deviceLabel(d))}</option>`).join('')
+        + `<option value="new">${escText(I18N.t('config.deviceTargetNew'))}</option>`;
+    el.innerHTML = options;
+    el.value = _editing >= 0 ? String(_editing) : '0';
+}
+
 // Theme (shared with phone.html)
 function toggleTheme() {
     isDark = !isDark;
@@ -248,9 +488,8 @@ async function loadConfig() {
         if (!data.ok) throw new Error(data.error);
         const c = data.config;
 
-        document.getElementById('ble_mac').value = c.ble.mac || '';
-        document.getElementById('ble_token').value = c.ble.token || '';
-        document.getElementById('ble_key').value = c.ble.ble_key || '';
+        // 传 ble: 节（不是整份 config）：primary 的凭据就从这里来
+        await loadDeviceList(c.ble);
 
         document.getElementById('mqtt_enabled').checked = c.mqtt.enabled;
         document.getElementById('mqtt_host').value = c.mqtt.host || '';
@@ -301,19 +540,69 @@ async function loadConfig() {
     }
 }
 
+// 保存前的本地校验：服务端也会校验（validate_device_specs），但那是在重启之后——
+// 配置错了会直接起不来。能在前端拦下的就别留给重启后的日志。
+function validateDevices() {
+    if (!_devices.length) { addDevice(); return false; }
+    const primary = _devices[0];
+    const seen = { default: true };
+    for (let i = 1; i < _devices.length; i++) {
+        const d = _devices[i];
+        const label = deviceLabel(d);
+        if (!DEVICE_ID_RE.test(d.id.trim()) || seen[d.id.trim()]) {
+            showToast(I18N.t('config.invalidDeviceId', { name: label }), 5000);
+            toggleDeviceEditor(i);
+            return false;
+        }
+        seen[d.id.trim()] = true;
+        if (!d.mac.trim() || !d.token.trim()) {
+            showToast(I18N.t('config.needMacToken', { name: label }), 5000);
+            toggleDeviceEditor(i);
+            return false;
+        }
+    }
+    // 有附加设备时 primary 必须配齐：它是 legacy topic/history 的锚点（§3.10）
+    if (_devices.length > 1 && (!primary.mac.trim() || !primary.token.trim())) {
+        showToast(I18N.t('config.needMacToken', { name: deviceLabel(primary) }), 5000);
+        if (_editing !== 0) toggleDeviceEditor(0);
+        return false;
+    }
+    return true;
+}
+
 async function saveConfig() {
+    if (!validateDevices()) return;
     const btn = document.getElementById('btnSave');
     btn.disabled = true;
     _saving = true;
     document.getElementById('btnSaveIcon').textContent = '⏳';
     document.getElementById('btnSaveText').textContent = I18N.t('common.saving');
 
+    // 第一台（primary）展开回 `ble:` 节：那是老版本工具/脚本唯一认识的形状，
+    // 也是 primary 的 id 恒为 default、legacy topic 不变的锚点（§3.10）。
+    // 其余设备写 `devices:` 节，字段名与 config.py 的 from_mapping 完全一致。
+    const primary = _devices[0] || emptyDevice(true);
+    const extras = _devices.slice(1).map(d => {
+        const item = {
+            id: d.id.trim(),
+            name: d.name.trim(),
+            mac: d.mac.trim(),
+            token: d.token.trim(),
+            ble_key: d.ble_key.trim(),
+            topic_prefix: d.topic_prefix.trim(),
+        };
+        // 空的可选覆盖项不要写进 YAML：bemfa 实体名留空 = 用默认派生名
+        if (d.bemfa_ble.trim()) item.bemfa_ble = d.bemfa_ble.trim();
+        return item;
+    });
+
     const config = {
         ble: {
-            mac: document.getElementById('ble_mac').value.trim(),
-            token: document.getElementById('ble_token').value.trim(),
-            ble_key: document.getElementById('ble_key').value.trim(),
+            mac: primary.mac.trim(),
+            token: primary.token.trim(),
+            ble_key: primary.ble_key.trim(),
         },
+        devices: extras,
         mqtt: {
             enabled: document.getElementById('mqtt_enabled').checked,
             host: document.getElementById('mqtt_host').value.trim(),
@@ -336,6 +625,9 @@ async function saveConfig() {
             history_retention_days: parseInt(document.getElementById('server_retention').value) || 2,
         },
     };
+    // 主设备名只在用户真的起了名时才写回：GET /api/config 不返回 ble.name，
+    // 空字符串会因为"说不清是没设置还是被清空"而误删已有名字。
+    if (primary.name.trim()) config.ble.name = primary.name.trim();
 
     try {
         const res = await fetch(`${API}/api/config`, {
@@ -548,6 +840,7 @@ function showDeviceList(data) {
     document.getElementById('xiaomiLoginForm').style.display = 'none';
     document.getElementById('xiaomiQRForm').style.display = 'none';
     document.getElementById('xiaomiDeviceList').style.display = 'block';
+    renderXiaomiTargets();   // 目标下拉跟着当前设备卡片走（可能刚增删过）
 
     const list = document.getElementById('xiaomiDevices');
     const devices = data.cuktech && data.cuktech.length > 0 ? data.cuktech : data.devices;
@@ -577,9 +870,24 @@ async function selectDevice(did, mac, token) {
         const data = await res.json();
         const bleKey = data.ok ? data.ble_key : '';
 
-        document.getElementById('ble_mac').value = mac;
-        document.getElementById('ble_token').value = token;
-        document.getElementById('ble_key').value = bleKey;
+        // 回填"正在编辑的那张卡片"（§3.10），而不是全局唯一字段：
+        // 多设备后同一组输入框已经不存在了，写错目标等于把第二台的凭据
+        // 覆盖到第一台上——那是最坏的一种串台。
+        const sel = document.getElementById('xiaomiTarget');
+        const target = sel ? sel.value : '0';
+        if (target === 'new') {
+            addDevice({ mac: mac, token: token, ble_key: bleKey });
+        } else {
+            const idx = parseInt(target, 10) || 0;
+            const d = _devices[idx] || _devices[0];
+            if (d) {
+                d.mac = mac;
+                d.token = token;
+                d.ble_key = bleKey;
+            }
+            _editing = idx;
+            renderDeviceList();
+        }
 
         status.textContent = I18N.t('config.deviceInfoGot');
         status.style.color = 'var(--success)';
@@ -603,6 +911,13 @@ if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
         }
         const btnT = document.getElementById('btnSaveText');
         if (btnT) btnT.textContent = _saving ? I18N.t('common.saving') : I18N.t('config.saveRestart');
+        // 设备卡片里的文案（主设备标签、编辑/删除按钮、展开的编辑器）全是 JS 拼的，
+        // 不进 applyTranslations 的静态扫描范围，切语言后必须重画一次。
+        // 输入框的值早已通过 updateDeviceField 同步进 _devices，重画不会丢输入。
+        if (_devices.length) {
+            renderDeviceList();
+            renderXiaomiTargets();
+        }
     });
 }
 </script>
@@ -650,6 +965,11 @@ if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
         <!-- Device List -->
         <div id="xiaomiDeviceList" style="display:none;">
             <div style="font-size:13px;color:var(--text-dim);margin-bottom:10px;" data-i18n="config.selectCharger">选择充电器设备：</div>
+            <!-- 写入目标（§3.10）：扫码拿到的 MAC/Token/BLE Key 回填到哪张设备卡片 -->
+            <div class="config-row" style="padding-top:0;">
+                <div class="config-label" data-i18n="config.deviceTarget">写入目标设备</div>
+                <select class="config-input config-select" id="xiaomiTarget"></select>
+            </div>
             <div id="xiaomiDevices"></div>
             <div style="margin-top:12px;display:flex;gap:8px;">
                 <button class="btn-save" onclick="closeXiaomiModal()" data-i18n="common.cancel" style="margin-top:0;flex:1;background:rgba(255,255,255,0.06);color:var(--text);">取消</button>

@@ -802,27 +802,57 @@ class Server:
         if self.bemfa and self.bemfa.is_connected:
             self._bemfa_publish(topic, payload)
 
+    def _bemfa_entity_ids(self, rt) -> dict:
+        """一台设备的语音实体 id（§3.11）。
+
+        primary **必须**沿用现有 id（`cuktech_c1/…/cuktech_ble`）——用户配好的
+        语音指令不能因为多设备改造失效；其他设备用 `{device_id}_c1` 前缀。
+        """
+        if rt.device_id == PRIMARY_DEVICE_ID:
+            ids = {"c1": "cuktech_c1", "c2": "cuktech_c2", "c3": "cuktech_c3",
+                   "a": "cuktech_usb_a", "ble": "cuktech_ble"}
+        else:
+            prefix = rt.device_id
+            ids = {name: f"{prefix}_{'usb_a' if name == 'a' else name}"
+                   for name in ("c1", "c2", "c3", "a")} | {"ble": f"{prefix}_ble"}
+        # `bemfa_<name>:` 覆盖项（老用户的实体 id 可能是任意值，改名会让巴法云里
+        # 的自动化全断，所以允许逐项钉死；没写就用上面的派生规则）
+        overrides = getattr(getattr(rt, "spec", None), "bemfa_names", None) or {}
+        for name, entity_id in overrides.items():
+            if entity_id:
+                ids[name] = str(entity_id)
+        return ids
+
+    def _bemfa_device_for_topic(self, topic):
+        """topic 前缀 → 设备（§3.6 命名空间：前缀就是设备身份）。
+
+        前缀可能互相前缀包含（`cuktech/charger` 与 `cuktech/charger/desk`），所以
+        必须取**最长匹配**，否则 primary 会吃掉别的设备的事件。
+        """
+        best = None
+        for rt in self.registry:
+            prefix = rt.topics.prefix
+            if (topic == prefix or topic.startswith(prefix + "/")) and (
+                    best is None or len(prefix) > len(best.topics.prefix)):
+                best = rt
+        return best
+
     def _bemfa_publish(self, topic, payload):
-        """Map HA MQTT topics to Bemfa device states."""
-        topic_prefix = self.config.mqtt.topic_prefix
-        # Port state: {prefix}/port/{port_name}
-        if topic.startswith(f"{topic_prefix}/port/"):
-            port_name = topic.split("/")[-1]
-            entity_map = {
-                "c1": "cuktech_c1",
-                "c2": "cuktech_c2",
-                "c3": "cuktech_c3",
-                "a": "cuktech_usb_a",
-            }
-            entity_id = entity_map.get(port_name)
-            if entity_id and isinstance(payload, dict):
-                state = MSG_ON if payload.get("active") else MSG_OFF
-                self.bemfa.publish_state(entity_id, state)
-        # BLE status: {prefix}/status
-        elif topic == f"{topic_prefix}/status":
-            if isinstance(payload, dict):
-                connected = payload.get("connected", False)
-                self.bemfa.publish_state("cuktech_ble", MSG_ON if connected else MSG_OFF)
+        """Map HA MQTT topics to Bemfa device states（按设备命名空间路由）。"""
+        rt = self._bemfa_device_for_topic(topic)
+        if rt is None:
+            return
+        ids = self._bemfa_entity_ids(rt)
+        if not isinstance(payload, dict):
+            return
+        rest = topic[len(rt.topics.prefix):].lstrip("/")
+        if rest.startswith("port/"):
+            entity_id = ids.get(rest.split("/")[-1])
+            if entity_id:
+                self.bemfa.publish_state(entity_id, MSG_ON if payload.get("active") else MSG_OFF)
+        elif rest == "status":
+            self.bemfa.publish_state(ids["ble"],
+                                     MSG_ON if payload.get("connected") else MSG_OFF)
 
     async def setup_bemfa(self):
         """Initialize Bemfa client if enabled."""
@@ -836,42 +866,64 @@ class Server:
 
         self.bemfa = BemfaClient(self.config.bemfa.uid, modified=self.config.bemfa.modified)
 
-        # Register devices with custom display names
-        self.bemfa.add_device("cuktech_c1", self.config.bemfa.name_c1)
-        self.bemfa.add_device("cuktech_c2", self.config.bemfa.name_c2)
-        self.bemfa.add_device("cuktech_c3", self.config.bemfa.name_c3)
-        self.bemfa.add_device("cuktech_usb_a", self.config.bemfa.name_a)
-        self.bemfa.add_device("cuktech_ble", self.config.bemfa.name_ble)
+        allowed = self.config.bemfa.allowed_devices or [PRIMARY_DEVICE_ID]
+        targets = [rt for rt in self.registry
+                   if "*" in allowed or rt.device_id in allowed]
+        names = {"c1": self.config.bemfa.name_c1, "c2": self.config.bemfa.name_c2,
+                 "c3": self.config.bemfa.name_c3, "a": self.config.bemfa.name_a,
+                 "ble": self.config.bemfa.name_ble}
+        port_label = {"c1": "C口1", "c2": "C口2", "c3": "C口3", "a": "USB-A"}
 
-        # Register command callbacks
-        def _port_cmd(port, on):
-            _LOGGER.info("Bemfa command: %s %s", port, "on" if on else "off")
+        for rt in targets:
+            ids = self._bemfa_entity_ids(rt)
+            for name in ("c1", "c2", "c3", "a"):
+                # 显示名：primary 用配置里的老名字（零迁移），其他设备用"<设备名> C口1"
+                label = (names[name] if rt.device_id == PRIMARY_DEVICE_ID
+                         else f"{rt.name} {port_label[name]}")
+                self.bemfa.add_device(ids[name], label)
+            self.bemfa.add_device(
+                ids["ble"],
+                names["ble"] if rt.device_id == PRIMARY_DEVICE_ID
+                else f"{rt.name} 蓝牙开关")
+
+        def _port_cmd(rt, port, on):
+            """命令回调**必须捕获 rt**（§3.3 红线）：这里没有请求上下文，
+
+            用 `self.ble` 解析会永远落到 primary —— 一条语音指令就会去开别人家的口。
+            """
+            _LOGGER.info("Bemfa command [%s]: %s %s", rt.device_id, port,
+                         "on" if on else "off")
             try:
                 self.loop.call_soon_threadsafe(
-                    self.ble.cmd_queue.put_nowait,
+                    rt.manager.cmd_queue.put_nowait,
                     ("port", (port, "on" if on else "off"), None))
                 return True
             except Exception as e:
-                _LOGGER.error("Bemfa port cmd failed: %s", e)
+                _LOGGER.error("Bemfa port cmd failed [%s]: %s", rt.device_id, e)
                 return False
 
-        def _ble_cmd(on):
-            _LOGGER.info("Bemfa BLE command: %s", "on" if on else "off")
+        def _ble_cmd(rt, on):
+            """BLE 开关：只能经 supervisor 启停（§3.13），不得直接 cancel/create 任务。"""
+            _LOGGER.info("Bemfa BLE command [%s]: %s", rt.device_id,
+                         "on" if on else "off")
             try:
                 if on:
-                    asyncio.run_coroutine_threadsafe(self.ble.start(), self.loop)
+                    self.loop.call_soon_threadsafe(rt.supervisor.start)
                 else:
-                    asyncio.run_coroutine_threadsafe(self.ble.request_stop(), self.loop)
+                    asyncio.run_coroutine_threadsafe(
+                        rt.supervisor.stop(), self.loop)
                 return True
             except Exception as e:
-                _LOGGER.error("Bemfa BLE cmd failed: %s", e)
+                _LOGGER.error("Bemfa BLE cmd failed [%s]: %s", rt.device_id, e)
                 return False
 
-        self.bemfa.on_command("cuktech_c1", lambda on: _port_cmd("c1", on))
-        self.bemfa.on_command("cuktech_c2", lambda on: _port_cmd("c2", on))
-        self.bemfa.on_command("cuktech_c3", lambda on: _port_cmd("c3", on))
-        self.bemfa.on_command("cuktech_usb_a", lambda on: _port_cmd("a", on))
-        self.bemfa.on_command("cuktech_ble", _ble_cmd)
+        for rt in targets:
+            ids = self._bemfa_entity_ids(rt)
+            for name in ("c1", "c2", "c3", "a"):
+                self.bemfa.on_command(ids[name],
+                                      lambda on, rt=rt, name=name: _port_cmd(rt, name, on))
+            self.bemfa.on_command(ids["ble"],
+                                  lambda on, rt=rt: _ble_cmd(rt, on))
 
         await self.bemfa.start()
 
@@ -2135,6 +2187,7 @@ class Server:
             "config": {
                 "ble": {
                     "mac": cfg.ble.mac,
+                    "name": cfg.ble.name,
                     "token": self._mask(cfg.ble.token),
                     "ble_key": self._mask(cfg.ble.ble_key),
                     "scan_timeout": cfg.ble.scan_timeout,
@@ -2161,6 +2214,17 @@ class Server:
                     "log_level": cfg.server.log_level,
                     "history_retention_days": cfg.server.history_retention_days,
                 },
+                # 设备卡片数据源（§3.12 config.html）：primary 恒在第一位且
+                # `is_primary=True`（前端据此禁用删除按钮）。敏感字段照旧打码。
+                "devices": [{
+                    "device_id": rt.device_id,
+                    "name": rt.name,
+                    "mac": rt.mac,
+                    "token": self._mask(rt.token),
+                    "ble_key": self._mask(rt.spec.ble_key),
+                    "topic_prefix": rt.topics.prefix,
+                    "is_primary": rt.device_id == PRIMARY_DEVICE_ID,
+                } for rt in self.registry],
             },
         })
 
@@ -2203,6 +2267,13 @@ class Server:
                     )
                     existing["server"]["log_level"] = "info"
 
+            # ── 设备列表（§3.10/§3.12）：前端发统一数组，后端决定文件结构 ──
+            devices_payload = config_data.get("devices")
+            if devices_payload is not None:
+                error = self._apply_devices_payload(existing, devices_payload)
+                if error:
+                    return web.json_response({"ok": False, "error": error}, status=400)
+
             # Detect bemfa name changes → set modified flag for topic re-registration
             if "bemfa" in config_data:
                 bemfa_existing = existing.get("bemfa", {})
@@ -2234,6 +2305,121 @@ class Server:
         except Exception as e:
             _LOGGER.error("Config save failed: %s", e)
             return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    #: `devices:` 节允许落盘的字段（与 `DeviceConfig.from_mapping` 对齐）
+    _DEVICE_KEYS = ("id", "name", "mac", "token", "ble_key", "topic_prefix", "bemfa_ble")
+
+    def _apply_devices_payload(self, existing: dict, devices) -> str | None:
+        """把前端的设备数组写回 yaml 结构；返回错误消息（None = 成功）。
+
+        **两种形状都接受**（前端在演进，后端必须两种都吃得住）：
+
+        A) 统一数组：每项带 `is_primary` 标记 —— 存的是"一组设备卡片"，后端决定
+           文件结构（primary → `ble:` 节，其余 → `devices:` 节）；
+        B) 前端当前形状：primary 已在 `config.ble` 里（走通用合并逻辑），
+           `config.devices` 只放附加设备 —— 这里只负责把附加设备落成 `devices:` 节。
+
+        结构约束（§3.10）：primary **永远**展开回 `ble:` 节（老版本工具/脚本仍能读）；
+        primary 不可删除；写盘前用**生产校验规则**验一遍——多设备配错的代价是
+        "控制到错误的充电器"，不能落盘再说。
+        """
+        from config import DeviceConfig, Config as _Cfg, validate_device_specs
+
+        if devices is None:
+            return None                      # 前端没提交设备列表：保持 YAML 原样
+        if not isinstance(devices, list):
+            return "配置错误：设备列表格式非法（应为数组）"
+
+        # ── 形状 A：统一数组（任一项带 `is_primary` 键即为 A 形；前端 B 形从不下发该键）──
+        if any(isinstance(d, dict) and "is_primary" in d for d in devices):
+            primaries = [d for d in devices if isinstance(d, dict) and d.get("is_primary")]
+            if len(primaries) != 1:
+                return "配置错误：必须且只能有一台 primary 设备（primary 不可删除）"
+            primary = primaries[0]
+            ble_section = dict(existing.get("ble") or {})
+            for key in ("mac", "name", "token", "ble_key"):
+                val = primary.get(key)
+                if val is None:
+                    continue
+                if key in ("token", "ble_key") and "****" in str(val):
+                    continue             # 打码值 = 用户没改，保留原值
+                if key == "name" and not str(val).strip():
+                    continue             # 清空名字按 no-op（宁可不变也不误删）
+                ble_section[key] = val
+            if "scan_timeout" in primary:
+                ble_section["scan_timeout"] = primary["scan_timeout"]
+            existing["ble"] = ble_section
+            extras_in = [d for d in devices if not d.get("is_primary")]
+        else:
+            # ── 形状 B：附加设备已在 devices 数组里，primary 在 ble 段 ──
+            extras_in = [d for d in devices if isinstance(d, dict)]
+
+        # ── 附加设备：清洗字段 + 打码/空 token 继承 YAML 里的旧值 ──
+        old_by_id = {}
+        for entry in (existing.get("devices") or []):
+            if isinstance(entry, dict) and entry.get("id"):
+                old_by_id[str(entry["id"])] = entry
+
+        extras = []
+        for raw in extras_in:
+            norm = dict(raw)
+            if not norm.get("id") and norm.get("device_id"):
+                norm["id"] = norm["device_id"]      # 两种键名都收（见 DeviceConfig.from_mapping）
+            entry = {k: norm[k] for k in self._DEVICE_KEYS if norm.get(k) not in (None, "")}
+            dev_id = str(entry.get("id") or "").strip()
+            if dev_id:
+                entry["id"] = dev_id
+                prev = old_by_id.get(dev_id) or {}
+                token = str(entry.get("token") or "")
+                if not token or "****" in token:
+                    # 空/打码 = "没改"：沿用 YAML 里的旧 token（页面拿不到明文，
+                    # 不这样处理就只能逼用户把 token 重填一遍）
+                    if prev.get("token"):
+                        entry["token"] = prev["token"]
+                    else:
+                        entry.pop("token", None)
+                ble_key = str(entry.get("ble_key") or "")
+                if "****" in ble_key:
+                    entry["ble_key"] = prev.get("ble_key", "")
+                    if not entry["ble_key"]:
+                        entry.pop("ble_key")
+            extras.append(entry)
+
+        # ── 必填项（与 `_parse_devices` 对齐）：缺了就明确报错，而不是写个半残 YAML ──
+        for entry in extras:
+            dev_id = entry.get("id") or ""
+            if not dev_id:
+                return "配置错误：附加设备缺少 id（id 即 MQTT 前缀后缀）"
+            if not str(entry.get("mac") or "").strip():
+                return f"配置错误：设备 `{dev_id}` 缺少 mac"
+            if not str(entry.get("token") or "").strip():
+                return f"配置错误：设备 `{dev_id}` 缺少 token（新增设备必须填 token）"
+
+        # ── 用生产校验规则验一遍（id 规则 / MAC 全局唯一 / 前缀 / token hex）──
+        try:
+            ble_probe = dict(self.config.ble.__dict__)
+            ble_probe.update({k: v for k, v in (existing.get("ble") or {}).items()
+                              if k in ble_probe})
+            probe = _Cfg(
+                ble=type(self.config.ble)(**ble_probe),
+                mqtt=self.config.mqtt,
+                server=self.config.server,
+                bemfa=self.config.bemfa,
+                devices=[DeviceConfig.from_mapping(d, default_scan_timeout=
+                                                   self.config.ble.scan_timeout)
+                         for d in extras],
+            )
+            validate_device_specs(probe)
+        except ValueError as e:
+            return str(e)
+        except Exception as e:      # 形如 token 不是 hex 之类
+            return f"配置错误：{e}"
+
+        if extras:
+            existing["devices"] = extras
+        else:
+            existing.pop("devices", None)    # 删光附加设备后不留空节残留
+        return None
 
     async def _delayed_restart(self):
         """Delay 1 second then restart."""

@@ -611,6 +611,41 @@ a.tool-btn:hover { color: var(--text); }
     color: var(--text);
 }
 
+/* ── 设备切换器（多设备，§3.12）──
+   位置：吸顶栏下方一条 pill tabs。视觉直接沿用上面 .segmented/.time-btn 那套令牌
+   （--seg-track / --seg-border / --seg-thumb），所以米家暗/浅双主题都自动跟着走，
+   不需要在这里再写一遍两套颜色。
+   单设备时整条 display:none（由 device-store.js 置 hidden）：布局上不占位，
+   与改造前的视觉完全一致。 */
+.device-switcher { position: relative; background: var(--bg); }
+.device-switcher[hidden] { display: none; }
+.device-switcher .wrap {
+    display: flex; align-items: center;
+    padding-top: 2px; padding-bottom: 10px;
+}
+.device-tabs {
+    display: inline-flex; align-items: center; gap: 2px;
+    padding: 3px; border-radius: var(--r-ctl);
+    background: var(--seg-track); border: 1px solid var(--seg-border);
+    max-width: 100%; overflow-x: auto;   /* 设备多了一行放不下时横向滚动 */
+    scrollbar-width: none;
+}
+.device-tabs::-webkit-scrollbar { display: none; }
+/* pill 自己画选中底色：这里没有 .seg-thumb 滑块（切换器的 DOM 由 JS 整块重建，
+   量位置的滑块在重建瞬间必然错位），视觉上与滑块式分段控件保持一致 */
+.device-pill { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.device-pill.active {
+    background: var(--seg-thumb);
+    box-shadow: var(--seg-thumb-shadow);
+    color: var(--text); font-weight: 600;
+}
+/* 在线小圆点：全屋哪台在线一眼可见（颜色 + 不透明度双重编码，不靠色差单独承担） */
+.device-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex: none;
+    background: var(--text-dim); opacity: 0.45;
+}
+.device-dot.is-on { background: var(--success); opacity: 1; }
+
 /* ── 下拉 ── */
 select, .mini-select {
     height: 32px;

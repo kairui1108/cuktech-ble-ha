@@ -135,7 +135,7 @@ function buildSandbox() {
         clearTimeout,
         setInterval: () => 0,      // 页面上的轮询不需要在测试里真的跑
         clearInterval: () => {},
-        Promise, JSON, Math, Date, RegExp, String, Number, Boolean, Object, Array,
+        Promise, JSON, Math, Date, URL, RegExp, String, Number, Boolean, Object, Array,
         isNaN, parseFloat, parseInt, Error,
         fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true, limits: {} }) }),
         EventSource: function () { this.close = function () {}; },
@@ -164,7 +164,7 @@ function buildSandbox() {
     vm.createContext(sandbox);
     // 真实 i18n 运行时：文案与 t() 行为和页面一致（phone.js 加载期就会渲染一次）
     for (const f of ['locales/zh-CN.js', 'locales/en.js', 'i18n.js',
-                     'charge_history.js', 'charge_limit.js', 'phone.js']) {
+                     'device-store.js', 'charge_history.js', 'charge_limit.js', 'phone.js']) {
         vm.runInContext(fs.readFileSync(path.join(STATIC, f), 'utf8'), sandbox, { filename: f });
     }
     sandbox.__els = els;

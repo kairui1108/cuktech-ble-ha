@@ -16,6 +16,13 @@
     'use strict';
 
     var API_BASE = global.location ? global.location.origin : '';
+
+    // 请求出口：多设备时按当前设备取数（device-store.js 负责拼 ?device=）。
+    // 拿不到它就退回裸 fetch——单设备语义与改造前一致。
+    function apiFetch(path, opts) {
+        if (global.DeviceStore && global.DeviceStore.api) return global.DeviceStore.api(path, opts);
+        return fetch(API_BASE + path, opts);
+    }
     var PORT_KEYS = ['c1', 'c2', 'c3', 'a'];
     var MODE_ONCE = 'once';
     var MODE_ALWAYS = 'always';
@@ -47,7 +54,7 @@
     var modesPending = {};
 
     function fetchPortModes() {
-        return fetch(API_BASE + '/api/port-modes')
+        return apiFetch('/api/port-modes')
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (data && data.ok) {
@@ -82,7 +89,7 @@
         var body = { port: port };
         body[field] = !!value;
         if (field === 'full_off' && value && mode) body.mode = mode;
-        return fetch(API_BASE + '/api/port-modes', {
+        return apiFetch('/api/port-modes', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
@@ -264,7 +271,7 @@
     }
 
     function fetchLimits() {
-        return fetch(API_BASE + '/api/charge-limits')
+        return apiFetch('/api/charge-limits')
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (data && data.ok && data.limits) {
@@ -288,7 +295,7 @@
         pending[port] = true;
         var body = { port: port, wh: wh };
         if (mode) body.mode = mode;
-        return fetch(API_BASE + '/api/charge-limits', {
+        return apiFetch('/api/charge-limits', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
@@ -523,4 +530,16 @@
 
     // 开关点击处理器挂在全局：卡面 HTML 是字符串拼出来的 onclick，两页共用同一实现
     global.togglePortMode = togglePortMode;
+
+    // 换设备后限额/端口模式都是另一台设备的数据：整份重新拉一次。
+    // 拉完通知页面重画（两页各自的 updateChargeLimitUI），否则卡面会继续显示
+    // 上一台设备的阈值与进度——那是最容易被误当成"设置丢了"的一种串台。
+    if (global.addEventListener) {
+        global.addEventListener('device-changed', function () {
+            fetchPortModes();
+            fetchLimits().then(function () {
+                if (typeof global.updateChargeLimitUI === 'function') global.updateChargeLimitUI();
+            });
+        });
+    }
 })(typeof window !== 'undefined' ? window : this);

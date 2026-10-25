@@ -189,6 +189,9 @@ class BemfaConfig:
     name_a: str = "USB-A开关"
     name_ble: str = "蓝牙开关"
     modified: bool = False  # set true when names change, triggers topic delete+recreate on next start
+    # 语音实体给哪些设备建模（§3.11）：缺省只给 primary，避免 N 台设备时实体爆炸。
+    # 写成 ["*"] 或包含某 device_id 才给那台设备建 `{id}_c1` 这类实体。
+    allowed_devices: list = field(default_factory=lambda: [PRIMARY_DEVICE_ID])
 
 
 @dataclass
@@ -319,6 +322,7 @@ def load_config() -> Config:
         name_a=bemfa_cfg.get("name_a", "USB-A开关"),
         name_ble=bemfa_cfg.get("name_ble", "蓝牙开关"),
         modified=bemfa_cfg.get("modified", False),
+        allowed_devices=list(bemfa_cfg.get("allowed_devices") or [PRIMARY_DEVICE_ID]),
     )
 
     devices = _parse_devices(ycfg, ble, mqtt)

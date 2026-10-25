@@ -28,6 +28,20 @@ server:
   log_level: "info"               # debug, info, warning, error
   history_retention_days: 2       # 保留最近 N 天的历史数据
   history_db_path: ""             # SQLite 数据库文件路径
+  startup_stagger_sec: 2.0        # 多设备启动错峰（秒）：第 N 台等 N×该值。单设备恒 0 延迟
+
+# ── 附加设备（可选）───────────────────────────────────────────────────────────
+# 不写这一节 = 单设备，行为与以前 100% 一致（含 MQTT 主题、HTTP 接口、SSE）。
+# 写了以后每台设备有独立的状态/会话/限额/历史，互不干扰；
+# `ble:` 节永远是 primary（device_id 固定为 default，不可删除）。
+#
+# devices:
+#   - id: desk                     # 必填。topic 后缀兼设备标识（小写字母/数字/_-）
+#     name: "书桌充电器"            # 可选，界面显示名；缺省用 id
+#     mac: "AA:BB:CC:DD:EE:02"     # 必填，全局唯一（跨节）
+#     token: "00112233..."         # 必填，32 位 hex（与 ble.token 同格式）
+#     ble_key: ""                  # 可选
+#     topic_prefix: ""             # 可选。空 = 自动 "{mqtt.topic_prefix}/{id}"
 
 bemfa:
   enabled: false   # 是否启用巴法云，接入小爱同学/小度音箱
@@ -37,3 +51,6 @@ bemfa:
   name_c3: "C口3开关"
   name_a: "USB-A开关"
   name_ble: "蓝牙开关"
+  # 语音实体给哪些设备建模（设备 id 列表）：缺省只有 primary，避免设备多时实体爆炸。
+  # 写成 ["*"] 表示所有设备；非 primary 的实体 id 会加 `{device_id}_` 前缀。
+  allowed_devices: ["default"]

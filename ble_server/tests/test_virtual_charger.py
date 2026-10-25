@@ -275,3 +275,31 @@ class TestFleetEndToEnd:
         finally:
             s.sse.remove_client(queue)
         assert sorted(f["device"] for f in frames) == ["bed", "default", "desk"]
+
+    async def test_single_device_rebuild_does_not_disturb_others(self, virtual_fleet):
+        """单台断线/卡死只重建那一台：其他设备的任务/状态/读数必须原封不动。
+
+        这是 P3 验收里"单台断线不影响其他"的软件面证据（真机面由 P5 canary 覆盖）。
+        """
+        s = virtual_fleet.server
+        desk = s.registry.get("desk")
+        others = [rt for rt in s.registry if rt.device_id != "desk"]
+        before = {rt.device_id: (rt.manager, rt.task, rt.manager.state.ports[1].voltage)
+                  for rt in others}
+
+        await s.restart_device(desk)
+        await asyncio.wait_for(desk.supervisor._rebuild_task, timeout=10.0)
+
+        for rt in others:
+            manager, task, voltage = before[rt.device_id]
+            assert rt.manager is manager, f"{rt.device_id} 的 manager 被顺手重建了"
+            assert rt.task is task, f"{rt.device_id} 的任务被停掉了"
+            assert rt.supervisor.is_running
+            assert rt.manager.state.ports[1].voltage == voltage
+
+        # 被重建的那台要能自己回来（新 manager 走同一条 controller_factory 路径）
+        for _ in range(400):
+            if desk.manager.state.ports[1].voltage > 0:
+                break
+            await asyncio.sleep(0.05)
+        assert desk.manager.state.ports[1].voltage == 6.0

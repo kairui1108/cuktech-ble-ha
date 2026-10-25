@@ -147,6 +147,10 @@ def make_config_yaml(*, ble: dict | None = None, devices: list[dict] | None = No
 
 
 def _yaml_scalar(value) -> str:
+    if isinstance(value, (list, tuple)):
+        # 列表走 flow 风格：`allowed_devices: [default, desk]`。渲染成带引号的字符串
+        # 会让测试脚手架"看起来配了"、实际解析成一段文本（比不写更坏）。
+        return "[" + ", ".join(_yaml_scalar(v) for v in value) + "]"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):

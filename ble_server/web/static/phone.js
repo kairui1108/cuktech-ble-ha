@@ -63,20 +63,74 @@ const API_PORT_MAP = { 1: 'c1', 2: 'c2', 3: 'c3', 4: 'a' };
 let lastLocalChange = 0;
 function markLocalChange() { lastLocalChange = Date.now(); }
 function isRecentLocal() { return Date.now() - lastLocalChange < 3000; }
-let state = {
-    scene: 1,
-    screenTime: 1,
-    bleConnected: false,
-    ports: { c1:{v:0,a:0,w:0,protocol:'idle',enabled:true}, c2:{v:0,a:0,w:0,protocol:'idle',enabled:true}, c3:{v:0,a:0,w:0,protocol:'idle',enabled:true}, a:{v:0,a:0,w:0,protocol:'idle',enabled:true} },
-    settings: {},
-    firmware: '',
-    trickleEnabled: false,
-    history: { c1: [], c2: [], c3: [], a: [] },
-    protocolSwitches: {},
-    protocolExtend: 0,
-};
-// Real-time chart data buffer: {ts, c1, c2, c3, a}[]
-let phoneChartData = [];
+
+// 每设备一份的状态：`state` 是"当前设备那一桶"的读写视图（见 device-store.js）。
+// 形状与改造前那个单设备对象完全一致，所以下面 1000 多行渲染代码一行都不用改——
+// 切换设备 = 指针挪到另一桶 + 把渲染函数重放一遍，DOM 骨架不重建。
+const state = DeviceStore.init({
+    defaults: phoneDeviceDefaults,
+    applyPorts: applyPortsToBucket,
+    replay: replayDeviceView,
+    switcherId: 'deviceSwitcher'
+});
+
+// 手机端的请求出口：自动带 ?device=<当前设备>
+const api = DeviceStore.api;
+
+function phoneDeviceDefaults() {
+    return {
+        scene: 1,
+        screenTime: 1,
+        bleConnected: false,
+        connected: false,
+        authenticated: false,
+        ports: { c1:{v:0,a:0,w:0,protocol:'idle',enabled:true}, c2:{v:0,a:0,w:0,protocol:'idle',enabled:true}, c3:{v:0,a:0,w:0,protocol:'idle',enabled:true}, a:{v:0,a:0,w:0,protocol:'idle',enabled:true} },
+        settings: {},
+        firmware: '',
+        trickleEnabled: false,
+        protocolSwitches: {},
+        protocolExtend: 0,
+        // Real-time chart data buffer: {ts, c1, c2, c3, a}[]
+        chartData: [],
+        // 延迟关断（PIID 9~12）与限额模式偏好：都是"这台设备"的设置，各自一份
+        delayMinutes: { c1: 0, c2: 0, c3: 0, a: 0 },
+        limitModeSaved: {}
+    };
+}
+
+// 端口落桶：把 API 形状（1..4 + voltage/current/power）摊成手机页的形状（c1..a + v/a/w）。
+// 为什么不与桌面页共用一份实现：两页的端口形状本来就不一样，强行统一等于把
+// 桌面页也改成手机形状，改动面更大且没有收益。
+function applyPortsToBucket(b, msg) {
+    const apply = (key, port) => {
+        if (!key || !b.ports[key]) return;
+        b.ports[key].v = port.voltage || 0;
+        b.ports[key].a = port.current || 0;
+        b.ports[key].w = port.power || 0;
+        b.ports[key].protocol = port.protocol || 'idle';
+        b.ports[key].status_raw = port.status_raw;
+        // 本地刚点过开关时不跟随服务端的旧值（与渲染路径同一套保护）
+        if (!isRecentLocal()) b.ports[key].enabled = port.enabled !== false;
+    };
+    if (msg.type === 'port_update') {
+        apply(API_PORT_MAP[msg.port_id], msg.data || {});
+        return;
+    }
+    if (msg.ports) {
+        for (const [id, port] of Object.entries(msg.ports)) apply(API_PORT_MAP[id], port);
+    }
+}
+
+// 换设备时重放（§3.12 重放清单的手机端部分）：先按新桶重画，再拉本设备的数据。
+function replayDeviceView() {
+    updateConnectionUI();
+    renderAll();
+    // 实时曲线属于上一台设备：清空后由 2s 定时器重新累积，否则曲线会串台
+    state.chartData = [];
+    renderCharts();
+    fetchStatus();
+}
+
 const PHONE_CHART_MAX = 150;   // 显示最近 150 个点 ≈ 5 分钟（2s 间隔）
 const PHONE_CHART_BUF = 300;   // 缓冲区保留 300 个点 ≈ 10 分钟
 function phoneSnapshot() {
@@ -99,10 +153,16 @@ function phoneBuildTimeLabels(buf, offset, count) {
 
 // ── API Fetch ──
 async function fetchStatus() {
+    // 请求发出时锁定的设备：慢响应回来时用户可能已经切走了，
+    // 那份数据属于上一台，写进当前设备的桶里就是串台。
+    const wanted = DeviceStore.current();
     try {
-        const res = await fetch(`${API_BASE}/api/status`);
+        const res = await api(`/api/status`);
         const data = await res.json();
-        state.bleConnected = data.connected && data.authenticated;
+        if (DeviceStore.current() !== wanted) return;
+        state.connected = !!data.connected;
+        state.authenticated = !!data.authenticated;
+        state.bleConnected = !!(data.connected && data.authenticated);
         state.firmware = data.firmware_version || '';
         
         // Map API ports (1,2,3,4) to state format (c1,c2,c3,a)
@@ -132,7 +192,7 @@ async function fetchStatus() {
             if (!isRecentLocal()) {
                 for (const key of PORT_KEYS) {
                     const v = data.settings[String(DELAY_PIIDS[key])];
-                    if (v !== undefined) delayMinutes[key] = parseInt(v) || 0;
+                    if (v !== undefined) state.delayMinutes[key] = parseInt(v) || 0;
                 }
             }
         }
@@ -188,11 +248,11 @@ async function toggleConnection() {
     if (enable) toast(I18N.t('phone.connectToast'), true);
     markLocalChange();
     try {
-        await fetch(`${API_BASE}/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: enable }) });
+        await api(`/api/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: enable }) });
         let start = Date.now();
         while (Date.now() - start < 10000) {
             await new Promise(r => setTimeout(r, 500));
-            const res = await fetch(`${API_BASE}/api/status`);
+            const res = await api(`/api/status`);
             const data = await res.json();
             if ((data.connected && data.authenticated) === enable) break;
         }
@@ -350,20 +410,20 @@ function renderCharts() {
     if (combinedCanvas) {
         // 计算动态峰值（使用实际数据，不计填充的零值）
         let currentPeak = 0;
-        for (const e of phoneChartData) {
+        for (const e of state.chartData) {
             for (const key of PORT_KEYS) {
                 if (e[key] > currentPeak) currentPeak = e[key];
             }
         }
         const peakPower = currentPeak > 0 ? currentPeak * 1.18 : 60;
 
-        // 从 phoneChartData 构建右对齐填充数据 + 时间标签
+        // 从 state.chartData 构建右对齐填充数据 + 时间标签
         function buildChartData() {
-            const showBuf = phoneChartData.slice(-PHONE_CHART_MAX);
+            const showBuf = state.chartData.slice(-PHONE_CHART_MAX);
             const padding = PHONE_CHART_MAX - showBuf.length;
             const padLabels = new Array(padding).fill('--:--:--');
             const padZeros = new Array(padding).fill(0);
-            const realLabels = phoneBuildTimeLabels(phoneChartData, Math.max(0, phoneChartData.length - showBuf.length), showBuf.length);
+            const realLabels = phoneBuildTimeLabels(state.chartData, Math.max(0, state.chartData.length - showBuf.length), showBuf.length);
             const labels = [...padLabels, ...realLabels];
             const datasets = PORT_KEYS.map(key => ({
                 data: [...padZeros, ...showBuf.map(e => e[key])]
@@ -459,7 +519,7 @@ async function phoneToggleProtocol(btn) {
     const wasOn = !!(state.protocolSwitches[port] && state.protocolSwitches[port][proto]);
     const action = wasOn ? 'off' : 'on';
     try {
-        const res = await fetch(`${API_BASE}/api/protocol`, {
+        const res = await api(`/api/protocol`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ port, protocol: proto, action })
         });
@@ -710,8 +770,8 @@ function onLimitPointerUp(e) {
 }
 
 // 用户在没有能量限额时显式存过"限额模式"的端口：模式下拉此时以它为准
-// （否则恒被"充满即停"的模式盖掉，见 updateChargeLimitUI 的 saved）
-const limitModeSaved = {};
+// （否则恒被"充满即停"的模式盖掉，见 updateChargeLimitUI 的 saved）。
+// 每台设备各存一份（state.limitModeSaved），换设备不会把偏好带过去。
 function updateChargeLimitUI() {
     if (typeof ChargeLimit === 'undefined') return;
     const CL = ChargeLimit;
@@ -735,7 +795,7 @@ function updateChargeLimitUI() {
             // 模式下拉的"真值"：有能量限额时是限额的模式；没有限额时显示"自动"的模式
             // ——否则用长期有效开了自动、刷新后又变回仅一次（用户看到的就是这个 bug）。
             // 用户显式存过限额模式时以它为准：否则开了自动后刚存好的限额模式会被弹回。
-            const saved = (e.wh > 0 || limitModeSaved[key]
+            const saved = (e.wh > 0 || state.limitModeSaved[key]
                            ? e.mode
                            : (CL.fullOffMode(key) || e.mode)) || 'once';
             if (modeEl.dataset.touched) {
@@ -859,7 +919,7 @@ async function applyChargeLimit(key) {
             // 否则下一次 5s 轮询立刻把用户刚选的模式打回去。
             if (!res || res.ok === undefined) return;
             modeEl.dataset.touched = '';
-            if (res.ok) limitModeSaved[key] = true;
+            if (res.ok) state.limitModeSaved[key] = true;
             toast(res.ok ? I18N.t('chargeLimit.modeSaved')
                          : I18N.t('chargeLimit.saveFailed', { msg: res.error }));
             updateChargeLimitUI();
@@ -891,7 +951,7 @@ async function clearChargeLimit(key) {
 }
 
 // ── Delay Off ──
-const delayMinutes = { c1: 0, c2: 0, c3: 0, a: 0 };
+// 延迟关断的当前值住在 state.delayMinutes 里（每设备一份，见 phoneDeviceDefaults）
 const DELAY_PIIDS = { c1: 9, c2: 10, c3: 11, a: 12 };
 function renderDelayOff() {
     const grid = document.getElementById('delayOffGrid');
@@ -901,7 +961,7 @@ function renderDelayOff() {
     if (activeKeys.length === 0) { grid.innerHTML = `<div style="font-size:13px;color:var(--text-dim);text-align:center;padding:12px;">${I18N.t('phone.noActivePorts')}</div>`; return; }
     let html = '';
     activeKeys.forEach((key, idx) => {
-        const min = delayMinutes[key] || 0;
+        const min = state.delayMinutes[key] || 0;
         const dotColor = PORT_COLORS[key];
         const sliderId = `delaySlider_${key}`;
         html += `<div>
@@ -924,7 +984,7 @@ function renderDelayOff() {
         if (slider) {
             slider.oninput = function() {
                 const v = parseInt(this.value);
-                delayMinutes[key] = v;
+                state.delayMinutes[key] = v;
                 const valEl = document.getElementById('delayVal_' + key);
                 if (valEl) {
                     valEl.textContent = v > 0 ? I18N.t('common.minutes', { count: v }) : I18N.t('common.notSet');
@@ -935,7 +995,7 @@ function renderDelayOff() {
             slider.onchange = async function() {
                 const v = parseInt(this.value);
                 markLocalChange();
-                try { await fetch(`${API_BASE}/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid: DELAY_PIIDS[key], value: v }) }); } catch(e) {}
+                try { await api(`/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid: DELAY_PIIDS[key], value: v }) }); } catch(e) {}
             };
         }
     }
@@ -947,7 +1007,7 @@ async function setScene(mode) {
     markLocalChange();
     renderAll();
     try {
-        await fetch(`${API_BASE}/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid: SCENE_PIID, value: mode }) });
+        await api(`/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid: SCENE_PIID, value: mode }) });
     } catch(e) { console.error('setScene error:', e); }
 }
 
@@ -957,14 +1017,14 @@ async function togglePort(key) {
     markLocalChange();
     renderAll();
     try {
-        await fetch(`${API_BASE}/api/port`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port: key, action: on ? 'on' : 'off' }) });
+        await api(`/api/port`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port: key, action: on ? 'on' : 'off' }) });
     } catch(e) { console.error(e); }
 }
 
 async function toggleTrickle() {
     state.trickleEnabled = !state.trickleEnabled;
     markLocalChange();
-    try { await fetch(`${API_BASE}/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid: 15, value: state.trickleEnabled ? 1 : 0 }) }); } catch(e) {}
+    try { await api(`/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid: 15, value: state.trickleEnabled ? 1 : 0 }) }); } catch(e) {}
 }
 
 async function cycleScreenTime() {
@@ -973,7 +1033,7 @@ async function cycleScreenTime() {
     document.getElementById('screenTimeVal').innerHTML =
         screenTimeLabel(state.screenTime) + ' <img src="static/plugin_imgs/main_charger_dark_icon_more.png" alt="">';
     markLocalChange();
-    try { await fetch(`${API_BASE}/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid: 6, value: state.screenTime }) }); } catch(e) {}
+    try { await api(`/api/set`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ piid: 6, value: state.screenTime }) }); } catch(e) {}
 }
 
 // ── Top-view fade on scroll ──
@@ -1056,9 +1116,9 @@ function phonePushData() {
     for (const key of PORT_KEYS) {
         if (state.bleConnected && state.ports[key].enabled && state.ports[key].w > 0) hasData = true;
     }
-    if (phoneChartData.length > 0 || hasData) {
-        phoneChartData.push(phoneSnapshot());
-        if (phoneChartData.length > PHONE_CHART_BUF) phoneChartData.shift();
+    if (state.chartData.length > 0 || hasData) {
+        state.chartData.push(phoneSnapshot());
+        if (state.chartData.length > PHONE_CHART_BUF) state.chartData.shift();
     }
 }
 
@@ -1101,11 +1161,15 @@ if (phoneInitFailed.length) {
 }
 // 安全兜底：每 30s 轮询 /api/status 校正因 SSE 队列丢事件导致的连接状态偏差
 setInterval(async () => {
+    const wanted = DeviceStore.current();
     try {
-        const res = await fetch(`${API_BASE}/api/status`);
+        const res = await api(`/api/status`);
         const data = await res.json();
+        if (DeviceStore.current() !== wanted) return;
         const realConn = data.connected && data.authenticated;
         if (realConn !== state.bleConnected) {
+            state.connected = !!data.connected;
+            state.authenticated = !!data.authenticated;
             state.bleConnected = realConn;
             updateConnectionUI();
             if (realConn && data.ports) {
@@ -1139,6 +1203,9 @@ function initPhoneSSE() {
     evtSource.onmessage = (e) => {
         try {
             const msg = JSON.parse(e.data);
+            // 多设备分发（§3.12）：事件先按 device 落进各自的桶；非当前设备到此
+            // 为止——只留快照，不动 DOM。缺 device 字段按 primary 处理。
+            if (!DeviceStore.dispatch(msg)) return;
             switch (msg.type) {
                 case 'init':
                     applyFullStatus(msg);
@@ -1147,7 +1214,9 @@ function initPhoneSSE() {
                     applyPortUpdate(msg.port_id, msg.data);
                     break;
                 case 'status':
-                    state.bleConnected = msg.connected && msg.authenticated;
+                    state.connected = !!msg.connected;
+                    state.authenticated = !!msg.authenticated;
+                    state.bleConnected = !!(msg.connected && msg.authenticated);
                     if (msg.firmware_version) state.firmware = msg.firmware_version;
                     updateConnectionUI();
                     if (!state.bleConnected) {
@@ -1209,7 +1278,9 @@ window.addEventListener('pageshow', () => {
 });
 
 function applyFullStatus(data) {
-    state.bleConnected = data.connected && data.authenticated;
+    state.connected = !!data.connected;
+    state.authenticated = !!data.authenticated;
+    state.bleConnected = !!(data.connected && data.authenticated);
     state.firmware = data.firmware_version || '';
     if (data.ports) {
         for (const [id, port] of Object.entries(data.ports)) {
@@ -1264,7 +1335,7 @@ function applySettingsUpdate(settings) {
     if (!isRecentLocal()) {
         for (const key of PORT_KEYS) {
             const v = settings[String(DELAY_PIIDS[key])];
-            if (v !== undefined) delayMinutes[key] = parseInt(v) || 0;
+            if (v !== undefined) state.delayMinutes[key] = parseInt(v) || 0;
         }
     }
     renderAll();

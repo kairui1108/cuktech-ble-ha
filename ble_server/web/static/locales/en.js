@@ -255,7 +255,6 @@
         // ── Config page ──
         config: {
             title: 'System Config',
-            bleDevice: 'BLE Device',
             xiaomiAuto: 'Get from Xiaomi Cloud',
             mac: 'MAC Address',
             macHint: 'Charger BLE MAC address',
@@ -329,7 +328,33 @@
             placeholderC2: 'USB-C 2 switch',
             placeholderC3: 'USB-C 3 switch',
             placeholderA: 'USB-A switch',
-            placeholderBle: 'BLE switch'
+            placeholderBle: 'BLE switch',
+
+            // ── Multi-device management (device card list) ──
+            devicesSection: 'Chargers',
+            devicesHint: 'One host can drive several chargers at once; changes apply after a restart',
+            addDevice: 'Add charger',
+            editDevice: 'Edit',
+            removeDevice: 'Remove',
+            primaryTag: 'Primary',
+            primaryUndeletable: 'The primary charger comes from the ble: section of the config file and cannot be removed',
+            deviceName: 'Name',
+            deviceNameHint: 'Shown in the UI; leave empty to use the device ID',
+            deviceId: 'Device ID',
+            deviceIdHint: 'Used as the MQTT topic suffix; lowercase letters/digits/_- and must not start with a symbol',
+            topicAuto: 'auto',
+            topicAutoHint: 'Leave empty to use "server prefix/device id"',
+            confirmRemoveDevice: 'Remove charger "{{name}}"? It takes effect after saving and restarting.',
+            invalidDeviceId: '"{{name}}" has an invalid device ID: lowercase letters, digits, _ and - only, and it must start with a letter or digit',
+            needMacToken: '"{{name}}" is missing a MAC or token',
+            deviceAdded: 'Charger added — fill in the MAC / token, then save',
+            deviceTarget: 'Write into',
+            deviceTargetNew: 'New charger'
+        },
+
+        // ── Device switcher（多设备共用，index.html / phone.html）──
+        device: {
+            switcher: 'Switch device'
         },
 
         // ── Device info (HA iframe) ──

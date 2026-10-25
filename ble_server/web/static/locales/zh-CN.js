@@ -255,7 +255,6 @@
         // ── Config page ──
         config: {
             title: '系统配置',
-            bleDevice: 'BLE 设备',
             xiaomiAuto: '小米云自动获取',
             mac: 'MAC 地址',
             macHint: '充电器蓝牙 MAC 地址',
@@ -329,7 +328,33 @@
             placeholderC2: 'C口2开关',
             placeholderC3: 'C口3开关',
             placeholderA: 'USB-A开关',
-            placeholderBle: '蓝牙开关'
+            placeholderBle: '蓝牙开关',
+
+            // ── 多设备管理（设备卡片列表）──
+            devicesSection: '充电器',
+            devicesHint: '一台主机可同时连接多台充电器；保存后需重启生效',
+            addDevice: '添加充电器',
+            editDevice: '编辑',
+            removeDevice: '删除',
+            primaryTag: '主设备',
+            primaryUndeletable: '主设备是配置文件 ble: 节里的那台，不能删除',
+            deviceName: '名称',
+            deviceNameHint: '页面上显示的设备名，留空则用设备 ID',
+            deviceId: '设备 ID',
+            deviceIdHint: '用作 MQTT 主题后缀，小写字母/数字/_- 且不能以符号开头',
+            topicAuto: '自动',
+            topicAutoHint: '留空则自动使用「服务器前缀/设备 ID」',
+            confirmRemoveDevice: '删除充电器「{{name}}」？保存并重启后生效。',
+            invalidDeviceId: '「{{name}}」的设备 ID 非法：只允许小写字母、数字、_ 和 -，且以字母或数字开头',
+            needMacToken: '「{{name}}」缺少 MAC 或 Token',
+            deviceAdded: '已添加一台充电器，填好 MAC / Token 后保存',
+            deviceTarget: '写入目标设备',
+            deviceTargetNew: '新建一台充电器'
+        },
+
+        // ── Device switcher（多设备共用，index.html / phone.html）──
+        device: {
+            switcher: '设备切换'
         },
 
         // ── Device info (HA iframe) ──

@@ -71,6 +71,7 @@ function buildSandbox() {
         JSON,
         Math,
         Date,
+        URL,
         RegExp,
         String,
         Number,
@@ -159,10 +160,11 @@ function extractInlineScripts(htmlPath) {
     return scripts.join('\n');
 }
 
-check('index.html chain: chart-config + chart-loader + charge_history + charge_limit + app', () => {
+check('index.html chain: chart-config + chart-loader + device-store + charge_history + charge_limit + app', () => {
     const parts = [
         fs.readFileSync(path.join(STATIC, 'chart-config.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'chart-loader.js'), 'utf8'),
+        fs.readFileSync(path.join(STATIC, 'device-store.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'charge_history.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'charge_limit.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'app.js'), 'utf8'),
@@ -171,8 +173,9 @@ check('index.html chain: chart-config + chart-loader + charge_history + charge_l
     flipLocales(ctx); // exercises app.js rerenderDynamic + charge_history refresh
 });
 
-check('phone.html chain: charge_history + charge_limit + phone.js', () => {
+check('phone.html chain: device-store + charge_history + charge_limit + phone.js', () => {
     const parts = [
+        fs.readFileSync(path.join(STATIC, 'device-store.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'charge_history.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'charge_limit.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'phone.js'), 'utf8'),

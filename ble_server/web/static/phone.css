@@ -61,6 +61,51 @@ body.light {
 .nav-more { width: 28px; height: 28px; cursor: pointer; padding: 4px; display: none; }
 .nav-more img { width: 100%; height: 100%; opacity: 0.5; }
 
+/* ── 设备切换器（多设备，§3.12）──
+   贴在吸顶导航下方的一条 pill tabs，设备多到一行放不下时横向滚动。
+   单设备时整条 display:none（device-store.js 置 hidden）——固定定位 + 不占位，
+   因此对现有滚动视差布局零影响；多设备时由 body.has-device-switcher 把
+   .phone 的顶部留白与 .top-view 的黏顶点各下移一条的高度（48 + 42 = 90px），
+   否则设备图会从切换器底下穿过去。 */
+.device-switcher {
+    position: fixed; top: 48px; left: 0; right: 0; z-index: 101;
+    max-width: var(--page-width); margin: 0 auto;
+    padding: 6px 12px; background: var(--bg);
+    overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+.device-switcher::-webkit-scrollbar { display: none; }
+.device-switcher[hidden] { display: none; }
+.device-switcher .wrap {
+    display: flex; align-items: center; gap: 2px; width: max-content;
+    padding: 3px; border-radius: 10px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.10);
+}
+body.light .device-switcher .wrap {
+    background: rgba(0,0,0,0.05); border-color: rgba(0,0,0,0.08);
+}
+.device-pill {
+    display: inline-flex; align-items: center; gap: 6px; flex: none;
+    height: 28px; padding: 0 12px; border: none; border-radius: 7px;
+    background: transparent; color: var(--text-dim);
+    font-size: 13px; white-space: nowrap; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+    transition: color 0.2s ease, background 0.2s ease;
+}
+.device-pill.active {
+    background: rgba(255,255,255,0.16); color: var(--text); font-weight: 600;
+}
+body.light .device-pill.active { background: #fff; box-shadow: 0 1px 2px rgba(16,24,40,0.16); }
+/* 在线小圆点：颜色 + 不透明度双重编码（不靠色差单独区分在线/离线） */
+.device-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex: none;
+    background: var(--text-dim); opacity: 0.45;
+}
+.device-dot.is-on { background: #34C759; opacity: 1; }
+body.has-device-switcher .phone { padding-top: 90px; }
+body.has-device-switcher .top-view { top: 90px; }
+
 /* ── Top View (sticky) ── */
 .top-view {
     width: 100%; height: 304px; position: sticky; top: 48px;
