@@ -67,9 +67,11 @@ function buildSandbox() {
         const el = {
             id: id || '', value: '', checked: false, textContent: '', innerHTML: '', hidden: false,
             style: { setProperty() {}, getPropertyValue() { return ''; }, removeProperty() {}, cssText: '' },
-            dataset: {}, className: '', children: [], options: [],
+            dataset: {}, className: '', children: [], options: [], attrs: {},
             classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
-            setAttribute() {}, getAttribute() { return null; }, appendChild() {}, remove() {},
+            setAttribute(k, v) { this.attrs[k] = String(v); },
+            getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
+            appendChild() {}, remove() {},
             addEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; },
             closest() { return null; }, focus() {}, blur() {},
         };
@@ -283,6 +285,79 @@ setTimeout(async () => {
         const before = ctx.__posts.length;
         await peek(ctx, 'saveConfig()');
         eq(ctx.__posts.length, before, '同一台设备的同一个口重复 → 不提交');
+        peek(ctx, 'seedBemfaEntities({})');
+    }
+
+    console.log('\n-- 语音开关区：默认折叠，点开才编辑 --');
+    {
+        // 默认收起：5 个开关就要 400+ 像素，常驻展开会把 MQTT/服务器挤到看不见的地方
+        peek(ctx, 'setBemfaOpen(false)');
+        eq(peek(ctx, 'document.getElementById("bemfaBody").hidden'), true,
+           '默认折叠：表体 hidden');
+        eq(peek(ctx, 'document.getElementById("bemfaToggle").getAttribute("aria-expanded")'), 'false',
+           '折叠头 aria-expanded=false');
+        ok(peek(ctx, 'JSON.stringify(_bemfaEntities.length)') !== '0',
+           '折叠不影响数据（保存/校验/删设备连带清理都不该依赖展开状态）');
+
+        // 计数徽标：收起时也能看出"我配了几个"
+        ok(peek(ctx, 'document.getElementById("bemfaCount").textContent').indexOf('5') >= 0,
+           '折叠头显示数量摘要');
+
+        peek(ctx, 'toggleBemfaSection()');
+        eq(peek(ctx, 'document.getElementById("bemfaBody").hidden'), false, '点一下展开');
+        eq(peek(ctx, 'document.getElementById("bemfaToggle").getAttribute("aria-expanded")'), 'true',
+           '展开后 aria-expanded=true');
+        peek(ctx, 'toggleBemfaSection()');
+        eq(peek(ctx, 'document.getElementById("bemfaBody").hidden'), true, '再点收回去');
+
+        // 「按设备生成」/「+ 添加」必须把结果摆到用户眼前
+        peek(ctx, 'setBemfaOpen(false)');
+        peek(ctx, 'addBemfaEntity()');
+        eq(peek(ctx, 'document.getElementById("bemfaBody").hidden'), false, '新增后自动展开');
+
+        // 删最后一条要问一次：空表 = 保存后云端开关被删掉
+        peek(ctx, 'seedBemfaEntities({})');
+        peek(ctx, `_bemfaEntities.splice(0, _bemfaEntities.length - 1)`);
+        peek(ctx, 'renderBemfaEntities()');
+        ctx.__confirmAnswer = false;
+        peek(ctx, 'removeBemfaEntity(0)');
+        eq(peek(ctx, 'JSON.stringify(_bemfaEntities.length)'), '1',
+           '取消确认 → 最后一条保留（不会静默删光云端开关）');
+        ctx.__confirmAnswer = true;
+        peek(ctx, 'removeBemfaEntity(0)');
+        eq(peek(ctx, 'JSON.stringify(_bemfaEntities.length)'), '0', '确认后真删');
+        peek(ctx, 'seedBemfaEntities({})');
+    }
+
+    console.log('\n-- 老配置的实体种子：必须照服务端派生清单铺（否则保存即丢别人的开关） --');
+    {
+        // 服务端 GET /api/config 现在直接给派生结果：`allowed_devices × 5`，
+        // 名字也由服务端给 —— 前端不再自己拼（拼出来的和注册时的显示名会漂移）。
+        peek(ctx, `seedBemfaEntities({
+            entitiesDefined: false,
+            allowedDevices: ['*'],
+            derivedEntities: [
+                { name: 'C口1开关', device: 'default', port: 'c1' },
+                { name: 'C口2开关', device: 'default', port: 'c2' },
+                { name: 'C口3开关', device: 'default', port: 'c3' },
+                { name: 'USB-A开关', device: 'default', port: 'a' },
+                { name: '蓝牙开关', device: 'default', port: 'ble' },
+                { name: '书桌充电器 C口1', device: 'desk', port: 'c1' },
+                { name: '书桌充电器 C口2', device: 'desk', port: 'c2' },
+                { name: '书桌充电器 C口3', device: 'desk', port: 'c3' },
+                { name: '书桌充电器 USB-A', device: 'desk', port: 'a' },
+                { name: '书桌充电器 蓝牙开关', device: 'desk', port: 'ble' },
+            ],
+        })`);
+        const rows = JSON.parse(peek(ctx, 'JSON.stringify(_bemfaEntities)'));
+        eq(rows.length, 10, '老配置 + allowed_devices=["*"] → 两台设备各 5 个开关');
+        ok(rows.some(r => r.device === 'desk' && r.port === 'ble'), '附加设备的开关没被漏掉');
+        eq(rows[5], { name: '书桌充电器 C口1', device: 'desk', port: 'c1' },
+           '名字用服务端给的（与注册时一致，不漂移）');
+
+        // 旧服务端没有 derivedEntities 时兜底成 primary 的 5 行（不能空表）
+        peek(ctx, 'seedBemfaEntities({ entitiesDefined: false })');
+        eq(peek(ctx, 'JSON.stringify(_bemfaEntities.length)'), '5', '缺 derivedEntities → 兜底 5 行');
         peek(ctx, 'seedBemfaEntities({})');
     }
 

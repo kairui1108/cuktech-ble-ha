@@ -288,6 +288,8 @@
             bemfaDuplicate: '"{{name}}" is duplicated: one switch per device port',
             bemfaDeviceGone: '"{{name}}" points at a device that no longer exists — rebind or delete the row',
             bemfaAllUsed: 'Every device port already has a switch',
+            bemfaCount: '{{n}} switch(es)',
+            bemfaRemoveLastConfirm: 'This is the last voice switch ({{name}}). After saving, it will be removed from Bemfa Cloud and any voice assistant routine using it will stop working. Continue?',
             bemfaMissingDevice: 'device deleted',
             bemfaEntityDefault: '{{name}} {{port}}',
             bemfaPortC1: 'Port C1',

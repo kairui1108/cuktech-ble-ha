@@ -288,6 +288,8 @@
             bemfaDuplicate: '「{{name}}」重复了：同一台设备的同一个口只能有一个开关',
             bemfaDeviceGone: '「{{name}}」绑定的设备已不存在，请改绑或删除这一行',
             bemfaAllUsed: '每台设备的每个口都已经有开关了',
+            bemfaCount: '共 {{n}} 个',
+            bemfaRemoveLastConfirm: '这是最后一个语音开关（{{name}}）。删掉并保存后，巴法云里的开关会被移除，小爱/小度里引用它的指令也会失效。确定继续？',
             bemfaMissingDevice: '设备已删除',
             bemfaEntityDefault: '{{name}} {{port}}',
             bemfaPortC1: 'C口1',

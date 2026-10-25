@@ -123,12 +123,24 @@ body.light .device-add-btn { border-color: rgba(0,0,0,0.16); }
    一行 = 一个语音开关 = (名字, 设备, 端口)。放成卡片而不是 config-row 表格：
    430px 宽度里塞不下"名称输入 + 两个下拉 + 删除"一行，删掉任何一列都会让用户
    猜不出来剩下的是什么。 */
-.bemfa-head {
-    display: flex; align-items: flex-start; justify-content: space-between;
-    gap: 8px; padding: 12px 0 8px;
+/* 折叠头：整行可点（触控目标 ≥44px），右侧 ▾ 展开时翻转。 */
+.bemfa-toggle {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; padding: 12px 0 10px; min-height: 44px;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+    user-select: none;
 }
+.bemfa-toggle:active { opacity: 0.65; }
+.bemfa-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
 .bemfa-head-text { min-width: 0; }
-.bemfa-actions { display: flex; gap: 6px; flex: none; }
+.bemfa-count { font-size: 11px; font-weight: 400; color: var(--text-dim); margin-left: 6px; }
+.bemfa-chevron {
+    flex: none; font-size: 11px; color: var(--text-dim); line-height: 1;
+    transition: transform 0.18s ease;
+}
+.bemfa-toggle[aria-expanded="true"] .bemfa-chevron { transform: rotate(180deg); }
+.bemfa-body { padding-top: 2px; }
+.bemfa-actions { display: flex; gap: 6px; flex: none; margin-bottom: 8px; }
 .mini-btn {
     padding: 6px 10px; border-radius: 8px; font-size: 12px; cursor: pointer;
     background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
@@ -277,18 +289,31 @@ body.light .xm-options { background: rgba(0,0,0,0.02); }
                 <div><div class="config-label" data-i18n="config.privateKey">私钥</div><div class="config-hint" data-i18n="config.privateKeyHint">巴法云用户 私钥</div></div>
                 <input class="config-input" id="bemfa_uid" data-i18n-placeholder="config.placeholderUid" placeholder="巴法云 私钥">
             </div>
-            <!-- 语音开关表：一行一个开关，(名字, 哪台设备, 哪个口) 三件套 -->
-            <div class="bemfa-head">
-                <div class="bemfa-head-text">
-                    <div class="config-label" data-i18n="config.bemfaSwitchSection">语音开关</div>
-                    <div class="config-hint" data-i18n="config.bemfaSwitchHint">一行一个开关：显示名 + 哪台设备 + 哪个口</div>
+            <!-- 语音开关表：一行一个开关，(名字, 哪台设备, 哪个口) 三件套。
+                 **默认折叠**：5 个开关就要 400+ 像素，而绝大多数人打开本页不是来改
+                 语音开关的——常驻展开会把 MQTT/服务器这些更常改的配置推到看不见的
+                 地方。头是整行可点的按钮，右侧显示"共 N 个"，展开才画行。 -->
+            <div class="bemfa-block">
+                <div class="bemfa-toggle" id="bemfaToggle" role="button" tabindex="0"
+                     aria-expanded="false" aria-controls="bemfaBody" onclick="toggleBemfaSection()"
+                     onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleBemfaSection();}">
+                    <div class="bemfa-head-text">
+                        <div class="config-label">
+                            <span data-i18n="config.bemfaSwitchSection">语音开关</span>
+                            <span class="bemfa-count" id="bemfaCount"></span>
+                        </div>
+                        <div class="config-hint" data-i18n="config.bemfaSwitchHint">一行一个开关：显示名 + 哪台设备 + 哪个口</div>
+                    </div>
+                    <span class="bemfa-chevron" id="bemfaChevron" aria-hidden="true">&#9662;</span>
                 </div>
-                <div class="bemfa-actions">
-                    <button type="button" class="mini-btn accent" onclick="autoFillBemfaEntities()" data-i18n="config.bemfaAutoFill">按设备生成</button>
-                    <button type="button" class="mini-btn" onclick="addBemfaEntity()" data-i18n="config.bemfaAdd">+ 添加</button>
+                <div class="bemfa-body" id="bemfaBody" hidden>
+                    <div class="bemfa-actions">
+                        <button type="button" class="mini-btn accent" onclick="autoFillBemfaEntities()" data-i18n="config.bemfaAutoFill">按设备生成</button>
+                        <button type="button" class="mini-btn" onclick="addBemfaEntity()" data-i18n="config.bemfaAdd">+ 添加</button>
+                    </div>
+                    <div id="bemfaEntityList"></div>
                 </div>
             </div>
-            <div id="bemfaEntityList"></div>
         </div>
 
         <!-- Server Config -->
@@ -529,6 +554,7 @@ function defaultBemfaName(deviceId, port) {
 }
 
 function renderBemfaEntities() {
+    updateBemfaCount();
     const host = document.getElementById('bemfaEntityList');
     if (!host) return;
     if (!_bemfaEntities.length) {
@@ -566,6 +592,14 @@ function renderBemfaEntities() {
     }).join('');
 }
 
+// 折叠头上的摘要：收起时也能看出"我配了几个开关"（否则只能点开才知道）
+function updateBemfaCount() {
+    const badge = document.getElementById('bemfaCount');
+    if (!badge) return;
+    const n = _bemfaEntities.length;
+    badge.textContent = n ? I18N.t('config.bemfaCount', { n: n }) : '';
+}
+
 function updateBemfaEntity(index, field, value) {
     const e = _bemfaEntities[index];
     if (!e) return;
@@ -589,6 +623,7 @@ function addBemfaEntity() {
         const free = BEMFA_PORTS.find(p => !_bemfaEntities.some(e => e.device === id && e.port === p));
         if (free) {
             _bemfaEntities.push({ name: defaultBemfaName(id, free), device: id, port: free });
+            setBemfaOpen(true);
             renderBemfaEntities();
             return;
         }
@@ -597,6 +632,12 @@ function addBemfaEntity() {
 }
 
 function removeBemfaEntity(index) {
+    // 删到空表 = 明确"一个语音开关都不要"：保存后服务端会把已注册的实体从巴法云
+    // 真的删掉（registered 差集），小爱/小度里引用它们的指令随即失效。逐行删本来
+    // 就是手动动作，但"删最后一条"这一步必须停下来问一次。
+    if (_bemfaEntities.length === 1
+            && !confirm(I18N.t('config.bemfaRemoveLastConfirm', {
+                name: _bemfaEntities[index].name || '' }))) return;
     _bemfaEntities.splice(index, 1);
     renderBemfaEntities();
 }
@@ -622,6 +663,7 @@ function autoFillBemfaEntities() {
         });
     });
     _bemfaEntities = rows;
+    setBemfaOpen(true);          // 铺开的结果必须立刻可见
     renderBemfaEntities();
     showToast(I18N.t('config.bemfaAutoFilled', { n: rows.length }));
 }
@@ -643,6 +685,7 @@ function remapBemfaDevice(oldId, newId) {
 }
 
 function validateBemfaEntities() {
+    setBemfaOpen(true);       // 报错必须看得见（收起状态下用户只会看到一个 toast）
     const seen = {};
     for (let i = 0; i < _bemfaEntities.length; i++) {
         const e = _bemfaEntities[i];
@@ -659,8 +702,34 @@ function validateBemfaEntities() {
     return true;
 }
 
-// 老配置（没写过 entities 键）→ 把 primary 的 5 个名字铺回成表；
+// ── 折叠状态（默认收起）──
+// 折叠只影响"画不画行"，数据始终在 _bemfaEntities 里：保存、校验、删设备连带清理
+// 都不依赖展开状态（否则"没展开就保存"会静默丢开关——比占地方严重得多）。
+let _bemfaOpen = false;
+
+function setBemfaOpen(open) {
+    _bemfaOpen = !!open;
+    const body = document.getElementById('bemfaBody');
+    const toggle = document.getElementById('bemfaToggle');
+    if (body) body.hidden = !_bemfaOpen;
+    if (toggle) toggle.setAttribute('aria-expanded', _bemfaOpen ? 'true' : 'false');
+}
+
+function toggleBemfaSection() {
+    setBemfaOpen(!_bemfaOpen);
+}
+
+// 新增/铺开/校验失败时自动展开：用户做了动作却看不到结果是最差的一种交互
+// （展开点用 setBemfaOpen(true)，见 addBemfaEntity / autoFillBemfaEntities）。
+// 老配置（没写过 entities 键）→ 用**服务端给的派生清单**铺回去；
 // 新配置 → 直接用表（空表就是用户真的不要开关）。
+//
+// 为什么老配置不能"只铺 primary 的 5 行"（这里曾经是那样）：派生规则是
+// `allowed_devices × 5`，配了 `allowed_devices: ["*"]` 的用户有两台设备就是 10 个
+// 开关。页面只铺 5 行 → 保存即把表落盘（entities 键从此存在）→ 服务端重启后按新表
+// 建模，并把另外 5 个从巴法云**真的删掉**（`registered` 差集）。用户只是改了 MQTT
+// 地址，语音开关却没了。派生结果与名字一律由 `/api/config.derivedEntities` 提供，
+// 前端不重复实现一遍规则（那才会漂移）。
 function seedBemfaEntities(b) {
     b = b || {};
     const primaryId = _devices.length ? (_devices[0].id || 'default') : 'default';
@@ -670,7 +739,14 @@ function seedBemfaEntities(b) {
             device: e.device || primaryId,
             port: BEMFA_PORTS.indexOf(e.port) >= 0 ? e.port : 'c1',
         }));
+    } else if (Array.isArray(b.derivedEntities) && b.derivedEntities.length) {
+        _bemfaEntities = b.derivedEntities.map(e => ({
+            name: e.name || '',
+            device: e.device || primaryId,
+            port: BEMFA_PORTS.indexOf(e.port) >= 0 ? e.port : 'c1',
+        }));
     } else {
+        // 兜底（旧服务端没有 derivedEntities）：至少把 primary 的 5 个名字铺出来
         _bemfaEntities = BEMFA_PORTS.map(port => ({
             name: b['name_' + port] || defaultBemfaName(primaryId, port),
             device: primaryId,
