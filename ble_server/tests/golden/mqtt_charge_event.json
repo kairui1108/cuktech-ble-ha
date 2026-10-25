@@ -1,0 +1,10 @@
+{
+  "published": [
+    {
+      "topic": "cuktech/charger/charge_event",
+      "payload": "{\"event\": \"charge_end\", \"port\": \"c1\", \"port_id\": 1, \"session_id\": 42, \"recorded\": true, \"start_time\": \"2025-11-24 15:00:00\", \"end_time\": \"2025-11-24 16:00:00\", \"duration_sec\": 3600, \"energy_wh\": 123.4568, \"avg_power_w\": 123.5, \"max_power_w\": 88.5, \"protocol\": \"PD\", \"voltage\": 5.0, \"current\": 1.0}",
+      "retain": false,
+      "qos": 0
+    }
+  ]
+}

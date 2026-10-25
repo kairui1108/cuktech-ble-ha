@@ -1,0 +1,13 @@
+{
+  "will": {
+    "topic": "cuktech/charger/status",
+    "payload": "{\"connected\": false}",
+    "retain": true,
+    "qos": 1
+  },
+  "subscribed": [
+    "cuktech/charger/ble",
+    "cuktech/charger/port",
+    "cuktech/charger/set"
+  ]
+}
