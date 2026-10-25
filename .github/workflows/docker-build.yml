@@ -38,7 +38,9 @@ jobs:
         working-directory: ./ble_server
         run: |
           pip install --upgrade pip
-          pip install aiohttp>=3.9 paho-mqtt>=2.0 bleak>=0.21 cryptography>=41 pyyaml>=6.0
+          # 从 pyproject 装（含 requests / pycryptodomex）：手抄一份包清单迟早和声明漂移，
+          # 而漂移的表现是"本地全绿、CI 报 ModuleNotFoundError"。
+          pip install -e .
           pip install pytest pytest-asyncio
 
       - name: Run unit tests
@@ -48,6 +50,39 @@ jobs:
       - name: Run HA integration tests
         working-directory: ./ha_integration
         run: python -m pytest tests/ -v --tb=short
+
+  js:
+    name: JS contract tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Python (i18n 校验脚本用)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run JS suites
+        working-directory: ./ble_server
+        run: |
+          # web/*.js 与 config.html 的内联脚本没有构建步骤，唯一的安全网就是这批
+          # node 契约测试（800+ 断言）。不跑它们 = 前端改动在 PR 里无人验证。
+          set -e
+          for f in tests/js/*_test.js; do
+            echo "== $f"
+            node "$f"
+          done
+
+      - name: Verify i18n packs
+        working-directory: ./ble_server
+        run: python tests/js/verify_i18n.py
 
   build-and-push:
     name: Build and Push Docker Image

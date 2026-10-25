@@ -186,8 +186,14 @@ class TestXiaomiImportBudget:
             entry["timer"].cancel()
 
     def test_cloud_client_sets_http_timeouts(self):
-        """`requests` 默认无限等：`_api_call` 必须显式给 (连接, 读取) 超时。"""
+        """`requests` 默认无限等：`_api_call` 必须显式给 (连接, 读取) 超时。
+
+        `importorskip`：小米云是**可选**依赖（`requests` + `pycryptodomex`），最小安装
+        环境里没有它们。宁可 skip 也不要 error——但 CI 会用 `pip install -e .` 装齐，
+        所以这条断言在 PR 上仍然真的跑（与 test_ha_server 那条同款处理）。
+        """
         import inspect
+        pytest.importorskip("requests", reason="小米云依赖（可选）：未安装则跳过源码断言")
         import xiaomi_cloud
 
         src = inspect.getsource(xiaomi_cloud)
