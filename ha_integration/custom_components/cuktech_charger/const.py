@@ -9,13 +9,41 @@ CONF_SERVER_URL = "server_url"
 CONF_HOST = "host"
 DEFAULT_SERVER_URL = "http://localhost:8199"
 
-# MQTT Topics
+# ── per-entry 命名空间（多设备）──
+# 一设备一 entry：entry 里存它绑定的设备 id 与本 entry 独有的 MQTT 前缀。
+# ESP32 / 旧 server 的 entry 没有这两个键（或为空）→ 运行时全部回退默认值，
+# 因此**不需要** async_migrate_entry，老 entry 的 unique_id 也不重算。
+CONF_DEVICE_ID = "device_id"
+CONF_TOPIC_PREFIX = "topic_prefix"
+
+# MQTT Topics —— 自 v1.2 起只剩"缺省值"这一层语义。
+# 前缀过去是模块级常量，所有 entry 共用同一组 topic：再加一个 entry 就会互相
+# 串台（A 的 status 喂进 B 的实体、A 的限额命令发给 B 的充电器）。现在前缀由
+# coordinator 按 entry 解析成实例属性（topic_port/topic_settings/... ），订阅、
+# 发布、命令一律走实例属性；本常量只服务"老 entry 没有 topic_prefix 键"的回退。
 TOPIC_PREFIX = "cuktech/charger"
-TOPIC_PORT = f"{TOPIC_PREFIX}/port"
-TOPIC_SETTINGS = f"{TOPIC_PREFIX}/settings"
-TOPIC_STATUS = f"{TOPIC_PREFIX}/status"
-TOPIC_SET = f"{TOPIC_PREFIX}/set"
-TOPIC_CHARGE_EVENT = f"{TOPIC_PREFIX}/charge_event"
+
+# 服务端设备发现端点（§4.2）。新 ble_server 返回 {ok, devices:[...]}；
+# ESP32 与旧 server 上是 404 —— 那正是"单设备流程"的回退信号。
+API_DEVICES = "/api/devices"
+
+
+def entry_string(entry, key: str) -> str | None:
+    """取 entry 里的一个非空字符串配置（options 优先于 data），取不到返回 None。
+
+    为什么不直接 entry.data.get(key)：
+      1. 老 entry 根本没有这些键，必须能返回 None 让调用方回退默认值；
+      2. options flow 改过的值写在 entry.options 里，也要生效；
+      3. 本仓库的测试用 MagicMock 当 entry，`entry.options.get(...)` 会返回一个
+         truthy 的 MagicMock，拿去拼 topic 会得到一堆乱码——只接受真正的 str。
+    """
+    for source in (getattr(entry, "options", None), getattr(entry, "data", None)):
+        if not isinstance(source, dict):
+            continue
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 # Port mapping
 PORT_MAP = {"c1": 1, "c2": 2, "c3": 3, "a": 4}
@@ -129,6 +157,8 @@ COUNTDOWN_PIIDS = {
 PROTOCOL_OPTIONS = ["idle", "5V", "QC", "AFC", "FCP", "SCP", "PD", "PPS", "UFCS", "Unknown"]
 
 # Device info
+# name 只是回退值：多 entry 时设备名取 entry.title（§4.5），否则 Home Assistant 里
+# 会出现多个同名的"酷态科10号…充电器"，只靠自动加的 _2 后缀区分根本没法用。
 DEVICE_INFO = {
     "name": "酷态科10号超级电能充Ultra 充电器",
     "manufacturer": "CUKTECH",

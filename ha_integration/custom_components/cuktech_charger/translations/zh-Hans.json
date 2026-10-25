@@ -6,7 +6,18 @@
         "description": "设置您的 CUKTECH 充电器。此集成通过 MQTT 接收来自 CUKTECH BLE 服务器的实时数据。",
         "data": {
           "name": "设备名称",
-          "server_url": "BLE 服务器地址"
+          "server_url": "BLE 服务器地址",
+          "topic_prefix": "MQTT 主题前缀（可选）"
+        },
+        "data_description": {
+          "topic_prefix": "留空即使用默认前缀 cuktech/charger。若服务器能上报设备列表，则以前缀由服务器上报的值为准。"
+        }
+      },
+      "device": {
+        "title": "选择充电器",
+        "description": "服务器上报了多台充电器。每台充电器会作为一个独立的集成条目添加。",
+        "data": {
+          "device_id": "充电器"
         }
       },
       "reauth": {
@@ -26,11 +37,32 @@
     },
     "error": {
       "cannot_connect": "无法连接到服务器",
+      "device_not_found": "所选充电器已不在服务器上报的设备列表中",
       "unknown": "未知错误"
     },
     "abort": {
       "already_configured": "设备已配置",
       "reauth_successful": "重新认证成功"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "CUKTECH 充电器选项",
+        "description": "修改该条目的 MQTT 命名空间。保存后条目会自动重新加载。",
+        "data": {
+          "name": "设备名称",
+          "server_url": "BLE 服务地址",
+          "topic_prefix": "MQTT 主题前缀",
+          "device_id": "服务器设备 ID（可选）"
+        },
+        "data_description": {
+          "name": "在 Home Assistant 里显示的名字。部署多台充电器时用它区分。",
+          "server_url": "本 entry 对接的 ble_server（或 ESP32）地址。",
+          "topic_prefix": "该条目订阅与发布所用的主题前缀，留空即 cuktech/charger。",
+          "device_id": "服务器不支持按设备寻址（ESP32、旧版服务器）时请留空。"
+        }
+      }
     }
   }
 }

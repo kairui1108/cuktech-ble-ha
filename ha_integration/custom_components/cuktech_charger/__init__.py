@@ -20,14 +20,11 @@ from .const import (
     DOMAIN,
     CONF_SERVER_URL,
     CONF_HOST,
+    CONF_DEVICE_ID,
+    CONF_TOPIC_PREFIX,
     DEFAULT_SERVER_URL,
     DEVICE_INFO,
-    TOPIC_PORT,
     TOPIC_PREFIX,
-    TOPIC_SETTINGS,
-    TOPIC_STATUS,
-    TOPIC_SET,
-    TOPIC_CHARGE_EVENT,
     PORT_MAP,
     HEALTH_CHECK_INTERVAL,
     HTTP_TIMEOUT,
@@ -40,6 +37,7 @@ from .const import (
     LIMIT_POLL_INTERVAL,
     LIMIT_MODES,
     PIID_TO_PORT,
+    entry_string,
 )
 from .energy_engine import (
     ChargeLimitTracker,
@@ -98,6 +96,20 @@ class CuktechMQTTCoordinator:
             or entry.data.get(CONF_HOST)
             or DEFAULT_SERVER_URL
         )
+        # ── 本 entry 的命名空间（§4.1）──
+        # 前缀与 device_id 都存在 entry 里：一设备一 entry，各吃各的 topic。
+        # 老 entry 没有这两个键 → 回落到模块常量 / 无设备维度，行为与改造前一致
+        # （与上面 server_url 的三级回退同一套风格，因此不需要 entry 迁移）。
+        self.device_id = entry_string(entry, CONF_DEVICE_ID)
+        self.topic_prefix = entry_string(entry, CONF_TOPIC_PREFIX) or TOPIC_PREFIX
+        # 叶子形状（/status、/settings、/port/{c1..a}、/set、/charge_event、/ble）
+        # 与单设备时代逐字一致，只有前缀随 entry 变——这是 ESP32 固件零改动的前提。
+        self.topic_port = f"{self.topic_prefix}/port"
+        self.topic_settings = f"{self.topic_prefix}/settings"
+        self.topic_status = f"{self.topic_prefix}/status"
+        self.topic_set = f"{self.topic_prefix}/set"
+        self.topic_charge_event = f"{self.topic_prefix}/charge_event"
+        self.topic_ble = f"{self.topic_prefix}/ble"
         self._port_data: dict[str, dict[str, Any]] = {}
         self._settings: dict[str, Any] = {}
         self._callbacks: list = []
@@ -259,25 +271,27 @@ class CuktechMQTTCoordinator:
         """Set up MQTT subscriptions."""
         await self._async_wait_mqtt_ready()
 
-        # 端口名统一取自 PORT_MAP (const.py 单一数据源)，避免此处硬编码漂移
+        # 端口名统一取自 PORT_MAP (const.py 单一数据源)，避免此处硬编码漂移。
+        # 主题一律取自**实例属性**：两个 entry 指向同一台 server 的不同设备时，
+        # 各自订阅自己的前缀，硬件相同也不会互相串台。
         for port_name in PORT_MAP:
             unsub = await mqtt.async_subscribe(
-                self.hass, f"{TOPIC_PORT}/{port_name}", self._on_port_message
+                self.hass, f"{self.topic_port}/{port_name}", self._on_port_message
             )
             self._unsub.append(unsub)
 
         unsub = await mqtt.async_subscribe(
-            self.hass, TOPIC_SETTINGS, self._on_settings_message
+            self.hass, self.topic_settings, self._on_settings_message
         )
         self._unsub.append(unsub)
 
         unsub = await mqtt.async_subscribe(
-            self.hass, TOPIC_STATUS, self._on_status_message
+            self.hass, self.topic_status, self._on_status_message
         )
         self._unsub.append(unsub)
 
         unsub = await mqtt.async_subscribe(
-            self.hass, TOPIC_CHARGE_EVENT, self._on_charge_event
+            self.hass, self.topic_charge_event, self._on_charge_event
         )
         self._unsub.append(unsub)
 
@@ -635,19 +649,14 @@ class CuktechMQTTCoordinator:
         except Exception as err:
             _LOGGER.warning("Failed to save charge limits: %s", err)
 
-    async def _async_limit_request(self, body: dict | None = None) -> tuple[dict | None, str]:
-        """GET (or POST when `body` is given) /api/charge-limits.
+    async def _async_limit_call(
+        self, url: str, body: dict | None
+    ) -> tuple[dict | None, str, int]:
+        """打一次 charge-limits 端点，返回 `(limits, reason, HTTP 状态码)`。
 
-        Returns `(limits, reason)`: `limits` is the server's `limits` mapping, or
-        None on every failure mode — transport error, non-200, unparsable body,
-        missing/non-dict `limits`. `reason` is a short human-readable why, which
-        the startup probe surfaces (it is the difference between "ESP32, no such
-        API" and "server is down", and that is otherwise invisible).
-
-        The startup probe, the keep-sync poll and the write path differ only in
-        what they do with the answer, so they share this one implementation.
+        状态码单独返回，因为探测链要区分"对端没有这条路径"(404，值得降级)
+        与"对端有这条路径但这次失败"(超时/500，换 URL 也不会好)。
         """
-        url = f"{self.server_url}/api/charge-limits"
         session = async_get_clientsession(self.hass)
         try:
             if body is None:
@@ -655,21 +664,65 @@ class CuktechMQTTCoordinator:
             else:
                 request = session.post(url, json=body, timeout=HTTP_TIMEOUT)
             async with request as resp:
-                if resp.status != 200:
+                status = resp.status
+                if status != 200:
                     await resp.read()
-                    return None, f"HTTP {resp.status}"
+                    return None, f"HTTP {status}", status
                 try:
                     data = await resp.json()
                 except Exception as err:
                     await resp.read()
-                    return None, f"unparsable response ({err})"
+                    return None, f"unparsable response ({err})", status
         except Exception as err:
-            return None, str(err)
+            return None, str(err), 0
 
-        limits = (data or {}).get("limits")
+        if not isinstance(data, dict):
+            return None, "response is not an object", status
+        limits = data.get("limits")
         if not isinstance(limits, dict):
-            return None, "response has no 'limits' object"
-        return limits, "ok"
+            return None, "response has no 'limits' object", status
+        return limits, "ok", status
+
+    def _limit_urls(self) -> list[str]:
+        """限额端点的探测顺序（§4.4）：设备维度 → 老端点 → local。
+
+        ESP32 / 旧 server 的 entry 没有 device_id，列表里只有老端点一条，
+        请求序列与改造前完全一致（不额外打一发必然 404 的请求）。
+        """
+        urls: list[str] = []
+        if self.device_id:
+            # 新 server 的多设备路径；对端不认这条路径时回 404（§3.7）
+            urls.append(f"{self.server_url}/api/device/{self.device_id}/charge-limits")
+        urls.append(f"{self.server_url}/api/charge-limits")
+        return urls
+
+    async def _async_limit_request(
+        self, body: dict | None = None
+    ) -> tuple[dict | None, str]:
+        """GET (或 POST when `body` is given) charge-limits，按设备维度分级回退。
+
+        Returns `(limits, reason)`: `limits` is the server's `limits` mapping, or
+        None on every failure mode — transport error, non-200, unparsable body,
+        missing/non-dict `limits`. `reason` is a short human-readable why, which
+        the startup probe surfaces (it is the difference between "ESP32, no such
+        API" and "server is down", and that is otherwise invisible).
+
+        **只有 404 才降级到下一级 URL**：404 是"对端没有这条路径"的唯一信号，
+        即 §4.4 的"新 server 多设备路径 → 老端点 → local"阶梯。超时、500、
+        响应不可解析换个 URL 也一样失败，继续尝试只会拖慢启动探测。
+
+        The startup probe, the keep-sync poll and the write path differ only in
+        what they do with the answer, so they share this one implementation.
+        """
+        urls = self._limit_urls()
+        reason = "no URL attempted"
+        for index, url in enumerate(urls):
+            limits, reason, status = await self._async_limit_call(url, body)
+            if limits is not None:
+                return limits, "ok"
+            if status != 404 or index == len(urls) - 1:
+                return None, reason
+        return None, reason
 
     async def _async_probe_limit_backend(self) -> None:
         """Detect whether the HTTP backend can own charge limits (route B).
@@ -817,6 +870,17 @@ class CuktechMQTTCoordinator:
 
     # --- Availability ---
 
+    def _device_api_url(self, path: str) -> str:
+        """老端点的 URL，按本 entry 是否绑定具体设备决定要不要设备维度。
+
+        没有 device_id（ESP32 / 旧 server 的 entry）→ 与改造前逐字相同的 URL，
+        一个字节都不变。绑定了设备才走 §3.7 的路径形式，否则两个 entry 指向同一
+        台 server 时，状态/设备信息都会读到 primary 那台充电器上去。
+        """
+        if self.device_id:
+            return f"{self.server_url}/api/device/{self.device_id}{path}"
+        return f"{self.server_url}/api{path}"
+
     def _update_availability(self) -> None:
         """Update availability based on MQTT status and HTTP health."""
         http_recent = (self.hass.loop.time() - self._last_status_time) < STATUS_STALE_SECONDS
@@ -827,7 +891,7 @@ class CuktechMQTTCoordinator:
         session = async_get_clientsession(self.hass)
         was_available = self._available
         try:
-            url = f"{self.server_url}/api/status"
+            url = self._device_api_url("/status")
             async with session.get(url, timeout=HTTP_TIMEOUT) as resp:
                 # body 必须在 async with 块内读取，连接退出上下文后即关闭，
                 # 之后调用 resp.json()/resp.read() 会抛异常。
@@ -955,10 +1019,11 @@ class CuktechMQTTCoordinator:
             self._ble_timeout_task = self.hass.async_create_task(_clear_pending_after_delay())
 
             success = False
-            # MQTT (primary channel - ESP32)
+            # MQTT (primary channel - ESP32)：主题属于本 entry 的前缀，多设备下
+            # 只切自己的那台充电器（§4.3 约束 4：跨网关只依赖 {prefix}/ble）
             try:
                 await mqtt.async_publish(
-                    self.hass, f"{TOPIC_PREFIX}/ble",
+                    self.hass, self.topic_ble,
                     json.dumps({"enabled": enable})
                 )
                 _LOGGER.info("BLE %s published via MQTT", "enable" if enable else "disable")
@@ -966,11 +1031,12 @@ class CuktechMQTTCoordinator:
             except Exception as err:
                 _LOGGER.debug("MQTT BLE publish failed: %s", err)
 
-            # HTTP (fallback - ble_server)
+            # HTTP (fallback - ble_server)；绑定了设备就走设备维度路径，
+            # 否则会去切 primary 那台的连接（ESP32 没有这条路径，进不来这里）
             if not success:
                 try:
                     session = async_get_clientsession(self.hass)
-                    url = f"{self.server_url}/api/enable"
+                    url = self._device_api_url("/enable")
                     async with session.post(url, json={"enabled": enable}, timeout=BLE_OPERATION_TIMEOUT) as resp:
                         if resp.status == 200:
                             _LOGGER.info("BLE connection %s via HTTP (fallback)", "enabled" if enable else "disabled")
@@ -997,7 +1063,7 @@ class CuktechMQTTCoordinator:
         """Set a PIID value via MQTT."""
         try:
             await mqtt.async_publish(
-                self.hass, TOPIC_SET, json.dumps({"piid": piid, "value": value})
+                self.hass, self.topic_set, json.dumps({"piid": piid, "value": value})
             )
         except Exception as err:
             _LOGGER.error("Failed to publish MQTT command: %s", err)
@@ -1006,7 +1072,7 @@ class CuktechMQTTCoordinator:
         """Control a port (on/off) via MQTT."""
         try:
             await mqtt.async_publish(
-                self.hass, TOPIC_PORT, json.dumps({"port": port, "action": action})
+                self.hass, self.topic_port, json.dumps({"port": port, "action": action})
             )
         except Exception as err:
             _LOGGER.error("Failed to publish MQTT command: %s", err)

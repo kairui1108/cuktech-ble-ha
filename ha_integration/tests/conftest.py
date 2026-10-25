@@ -119,9 +119,26 @@ class _FakeConfigFlow:
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__()
 
+
+class _FakeOptionsFlow:
+    """OptionsFlow 占位：真实 HA 里由流程管理器注入 config_entry 属性。"""
+
+    def __init__(self, *args, **kwargs):
+        self.config_entry = kwargs.get("config_entry")
+
+
 ha_config = types.ModuleType("homeassistant.config_entries")
 ha_config.ConfigEntry = MagicMock()
 ha_config.ConfigFlow = _FakeConfigFlow
+ha_config.OptionsFlow = _FakeOptionsFlow
+
+# 选择器：多设备下拉框用 SelectSelector。测试只需要"能构造、能塞进 schema"，
+# 真实校验由 HA 侧完成，不在本套测试的断言范围内。
+ha_helpers_selector = types.ModuleType("homeassistant.helpers.selector")
+ha_helpers_selector.SelectSelector = lambda config=None, **kwargs: ("SelectSelector", config)
+ha_helpers_selector.SelectSelectorConfig = lambda **kwargs: kwargs
+ha_helpers_selector.SelectOptionDict = lambda **kwargs: dict(kwargs)
+ha_helpers_selector.SelectSelectorMode = types.SimpleNamespace(LIST="list", DROPDOWN="dropdown")
 
 ha_const = types.ModuleType("homeassistant.const")
 ha_const.Platform = MagicMock()
@@ -137,6 +154,8 @@ ha_const.CONF_NAME = "name"
 _vol = types.ModuleType("voluptuous")
 _vol.Schema = lambda s: s
 _vol.Optional = lambda key, **kwargs: key
+_vol.Required = lambda key, **kwargs: key
+_vol.In = lambda values: values
 sys.modules['voluptuous'] = _vol
 
 ha = types.ModuleType("homeassistant")
@@ -153,6 +172,8 @@ sys.modules['homeassistant.helpers.entity_platform'] = ha_helpers.entity_platfor
 sys.modules['homeassistant.helpers.event'] = ha_helpers.event
 sys.modules['homeassistant.helpers.entity'] = ha_helpers.entity
 sys.modules['homeassistant.helpers.storage'] = ha_helpers.storage
+sys.modules['homeassistant.helpers.selector'] = ha_helpers_selector
+ha_helpers.selector = ha_helpers_selector
 sys.modules['homeassistant.components'] = ha_components
 sys.modules['homeassistant.components.mqtt'] = ha_components.mqtt
 sys.modules['homeassistant.components.sensor'] = ha_components.sensor

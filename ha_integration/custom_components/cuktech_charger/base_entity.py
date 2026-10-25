@@ -5,7 +5,7 @@ from typing import Any
 
 from homeassistant.core import callback
 
-from .const import DOMAIN
+from .const import DEVICE_INFO, DOMAIN
 
 CB_TYPE_PORT = "port"
 CB_TYPE_SETTINGS = "settings"
@@ -55,10 +55,21 @@ class CuktechBaseEntity:
 
     @property
     def device_info(self) -> dict[str, Any]:
-        """Return device info."""
+        """Return device info.
+
+        设备名取 entry.title（§4.5）：多 entry = 多台充电器，用 DEVICE_INFO 里的
+        固定名会让 Home Assistant 里出现一串同名设备，只能靠自动加的 _2/_3 后缀
+        区分，用户根本认不出哪台是哪台。identifiers 仍是 (DOMAIN, entry_id)
+        —— 换成 MAC 会让既有 entry 在设备注册表里"分裂"成新设备，历史与自动化
+        全部断裂。
+        """
+        name = getattr(self._entry, "title", None)
+        if not isinstance(name, str) or not name.strip():
+            name = DEVICE_INFO["name"]
         return {
             "identifiers": {(DOMAIN, self._entry.entry_id)},
             **self.coordinator.device_info,
+            "name": name,
         }
 
     @property
