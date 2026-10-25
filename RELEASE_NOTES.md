@@ -1,5 +1,49 @@
 # Release Notes
 
+## v2.0.0-Beta
+
+> **多设备标 Beta**：软件链路（注册/路由/SSE/MQTT/DB/限额/UI/HA）由单真机结合虚拟充电器与多 entry
+> 测试覆盖，未经多设备实机验证
+> **单设备路径不受影响**：8 份逐字节 golden 快照锁定，行为与 v1.1.2 一致。设计说明见
+> [docs/multi-device-design.md](docs/multi-device-design.md)。
+
+### 多设备：同一蓝牙适配器接多台充电器
+
+- **内核设备化**：`DeviceRuntime` 注册表 + per-request 路由。`self.ble`/`self.state`/`self.history`
+  变成按请求解析的**只读 property**（并发请求在 await 处交错也不会把命令发给错的充电器）；每台设备 10 项装配钩子
+- **适配器共享**：新增 `AdapterCoordinator` —— 扫描合并、连接信号量(2)、启动错峰(2s)、**分级恢复**
+  L1 断开 → L1.5 清 BlueZ 缓存 → L2 适配器下电（仅 N=1 或全员离线，带 quiesce 门闸）→ L3 重建。
+  改造前所有恢复动作都是"整机级"的，多设备时互相伤害
+- **数据层**：`history.db` 加 `device_id` 列（老库启动自动迁移，既有数据归 primary，曲线/会话无缝）；
+  运行时 meta 按设备分区；会话越权读返回 404
+- **MQTT**：前缀即设备（primary 就是 legacy 前缀，其它 `{base}/{id}`），命令按 topic 精确路由
+- **SSE**：N>1 时事件带 `device`，`status` 按 `(queue, device)` 各自保留最新；单设备事件流逐字节不变
+- **Web UI**：设备切换器（桌面牌堆 / 手机标题栏下拉）+ "全部设备"汇总；配置页设备卡片
+- **HA 集成**：一设备一 entry（`/api/devices` 发现 → 选择 → options flow），老 entry 零迁移、unique_id 不重算
+- **回滚配套**：`./cuktech_ctl.sh history-down`（非 primary 历史归档，幂等）+ `clean-retained`
+  （清幽灵 retained，支持 `--prefix` 指定已删除/改名的旧前缀）
+- **巴法云语音开关按 (设备, 端口) 建模**：`bemfa.entities` 一行一个开关（显示名 + 哪台设备 + 哪个口），
+  配置页该区默认折叠；从配置里删掉的实体下次启动会一并从云端删除，不留死开关
+- **小米云批量导入**：扫码后勾选多台一次导入 MAC / Token / BLE Key，可选同步云端设备名称；
+  按 MAC 匹配落卡片（不再"先选目标卡片再点设备"，那条路会覆盖错设备的凭据）
+
+### 修复
+
+- **认证卡死自愈窗口 ~1 小时 → ~2 分钟**：连续失败阈值 15→3（真机实测换了新进程才恢复），
+  前面两次 30s/60s 快重试只吃抖动；一小时最多重建 3 次，超出转 600s 慢退避 + `device_session_stuck`
+- **`bluetoothctl show` 两种方言都识别**：BlueZ 5.x 的 `show <hci>` 只接受控制器地址，以前每次
+  power cycle 都空转满 15 轮再"proceeding anyway"——那个窗口里连上去正是认证失步的温床
+- **配置保存 = 启动可接受**：写盘前用与启动**同一个入口**试算，杜绝"存得进去、起不来"
+
+### 测试
+
+- BLE Server **806 passed** · HA 集成 **280 passed** · 前端 node 契约 **836 断言** + i18n 校验
+- 单设备 golden：8 份逐字节快照（HTTP body 原串 / SSE 线字节 / MQTT `topic+payload+retain+QoS`），
+  唯一白名单是 `uptime_ms`
+- 虚拟充电器：继承真 controller、只替换连接/握手/入站管道，帧几何取自真机 btsnoop、加解密走生产
+  AES-CCM——3 台虚拟机跑通注册/路由/SSE/DB/命令隔离
+- CI：改为从 `pyproject` 装依赖（不再手抄包清单），新增前端契约测试 job
+
 ## v1.1.2
 
 ### BLE Server — 会话检测重写、端口模式与卡面改版 ([#15](https://github.com/kairui1108/cuktech-ble-ha/pull/15))
