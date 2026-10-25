@@ -531,8 +531,9 @@ def verify_handshake(hs: Handshake, keys: Dict[str, bytes]) -> bool:
 
 def build_controller_class():
     """Return the *production* ``CuktechBLEController`` so nothing is re-implemented here."""
-    for src_root in (Path(__file__).resolve().parent.parent / "src",
-                     Path("/home/ruikai/cuktech/ble_server/src")):
+    # 只用**本仓库**的 src（脚本所在位置的上一级）：写死开发机的绝对路径会让这个
+    # 复现工具在别人的机器上静默回退到"找不到"，而不是报错。
+    for src_root in (Path(__file__).resolve().parent.parent / "src",):
         if (src_root / "cuktech_ble" / "controller.py").is_file() \
                 and str(src_root) not in sys.path:
             sys.path.insert(0, str(src_root))

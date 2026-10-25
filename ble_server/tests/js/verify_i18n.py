@@ -10,7 +10,9 @@
    visible is left untranslated.
 """
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from html.parser import HTMLParser
@@ -19,7 +21,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 WEB = ROOT / "web"
 LOCALE_DIR = WEB / "static" / "locales"
-NODE = "/vol1/@appcenter/nodejs_v22/bin/node"
+# node 可执行文件：以前写死成开发机的绝对路径（`/vol1/@appcenter/nodejs_v22/bin/node`），
+# 于是这个脚本在 CI / 别人的机器上直接 `FileNotFoundError`——而它正是"多语言包是否齐"
+# 唯一的检查手段。按 NODE_BIN → PATH 的顺序找，找不到时给出人话而不是栈。
+NODE = os.environ.get("NODE_BIN") or shutil.which("node")
+if not NODE:
+    raise SystemExit("找不到 node：请装 Node.js，或用 NODE_BIN=/path/to/node 指定")
 
 CJK = re.compile(r"[\u4e00-\u9fff]")
 # keys from t() calls: I18N.t('a.b') / t('a.b'), but not word-embedded "t("
