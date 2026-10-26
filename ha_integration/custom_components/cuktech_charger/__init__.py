@@ -21,12 +21,15 @@ from .const import (
     CONF_SERVER_URL,
     CONF_HOST,
     CONF_DEVICE_ID,
+    CONF_NAME_PINNED,
     CONF_TOPIC_PREFIX,
     DEFAULT_SERVER_URL,
     DEVICE_INFO,
     TOPIC_PREFIX,
     PORT_MAP,
     HEALTH_CHECK_INTERVAL,
+    NAME_SYNC_INTERVAL,
+    NAME_SYNC_INTERVAL,
     HTTP_TIMEOUT,
     BLE_OPERATION_TIMEOUT,
     CHARGE_EVENT_BUFFER,
@@ -121,9 +124,14 @@ class CuktechMQTTCoordinator:
         # BLE 设备 connected 标记」，而非 MQTT 客户端是否连接。
         self._mqtt_connected = False
         self._health_check_unsub = None
+        self._name_sync_unsub = None
         self._last_status_time: float = -999
         self._health_check_task = None
         self._health_failures = 0
+        # 服务端同步来的设备名（会话内有效；每次 setup 会重新对齐）。
+        # 与 entry.title 分开存：title 是"集成条目/中枢"的标签，用户可以固定它，
+        # 而设备名应该永远跟着服务端走——两件事不该互相绑死。
+        self._device_name: str | None = None
         self._device_model: str = DEVICE_INFO["model"]
         self._firmware_version: str = ""
         self._ble_connected: bool = False
@@ -257,6 +265,12 @@ class CuktechMQTTCoordinator:
         return decode_protocol_switches(self._settings.get("21", 0))
 
     @property
+    def display_name(self) -> str:
+        """本 entry 对应设备的显示名：服务端名字优先，取不到才回落到 entry title。"""
+        name = getattr(self.entry, "title", None)
+        return self._device_name or (name if isinstance(name, str) and name.strip() else "")
+
+    @property
     def device_info(self) -> dict[str, Any]:
         """Return device info with dynamic firmware version."""
         return {
@@ -267,9 +281,107 @@ class CuktechMQTTCoordinator:
 
     # --- Lifecycle ---
 
+    async def _async_sync_device_name(self) -> None:
+        """设备名自动同步（§4.5）：**设备名**跟服务端走，**集成条目名**可选跟随。
+
+        两个名字，两个用途，不要绑死：
+          * 设备名（设备卡片、实体所属设备）= 服务端 `devices[].name`，永远自动同步；
+          * 集成条目名（也就是"中枢"那层的标签）= entry.title，**只在用户没固定时**
+            跟随设备名（多设备时它是区分两张卡最省事的办法），用户在选项里起过名
+            就固定不动（`name_pinned`），但设备名那条照旧同步。
+
+        为什么需要它：两个名字以前只在"添加集成那一刻"对得上。之后在 Web 里把设备
+        改叫"书桌充电器"，HA 这边还是老名字；两台同型号充电器只能靠 `_2` 后缀区分。
+        每次 setup（含 reload、HA 重启）对齐一次 + 5 分钟周期兜底。
+
+        三条边界，让"自动同步"不等于"自动覆盖"：
+          * 绑定了 device_id → 只认**这台**设备报的名字，多设备的列表里不会拿错；
+          * 老的单设备 entry（无 device_id）→ 只有服务端刚好只报一台时才同步，
+            报多台时无从判断它对应哪台，保持原样（不猜）；
+          * 服务端没配 name（上报的就是 id 本身）→ 视为"没意见"，不动任何名字。
+        失败只是"这次没有新名字"，绝不阻塞 setup（ESP32/旧 server 本来就没这端点）。
+        """
+        try:
+            # 局部导入：只有 setup 需要，且避免运行期模块与 flow 模块的导入顺序耦合
+            from .config_flow import async_discover_devices
+
+            devices = await async_discover_devices(self.hass, self.server_url)
+        except Exception as err:                  # noqa: BLE001 - 同步失败不是故障
+            _LOGGER.debug("Device name sync skipped (%s)", err)
+            return
+        if not devices:
+            return
+
+        if self.device_id:
+            target = next((d for d in devices if d["id"] == self.device_id), None)
+        elif len(devices) == 1:
+            target = devices[0]
+        else:
+            target = None
+        if target is None:
+            return
+
+        name = (target.get("name") or "").strip()
+        # 服务端没配名字时上报的是 id 本身：那是"没意见"，不覆盖任何东西
+        if not name or name == target["id"]:
+            return
+
+        # ① 设备名（设备卡片 / 实体所属设备）：永远跟着服务端走
+        if name != self._device_name:
+            self._device_name = name
+            self._async_rename_registered_device(name)
+
+        # ② 集成条目名（也就是"中枢"那层的标签）：只有在用户没固定过时才跟随。
+        #    多设备时它是最省事的区分方式；一旦用户在选项里起过名（name_pinned），
+        #    那就是他的选择，这里停手——但上面那条设备名同步照常。
+        if (getattr(self.entry, "data", None) or {}).get(CONF_NAME_PINNED):
+            return
+        old = getattr(self.entry, "title", None)
+        if name == old:
+            return
+        try:
+            self.hass.config_entries.async_update_entry(self.entry, title=name)
+        except Exception as err:                  # noqa: BLE001 - 改名失败不该让集成起不来
+            _LOGGER.debug("Entry title sync failed (%s)", err)
+            return
+        _LOGGER.debug("Entry title synced from server: %r -> %r", old, name)
+
+    def _async_rename_registered_device(self, name: str) -> None:
+        """把新名字同步到设备注册表（用户看得见的那个名字）。
+
+        entry title 只管**之后**注册的实体（`device_info.name` 在那时被读走）；
+        设备一旦建好，注册表里的 name 不会因为 title 变了就自己更新——而"改了名字
+        但设备卡片还是旧的"正是这个特性要解决的观感问题。
+
+        跳过 `name_by_user`：用户在设备页手动改过的名字是他的选择，优先级高于自动同步
+        （与 entry 头部的 `name_pinned` 是同一个原则，只是作用在不同的层）。
+        """
+        try:
+            from homeassistant.helpers import device_registry as dr
+
+            registry = dr.async_get(self.hass)
+            device = registry.async_get_device(
+                identifiers={(DOMAIN, self.entry.entry_id)}
+            )
+            if device is None or getattr(device, "name_by_user", None):
+                return
+            registry.async_update_device(device.id, name=name)
+        except Exception as err:                  # noqa: BLE001 - 注册表不可用不影响同步
+            _LOGGER.debug("Device registry rename skipped (%s)", err)
+
+    async def _async_periodic_name_sync(self, _now) -> None:
+        """周期对齐设备名：服务端改名后最多等一个周期，不用重启 HA（§4.5）。"""
+        await self._async_sync_device_name()
+
     async def async_setup(self) -> None:
         """Set up MQTT subscriptions."""
-        await self._async_wait_mqtt_ready()
+        # 设备名同步必须发生在**转发平台之前**（设备名在那一刻被读走），但它和
+        # "等 MQTT 就绪"互不依赖：串行会让"服务端暂时不可达"额外压上一次 HTTP
+        # 超时。两者并发，谁先谁后都不影响结果（同步失败只是这次没有新名字）。
+        await asyncio.gather(
+            self._async_sync_device_name(),
+            self._async_wait_mqtt_ready(),
+        )
 
         # 端口名统一取自 PORT_MAP (const.py 单一数据源)，避免此处硬编码漂移。
         # 主题一律取自**实例属性**：两个 entry 指向同一台 server 的不同设备时，
@@ -313,6 +425,12 @@ class CuktechMQTTCoordinator:
             self._ble_enabled = True
             _LOGGER.info("Initial BLE state synced: connected")
 
+        # 兜住"服务端改名了，但 HA 既没重启也没重载这个 entry"的情况：
+        # 每 NAME_SYNC_INTERVAL 对齐一次显示名（同步本身失败是静默的）。
+        self._name_sync_unsub = async_track_time_interval(
+            self.hass, self._async_periodic_name_sync, NAME_SYNC_INTERVAL
+        )
+
         _LOGGER.info("CUKTECH Charger MQTT coordinator set up successfully")
 
     async def async_unload(self) -> None:
@@ -328,6 +446,9 @@ class CuktechMQTTCoordinator:
         if self._health_check_unsub:
             self._health_check_unsub()
         self._health_check_unsub = None
+        if self._name_sync_unsub:
+            self._name_sync_unsub()
+        self._name_sync_unsub = None
         # HA 停止不是用户意图终止充电：结束会话但保留 once 限额
         # （否则一次 HA 重启就静默解除用户刚设的限制，见 END_REASONS_PRESERVING_LIMIT）
         self._charge_limits.end_session_all(

@@ -48,6 +48,9 @@ ha_helpers.aiohttp_client = MagicMock()
 ha_helpers.entity_platform = MagicMock()
 ha_helpers.event = MagicMock()
 ha_helpers.entity = MagicMock()
+# 设备注册表：`__init__` 里的 `from homeassistant.helpers import device_registry as dr`
+# 走的是这个属性，缺了就是 ImportError（被宽 except 吞掉，测试里表现为"这段没跑"）。
+ha_helpers.device_registry = MagicMock()
 ha_helpers.storage = types.ModuleType("homeassistant.helpers.storage")
 
 

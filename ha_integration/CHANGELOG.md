@@ -16,6 +16,15 @@
   which changes `entry_id` and breaks every entity's unique_id and all automations
 - Device registry name now comes from the entry title; charge-limit probing is device-scoped
   (`/api/device/{id}/charge-limits` → legacy `/api/charge-limits` → local, downgrading only on 404)
+- **Device name auto-sync.** Every setup (including reload / HA restart) pulls `/api/devices` and
+  writes the server's name for *this* entry back into the entry title, plus a 5-minute background
+  refresh so a Web-UI rename shows up without restarting HA (two identical chargers used to differ
+  only by a `_2` suffix). The device name and the entry title are kept separate: the device name
+  always follows the server, while the entry title (the "hub" label, handy for telling two cards
+  apart) follows it only until you rename the entry yourself (`name_pinned`) — pinning the label no
+  longer freezes the device name. Deliberate limits: a bound entry only adopts its own device's
+  name; a legacy entry without `device_id` syncs only when the server reports exactly one device;
+  a server that reports no name (it just echoes the id) never overwrites anything
 
 ### Changed
 - Backends without `/api/devices` (ESP32 firmware, older ble_server) get a 404, which falls back to

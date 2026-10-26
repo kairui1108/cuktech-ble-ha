@@ -20,6 +20,7 @@
 - **SSE**：N>1 时事件带 `device`，`status` 按 `(queue, device)` 各自保留最新；单设备事件流逐字节不变
 - **Web UI**：设备切换器（桌面牌堆 / 手机标题栏下拉）+ "全部设备"汇总；配置页设备卡片
 - **HA 集成**：一设备一 entry（`/api/devices` 发现 → 选择 → options flow），老 entry 零迁移、unique_id 不重算
+- **HA 设备名自动同步**：每次 setup（含 reload / 重启）按 `/api/devices` 对齐设备名
 - **回滚配套**：`./cuktech_ctl.sh history-down`（非 primary 历史归档，幂等）+ `clean-retained`
   （清幽灵 retained，支持 `--prefix` 指定已删除/改名的旧前缀）
 - **巴法云语音开关按 (设备, 端口) 建模**：`bemfa.entities` 一行一个开关（显示名 + 哪台设备 + 哪个口），

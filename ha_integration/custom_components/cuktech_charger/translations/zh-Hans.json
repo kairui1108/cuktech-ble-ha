@@ -49,15 +49,15 @@
     "step": {
       "init": {
         "title": "CUKTECH 充电器选项",
-        "description": "修改该条目的 MQTT 命名空间。保存后条目会自动重新加载。",
+        "description": "修改该条目的 MQTT 命名空间与显示标签。保存后条目会自动重新加载。",
         "data": {
-          "name": "设备名称",
+          "name": "集成名称（中枢标签）",
           "server_url": "BLE 服务地址",
           "topic_prefix": "MQTT 主题前缀",
           "device_id": "服务器设备 ID（可选）"
         },
         "data_description": {
-          "name": "在 Home Assistant 里显示的名字。部署多台充电器时用它区分。",
+          "name": "这里改的是集成条目/“中枢”那层的标签，不是设备名——设备名永远跟着服务端走。在这里改名会把它固定下来（自动同步不再动它）；留空或不改则继续跟随服务端的设备名。",
           "server_url": "本 entry 对接的 ble_server（或 ESP32）地址。",
           "topic_prefix": "该条目订阅与发布所用的主题前缀，留空即 cuktech/charger。",
           "device_id": "服务器不支持按设备寻址（ESP32、旧版服务器）时请留空。"

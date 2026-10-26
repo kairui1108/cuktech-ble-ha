@@ -17,6 +17,14 @@ DEFAULT_SERVER_URL = "http://localhost:8199"
 CONF_DEVICE_ID = "device_id"
 CONF_TOPIC_PREFIX = "topic_prefix"
 
+# options flow 里用户主动改过的显示名：置位后运行时不再拿服务端的名字覆盖它
+# （"自动同步"不能变成"自动覆盖用户的选择"）。清空名称保存 = 取消置位，回到自动同步。
+CONF_NAME_PINNED = "name_pinned"
+
+# 服务端 primary 的固定 id（`ble:` 节合成的那台，见 ble_server/config.py 的
+# PRIMARY_DEVICE_ID）。HA 侧只用在"服务端没给 device 配 name"时的显示名兜底。
+PRIMARY_DEVICE_ID = "default"
+
 # MQTT Topics —— 自 v1.2 起只剩"缺省值"这一层语义。
 # 前缀过去是模块级常量，所有 entry 共用同一组 topic：再加一个 entry 就会互相
 # 串台（A 的 status 喂进 B 的实体、A 的限额命令发给 B 的充电器）。现在前缀由
@@ -210,6 +218,9 @@ CHARGE_LIMIT_ICON = "mdi:battery-charging-60"
 
 # ── 运行时常量 (coordinator 使用，避免魔法值散落) ──
 HEALTH_CHECK_INTERVAL = timedelta(seconds=30)   # HTTP 健康检查周期
+# 设备名对齐周期（§4.5）：服务端改名后不需要重启 HA 就能跟上。名字不会天天变，
+# 5 分钟一次的小 JSON 请求可以忽略；比"只在对 setup 时对齐"实用得多。
+NAME_SYNC_INTERVAL = timedelta(minutes=5)
 HTTP_TIMEOUT = 10                                # HTTP 请求超时 (秒)
 BLE_OPERATION_TIMEOUT = 30                       # BLE 开关操作超时 (秒)
 CHARGE_EVENT_BUFFER = 50                         # 充电事件缓冲上限 (条)

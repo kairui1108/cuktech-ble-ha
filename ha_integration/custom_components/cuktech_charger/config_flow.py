@@ -17,11 +17,13 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import (
     API_DEVICES,
     CONF_DEVICE_ID,
+    CONF_NAME_PINNED,
     CONF_SERVER_URL,
     CONF_TOPIC_PREFIX,
     DEFAULT_SERVER_URL,
     DOMAIN,
     HTTP_TIMEOUT,
+    PRIMARY_DEVICE_ID,
     TOPIC_PREFIX,
     entry_string,
 )
@@ -275,6 +277,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             topic_prefix = device["topic_prefix"] or TOPIC_PREFIX
             device_id = device["id"]
             name = device["name"]
+            if name == device_id:
+                # 服务端没给这台配 `name`（`_normalise_device` 回填的是 id）：
+                # 直接拿 id 当显示名，多台就会看到 "desk"/"bed" 或一串同名；
+                # 用默认名兜底，并给非 primary 补上 id 以免两台长得一模一样。
+                name = (DEFAULT_NAME if device_id == PRIMARY_DEVICE_ID
+                        else f"{DEFAULT_NAME} ({device_id})")
         else:
             topic_prefix = typed_prefix or TOPIC_PREFIX
             device_id = None
@@ -403,9 +411,15 @@ class CuktechOptionsFlow(config_entries.OptionsFlow):
 
             updates: dict[str, Any] = {"data": new_data}
             new_name = (user_input.get(CONF_NAME) or "").strip()
-            # 显示名单独走 title（§4.5）：改名字不该改动 data，也不该换 unique_id
+            # 显示名单独走 title（§4.5）：改名字不该改动 data，也不该换 unique_id。
+            # 同时记下"这是用户起的名"：运行时的设备名自动同步遇到它就停手，否则
+            # 用户改完名字、下一次 reload 就被服务端的名字顶回去（安静地失效）。
             if new_name and new_name != getattr(entry, "title", None):
                 updates["title"] = new_name
+                new_data[CONF_NAME_PINNED] = True
+            elif not new_name:
+                # 清空名称 = 交回自动同步（下次 setup 会按服务端上报的名字对齐）
+                new_data.pop(CONF_NAME_PINNED, None)
             self.hass.config_entries.async_update_entry(entry, **updates)
             await self.hass.config_entries.async_reload(entry.entry_id)
             return self.async_create_entry(title="", data={})
