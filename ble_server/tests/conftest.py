@@ -1,8 +1,10 @@
 """Shared fixtures for CUKTECH BLE Server tests."""
 import asyncio
+import hashlib
 import os
 import sqlite3
 import tempfile
+import zlib
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -67,6 +69,11 @@ def pytest_configure(config):
     """收集前自查依赖，避免"解释器选错"披着 55 个 setup error 的外衣出现。"""
     import sys as _sys
 
+    # 逃生门：这条检查是全局的（收集前就跑），而它只关心"要不要连 MQTT"。
+    # 只想跑不碰 MQTT 的子集（例如单跑 test_protocol.py、或在没有 paho 2.x 的
+    # 环境里做别的验证）时，CUKTECH_SKIP_PAHO_CHECK=1 放行。
+    if os.environ.get("CUKTECH_SKIP_PAHO_CHECK") == "1":
+        return
     problem = _paho_version_problem()
     if problem is None:
         return
@@ -141,8 +148,25 @@ def mock_ble_data():
 DEFAULT_PRIMARY_MAC = "AA:BB:CC:DD:EE:01"
 DEFAULT_PRIMARY_TOKEN = "00112233445566778899aabbccddeeff"
 DEFAULT_TOPIC_PREFIX = "cuktech/charger"
-# 追加设备的凭据必须各不相同且是合法 hex（BLEManager.__init__ 会 bytes.fromhex）
+# 追加设备的凭据必须是合法 hex（BLEManager.__init__ 会 bytes.fromhex）。
+# make_device 默认按 id 派生（逐台不同），这个常量留给"要显式指定 token"的用例。
 EXTRA_DEVICE_TOKEN = "ffeeddccbbaa99887766554433221100"
+
+
+def _derived_byte(text: str) -> int:
+    """由设备 id 稳定派生一个字节（不同 id → 不同字节，同一 id → 同一字节）。"""
+    return zlib.crc32(text.encode("utf-8")) & 0xFF
+
+
+def _derived_token(device_id: str) -> str:
+    """按 id 派生 32 位十六进制凭据，保证合法 hex 且逐台不同。
+
+    真机认证会做凭据校验、服务端也会按 MAC/凭据去重——所有附加设备共用同一个
+    token 的脚手架，一旦有人加"凭据不可重复"的校验就会集体变红，而且原因看起来
+    完全无关。派生比手抄一个常量更难出错。
+    """
+    digest = hashlib.sha256(("token:" + device_id).encode("utf-8")).hexdigest()
+    return digest[:32]
 
 
 def make_device(device_id: str, *, mac: str | None = None, token: str | None = None,
@@ -155,8 +179,10 @@ def make_device(device_id: str, *, mac: str | None = None, token: str | None = N
     dev = {
         "id": device_id,
         "name": name or device_id,
-        "mac": mac or f"AA:BB:CC:DD:EE:{10 + len(device_id):02X}",
-        "token": token or EXTRA_DEVICE_TOKEN,
+        # MAC 必须按 id **内容**派生：曾经写成 `10 + len(id)`，于是 desk/bed
+        # （同为 4 字符）拿到同一个 MAC，直接撞 P1 的"MAC 不可重复"校验。
+        "mac": mac or f"AA:BB:CC:DD:EE:{_derived_byte(device_id):02X}",
+        "token": token or _derived_token(device_id),
         "topic_prefix": topic_prefix,
     }
     dev.update(extra)
@@ -202,6 +228,12 @@ def make_config_yaml(*, ble: dict | None = None, devices: list[dict] | None = No
 
 
 def _yaml_scalar(value) -> str:
+    if isinstance(value, dict):
+        # 不处理 dict 的话会走最后那条 `f'"{value}"'`，把
+        # `{"entities": [{"name": "x"}]}` 落成 `"{'name': 'x'}"`——YAML 解析出来
+        # 是一个**字符串元素**，不是对象列表：脚手架看起来配了、实际是垃圾。
+        # `bemfa.entities` 与 `make_device(**extra)` 的嵌套字段都在这条路上。
+        return "{" + ", ".join(f"{k}: {_yaml_scalar(v)}" for k, v in value.items()) + "}"
     if isinstance(value, (list, tuple)):
         # 列表走 flow 风格：`allowed_devices: [default, desk]`。渲染成带引号的字符串
         # 会让测试脚手架"看起来配了"、实际解析成一段文本（比不写更坏）。
@@ -256,6 +288,10 @@ def make_config(*, ble: dict | None = None, devices: list[dict] | None = None,
             log_level=server.get("log_level", "warning"),
             history_retention_days=server.get("history_retention_days", 30),
             history_db_path=server.get("history_db_path", "port_history.db"),
+            # 显式归零：`ServerConfig` 的生产默认是 2s/台，直接构造的用例若不归零，
+            # 每多一台设备就多睡 2s，还会让"启动即断言"变成时序赌博
+            # （golden_harness 里是显式归零的，两条入口必须同口径）。
+            startup_stagger_sec=server.get("startup_stagger_sec", 0.0),
         ),
     )
     # P1 起 `devices` 是真 `DeviceConfig` 列表（不是裸 dict）：校验规则与 registry
@@ -270,14 +306,8 @@ def make_config(*, ble: dict | None = None, devices: list[dict] | None = None,
     return cfg
 
 
-@pytest.fixture
-def config_factory():
-    """`make_config` 的 fixture 形态（多设备用例可读性）。"""
-    return make_config
-
-
-@pytest.fixture
-def device_configs(config_factory):
-    """primary + 2 台附加设备：多设备用例的最小可用配置。"""
-    return config_factory(devices=[make_device("desk"), make_device("bed")])
+# 这里曾有 `config_factory` / `device_configs` 两个 fixture，全套用例没有一个
+# 引用它们。`device_configs` 还正好踩在 make_device 的 MAC 碰撞 bug 上
+# （desk/bed 同长 → 同 MAC），也就是说它"守"的契约其实一碰就碎。用例直接用
+# `make_config(devices=[make_device("desk"), make_device("bed")])` 即可。
 

@@ -39,7 +39,6 @@
     var fleetSig = '';
     var timer = null;
     var energy = {};             // device_id -> {wh, at, pending}
-    var lastDevice = null;       // 进汇总页前停在哪台，退出来时回到它
     var preview = false;         // ?preview=multi：在伪造设备上验收切换（见 fakeDevices）
 
     function t(key, params) {
@@ -716,7 +715,6 @@
     function enterFleet() {
         if (mode === 'fleet') return;
         mode = 'fleet';
-        lastDevice = currentId();
         document.body.classList.add('fleet-mode');
         if (fleetHost) fleetHost.hidden = false;
         fetchEnergy();

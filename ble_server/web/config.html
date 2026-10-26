@@ -394,6 +394,17 @@ function emptyDevice(isPrimary) {
     };
 }
 
+/** 设备 id 的规范形式（trim）。
+ *
+ * 输入框里可能还留着用户正在敲的尾空格，但 id 的"身份"只有 trim 后那一种：
+ * 落盘写的是 `d.id.trim()`，服务端校验也按它；巴法云实体的 `device` 若拿原始
+ * 输入去比对，就会出现"实体指向 'desk '、设备却叫 desk"——本地看全都对，保存时
+ * 服务端以「实体指向的设备不存在」拒收整份配置。
+ */
+function canonicalDeviceId(device) {
+    return String((device && device.id) || '').trim();
+}
+
 function findDeviceIndex(pred) {
     for (let i = 0; i < _devices.length; i++) if (pred(_devices[i], i)) return i;
     return -1;
@@ -404,8 +415,16 @@ function updateDeviceField(index, field, value) {
     if (!d) return;
     const prev = d[field];
     d[field] = value;
-    // 设备 ID 是巴法云实体绑定的锚：改名时实体跟着改，否则保存才报"设备不存在"
-    if (field === 'id' && prev !== value) remapBemfaDevice(prev, value);
+    // 设备 ID 是巴法云实体绑定的锚：改名时实体跟着改，否则保存才报"设备不存在"。
+    // 必须用 **trim 后**的值重绑：saveConfig 落盘写的是 d.id.trim()、validateDevices
+    // 也按 trim 后的值校验，这里若拿原始输入（'desk ' 带尾空格）去重绑，本地校验会
+    // 通过、设备 id 存成 desk、实体却指向 'desk ' —— 服务端以"实体指向的设备不存在"
+    // 拒收整份配置，正好是"保存成功但启动失败"。
+    if (field === 'id') {
+        const nextId = String(value === undefined || value === null ? '' : value).trim();
+        const prevId = String(prev === undefined || prev === null ? '' : prev).trim();
+        if (prevId !== nextId) remapBemfaDevice(prevId, nextId);
+    }
     // 名字/MAC 直接投影到卡片头，避免"改了输入框、上面那行还是旧的"
     if (field === 'name' || field === 'mac' || field === 'id') {
         const head = document.getElementById(`device-name-${index}`);
@@ -514,7 +533,7 @@ function removeDevice(index) {
     if (!confirm(I18N.t('config.confirmRemoveDevice', { name: deviceLabel(d) }))) return;
     // 绑定在这台设备上的语音实体一起删：留着的话保存会被服务端拦下（指向的设备
     // 不存在），而用户根本不知道那个报错来自自己刚删的这台
-    dropBemfaEntitiesOf(d.id || 'default');
+    dropBemfaEntitiesOf(canonicalDeviceId(d) || 'default');
     _devices.splice(index, 1);
     _editing = -1;
     renderDeviceList();
@@ -540,7 +559,7 @@ function bemfaPortLabel(port) {
 // 默认显示名：primary 沿用配置里的老名字（升级后语音指令一个都不变），
 // 其他设备用"设备名 + 端口"——否则 N 台设备的开关在巴法云 App 里全都叫"C口1开关"。
 function defaultBemfaName(deviceId, port) {
-    const d = _devices.find(x => (x.id || '') === deviceId);
+    const d = _devices.find(x => canonicalDeviceId(x) === deviceId);
     const isPrimary = !!d && d.is_primary;
     if (isPrimary) {
         if (port === 'c1') return I18N.t('config.placeholderC1');
@@ -562,14 +581,14 @@ function renderBemfaEntities() {
         return;
     }
     host.innerHTML = _bemfaEntities.map((e, i) => {
-        const knownIds = _devices.map(d => d.id || '');
+        const knownIds = _devices.map(canonicalDeviceId);
         // 设备下拉：配置里引用的设备不存在（手改 YAML、或设备卡片被删）时补一个
         // 占位项——否则 select 会静默显示第一台设备，保存时把开关挪到别人家的口上
         const missingOpt = knownIds.indexOf(e.device) < 0
             ? `<option value="${escText(e.device)}" selected>${escText(e.device)}（${escText(I18N.t('config.bemfaMissingDevice'))}）</option>`
             : '';
         const devOpts = _devices.map(d => {
-            const id = d.id || '';
+            const id = canonicalDeviceId(d);
             return `<option value="${escText(id)}"${id === e.device ? ' selected' : ''}>${escText(deviceLabel(d))}</option>`;
         }).join('');
         const portOpts = BEMFA_PORTS.map(p =>
@@ -644,7 +663,7 @@ function removeBemfaEntity(index) {
 
 // primary 的某个口的显示名（老字段 name_c* 就是它）：表里找不到就用默认值
 function primaryBemfaName(port, fallback) {
-    const primaryId = _devices.length ? (_devices[0].id || 'default') : 'default';
+    const primaryId = _devices.length ? (canonicalDeviceId(_devices[0]) || 'default') : 'default';
     const hit = _bemfaEntities.find(e => e.device === primaryId && e.port === port);
     const name = hit ? String(hit.name || '').trim() : '';
     return name || fallback;
@@ -694,7 +713,7 @@ function validateBemfaEntities() {
         const key = `${e.device}\u0000${e.port}`;
         if (seen[key]) { showToast(I18N.t('config.bemfaDuplicate', { name: name }), 5000); return false; }
         seen[key] = true;
-        if (!_devices.some(d => (d.id || '') === e.device)) {
+        if (!_devices.some(d => canonicalDeviceId(d) === e.device)) {
             showToast(I18N.t('config.bemfaDeviceGone', { name: name }), 5000);
             return false;
         }
@@ -732,7 +751,7 @@ function toggleBemfaSection() {
 // 前端不重复实现一遍规则（那才会漂移）。
 function seedBemfaEntities(b) {
     b = b || {};
-    const primaryId = _devices.length ? (_devices[0].id || 'default') : 'default';
+    const primaryId = _devices.length ? (canonicalDeviceId(_devices[0]) || 'default') : 'default';
     if (b.entitiesDefined) {
         _bemfaEntities = (b.entities || []).map(e => ({
             name: e.name || '',

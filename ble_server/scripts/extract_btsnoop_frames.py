@@ -913,7 +913,12 @@ def main(argv=None) -> int:
         ap.error("no capture files given")
     token = None
     if args.token_hex:
-        token = bytes.fromhex(args.token_hex.strip())
+        try:
+            token = bytes.fromhex(args.token_hex.strip())
+        except ValueError:
+            print("--token-hex 必须是 24 个十六进制字符（12 字节），不含分隔符",
+                  file=sys.stderr)
+            return 2
     elif args.token_file:
         token = read_token_from_config(args.token_file)
     if token is not None and len(token) != 12:

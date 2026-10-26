@@ -17,7 +17,10 @@ COPY src/ src/
 RUN pip install --no-cache-dir .
 
 COPY web/ web/
-COPY state.py state_protocol_v2.py history.py config.py ble_manager.py ha_server.py bemfa_client.py energy.py downsample.py xiaomi_cloud.py ./
+# 顶层模块**整目录**拷：以前这里是手抄的文件清单，多设备改造新增的
+# adapter_coordinator.py / log_utils.py 就漏了，而 ha_server.py 顶层 import 它们
+# ——镜像一启动就 ModuleNotFoundError，而测试与 CI 都看不到（它们跑的是源码树）。
+COPY *.py ./
 
 RUN mkdir -p /data
 

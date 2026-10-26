@@ -715,6 +715,13 @@ class CuktechMQTTCoordinator:
         what they do with the answer, so they share this one implementation.
         """
         urls = self._limit_urls()
+        if body is not None and self.device_id:
+            # **写**请求不许跨设备降级：设备维度 URL 回 404 说明这个 device_id
+            # 在服务端已不存在（设备被删/改名，而 entry 里还留着旧 id）。这时
+            # 退回老端点会把限额写进 primary 那台充电器，而且同样是 200——
+            # 用户以为改的是书房那台，实际改的是客厅那台，没有任何报错。
+            # 读路径保留阶梯：读错设备最多数值不对，不会污染对方的状态。
+            urls = urls[:1]
         reason = "no URL attempted"
         for index, url in enumerate(urls):
             limits, reason, status = await self._async_limit_call(url, body)

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -80,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
                          "或脚本同目录 config.yaml）")
     ap.add_argument("--dry-run", action="store_true", help="只打印 topic，不连接 broker")
     ap.add_argument("--wait", type=float, default=1.0, help="发布后等待秒数（默认 1s）")
+    ap.add_argument("--connect-timeout", type=float, default=10.0,
+                    help="TCP 连接超时秒数（默认 10s；broker 不可达时别卡在系统默认上）")
     ap.add_argument("--prefix", action="append", default=[], metavar="PREFIX",
                     help="额外清理这些前缀（可重复）。用于「已经从配置里删掉或改掉的旧"
                          "前缀」：那种前缀无法从当前配置推导，只能手工指定，这也是 MQTT "
@@ -119,7 +122,18 @@ def main(argv: list[str] | None = None) -> int:
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     if mqtt_cfg.username:
         client.username_pw_set(mqtt_cfg.username, mqtt_cfg.password)
-    client.connect(mqtt_cfg.host, mqtt_cfg.port, 5)
+    # paho 的签名是 connect(host, port=1883, keepalive=60, bind_address="")：
+    # 第三个位置参数是 **keepalive**（心跳间隔），不是连接超时。以前写死的 5 秒
+    # 把心跳压成了 5s，而真正的连接超时一个都没设——broker 不可达时脚本会一直卡在
+    # TCP 握手上（Linux 默认 ~2 分钟）。`Client.connect()` 自己不设超时，而它内部
+    # 用 `socket.create_connection()`（走 `socket.getdefaulttimeout()`），所以这里
+    # 显式设一个默认超时兜底，跑完还原，别影响同进程里的后续代码。
+    prev_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(args.connect_timeout)
+    try:
+        client.connect(mqtt_cfg.host, mqtt_cfg.port, mqtt_cfg.keepalive or 60)
+    finally:
+        socket.setdefaulttimeout(prev_timeout)
     client.loop_start()
     try:
         clean(client, topics)

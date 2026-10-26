@@ -226,6 +226,32 @@ setTimeout(async () => {
         eq(ctx.__posts.length, before2, '缺 token → 不提交');
     }
 
+    console.log('\n-- 设备改名：巴法云实体重绑必须用 trim 后的 id --');
+    {
+        // 落盘写的是 d.id.trim()、validateDevices 也按 trim 后的值校验；重绑若拿
+        // 原始输入（'desk ' 带尾空格），本地校验会通过、设备 id 存成 desk、实体却
+        // 指向 'desk ' —— 服务端随后以「实体指向的设备不存在」拒收整份配置。
+        peek(ctx, `updateDeviceField(1, 'token', 'tok-desk')`);   // 上一节清空过
+        peek(ctx, `_bemfaEntities.push({ name: 'tmp-trim-row', device: 'desk', port: 'c1' })`);
+        peek(ctx, `updateDeviceField(1, 'id', 'desk ')`);
+        const rows = JSON.parse(peek(ctx, 'JSON.stringify(_bemfaEntities)'));
+        ok(!rows.some(r => r.device === 'desk '), '实体不会绑到带尾空格的 id 上');
+        ok(rows.some(r => r.device === 'desk'), '实体跟着改成 trim 后的 id');
+
+        // 存一次：payload 里必须是 trim 后的 id（否则服务端校验直接拒收）
+        const before = ctx.__posts.length;
+        await peek(ctx, 'saveConfig()');
+        ok(ctx.__posts.length > before, '尾空格不该让保存被前端拦下（校验按 trim 后的值）');
+        const saved = ctx.__posts[ctx.__posts.length - 1];
+        const savedIds = (saved.body.config.devices || []).map(d => d.id);
+        ok(!savedIds.some(id => id !== String(id).trim()),
+           `落盘的设备 id 必须是 trim 过的，实际：${JSON.stringify(savedIds)}`);
+
+        // 复原给后续用例：id 改回 'desk'，临时那行实体删掉
+        peek(ctx, `updateDeviceField(1, 'id', 'desk')`);
+        peek(ctx, `_bemfaEntities = _bemfaEntities.filter(e => e.name !== 'tmp-trim-row')`);
+    }
+
     console.log('\n-- 巴法云语音开关表：一行 = (名字, 设备, 端口) --');
     {
         const rows = () => JSON.parse(peek(ctx, 'JSON.stringify(_bemfaEntities)'));

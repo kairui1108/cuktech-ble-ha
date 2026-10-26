@@ -394,18 +394,11 @@ class TestConnectSemaphore:
         await asyncio.gather(*(worker(i) for i in range(8)))
         assert sorted(done) == list(range(8))
 
-    async def test_stagger_delay_is_zero_for_first_device(self, coord):
-        """N=1（index 0）零延迟：单设备启动时序与改造前一致。"""
-        coord.startup_stagger_sec = 2.0
-        slept = []
-
-        async def fake_sleep(sec):
-            slept.append(sec)
-
-        coord.sleep = fake_sleep
-        await coord.stagger_delay(0)
-        await coord.stagger_delay(2)
-        assert slept == [4.0], "第 2 台设备应等 2×stagger，第一台必须零延迟"
+    # 原先这里有一条 `coord.stagger_delay()` 的用例：协调器曾经自己睡错峰，
+    # 但生产链路里真正的错峰是 RuntimeSupervisor._startup_delay（on_startup 按
+    # index 注入），协调器只在 startup_stagger_sec 提供数值、不再有调用者——留着
+    # 一条"测一个没人调的方法"的用例只会让人以为错峰发生在协调器里。错峰契约由
+    # 下面 TestRecoveryGate::test_on_startup_staggers_by_registry_order 守着。
 
 
 class TestAuthStuckEscalation:

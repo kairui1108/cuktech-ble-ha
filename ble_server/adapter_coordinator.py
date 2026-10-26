@@ -152,15 +152,6 @@ class AdapterCoordinator:
         """每次重连尝试**之前**都要过这道门（L2 期间会挡住所有 manager）。"""
         await self.recovery_gate.wait()
 
-    async def stagger_delay(self, index: int) -> None:
-        """启动错峰：第 index 台设备启动前等 index × startup_stagger_sec。
-
-        单设备（index=0）恒为 0 延迟——N=1 的启动时序与改造前完全一致。
-        """
-        if index <= 0 or self.startup_stagger_sec <= 0:
-            return
-        await self.sleep(index * self.startup_stagger_sec)
-
     # ────────────────────── 扫描（合并 + 清理收口）──────────────────────
 
     async def scan_cleanup(self) -> None:
@@ -226,7 +217,15 @@ class AdapterCoordinator:
                     fut.set_result(None)
                 return fut.result()
         finally:
-            self._pending.pop(key, None)
+            # 只有仍归自己时才摘牌（期间可能有新窗口把 key 换成另一个 Future）
+            if self._pending.get(key) is fut:
+                self._pending.pop(key, None)
+            # 领导者被取消（RuntimeSupervisor.stop()/per-device 重建正好落在
+            # scan_cleanup/_discover 上）时走到这里：跟随者手里握着这个 Future 且
+            # `await pending` 没有超时，不收尾就是**永久悬挂**——该 MAC 之后再也
+            # 重连不上，也没有任何日志。按"这次没扫到"收尾，让它们照常重试。
+            if not fut.done():
+                fut.set_result(None)
 
     @staticmethod
     def _mac_bytes_hex(mac: str) -> str:
@@ -317,7 +316,9 @@ class AdapterCoordinator:
         1. 关门闸 → 所有 manager 的重连循环停在 `wait_recovery_gate()`；
         2. 逐个 L1 断开所有活链路；
         3. power off → 3s → power on → 就绪探测（15 轮）；
-        4. 开门闸 → 各 manager 按注册顺序错峰放行（错峰由 `stagger_delay` 负责）。
+        4. 开门闸 → 各 manager 按注册顺序错峰放行。错峰本身由 `RuntimeSupervisor`
+           的 `_startup_delay` 负责（`on_startup` 里按 `set_startup_delay(stagger ×
+           index)` 注入）；协调器只在 `startup_stagger_sec` 这一处提供数值，不自己睡。
         """
         async with self.adapter_lock:
             self.recovery_gate.clear()

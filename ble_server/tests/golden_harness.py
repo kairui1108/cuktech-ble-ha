@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 
-# 冻结墙钟：2025-11-24T21:20:00Z。这个数本身没有含义，"固定"才是要求——
+# 冻结墙钟：2025-11-24T16:00:00Z。这个数本身没有含义，"固定"才是要求——
 # 快照里凡是来源于 time.time() 的值都必须由这个常数决定；一旦某处把"运行时刻"
 # 泄进外部可见载荷，golden 就会炸，这正是它要抓的回归。
 FROZEN_NOW = 1764000000.0
@@ -164,7 +164,6 @@ async def _ble_start_stub(self):
     真 `start()` 会扫描/连接/认证，golden 不需要硬件；但**需要** `on_startup`
     照常创建那个 task（P1 装配面测试正是要验证 task 归属与 supervisor）。
     """
-    self._golden_started = True
     with contextlib.suppress(asyncio.CancelledError):
         await self._stop_event.wait()
 
@@ -313,8 +312,15 @@ async def golden_env(*, mqtt_enabled: bool = True, apply_startup: bool = True,
         yield env
     finally:
         if env is not None and apply_startup:
-            with contextlib.suppress(Exception):
+            try:
                 await ha_server.on_shutdown(None)
+            except Exception:
+                # 这里**不能**静默 suppress：收尾失败（supervisor 任务/SSE 客户端/
+                # history 连接没回收）正是脚手架该抓的回归，吞掉会让泄漏跨用例
+                # 累积成"Task was destroyed but it is pending"这类无主噪音。
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "golden_env: on_shutdown 失败（资源可能没回收）", exc_info=True)
         for p in patches:
             with contextlib.suppress(Exception):
                 p.stop()
@@ -358,7 +364,9 @@ def diff_report(expected, actual, limit: int = 20) -> list[str]:
             if e != a:
                 lines.append(f"  [{k}] 期望={e!r} 实际={a!r}")
                 if isinstance(e, dict) and isinstance(a, dict):
-                    lines.extend("  " + s for s in diff_report(e, a, limit=limit - len(lines)))
+                    # 必须 max(0, …)：负数切片返回的是"末尾若干条"，丢掉的恰恰是
+                    # 差异最深的那几行——而这段输出是快照失败时唯一的排障线索。
+                    lines.extend("  " + s for s in diff_report(e, a, limit=max(0, limit - len(lines))))
     elif isinstance(expected, list) and isinstance(actual, list):
         if len(expected) != len(actual):
             lines.append(f"  长度不同：期望 {len(expected)}，实际 {len(actual)}")

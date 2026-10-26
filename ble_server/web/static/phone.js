@@ -7,9 +7,11 @@ const API_BASE = window.location.origin;
 let phoneEvtSource = null;
 
 // 设备下拉菜单的门闩：renderAll() 在很早就可能被调用（init 的重放），而菜单
-// 那几个 DOM 引用是文件靠后处的 const（那时还在 TDZ 里）。var 在脚本开头就已
-// 初始化，所以先用它挡住早期调用，菜单段执行完再打开。
-var deviceMenuReady = false;
+// 那几个 DOM 引用是文件靠后处的 const（那时还在 TDZ 里）。声明放在脚本最顶部，
+// 顶部声明在脚本开始执行时就完成初始化——比菜单段那几个 DOM 引用早得多，所以
+// 用它挡住早期调用；菜单段执行完再打开。（`let` 的 TDZ 只覆盖"声明之前的那行
+// 代码"，而这里没有任何代码在它前面。）
+let deviceMenuReady = false;
 
 // Localized scene names/descriptions (keys into the i18n resource packs)
 function sceneName(mode) { return I18N.t('scene.' + ({ 1: 'ai', 2: 'eco', 3: 'single', 4: 'balanced' }[mode] || 'ai')); }
@@ -1278,9 +1280,11 @@ function initPhoneSSE() {
 // bfcache: close on leave, reopen on return（只注册一次，见文件末尾的 Init 段）
 window.addEventListener('pagehide', () => {
     if (phoneEvtSource) { phoneEvtSource.close(); phoneEvtSource = null; }
+    stopDeviceMenuTicker();          // 进 bfcache 后没人看得见菜单，别让它继续每秒醒
 });
 window.addEventListener('pageshow', () => {
     if (!phoneEvtSource && typeof initPhoneSSE === 'function') initPhoneSSE();
+    if (deviceMenuOpen) startDeviceMenuTicker();
 });
 
 function applyFullStatus(data) {
@@ -1475,6 +1479,23 @@ const deviceMenuCaret = document.getElementById('deviceMenuCaret');
 const deviceMenu = document.getElementById('deviceMenu');
 const deviceMenuList = document.getElementById('deviceMenuList');
 let deviceMenuOpen = false;
+// 展开时每秒刷新一次读数。定时器只在菜单打开期间存在：手机页是**常驻**页面
+// （PWA 常驻后台），一个永不清除的 1s 定时器就是终生空转唤醒，而它刷新的东西
+// 只有菜单里看得见。与 phoneEvtSource 同一条生命周期：关闭即清、进 bfcache 即清。
+// 声明必须紧跟 deviceMenuOpen：文件末尾的 renderDeviceMenu(true) 会经由
+// closeDeviceMenu() 走到 stopDeviceMenuTicker()，晚于这行声明才安全（TDZ）。
+let deviceMenuTimer = null;
+
+function startDeviceMenuTicker() {
+    if (deviceMenuTimer) return;
+    deviceMenuTimer = setInterval(function () { renderDeviceMenu(false); }, 1000);
+}
+
+function stopDeviceMenuTicker() {
+    if (!deviceMenuTimer) return;
+    clearInterval(deviceMenuTimer);
+    deviceMenuTimer = null;
+}
 let deviceMenuSig = '';
 deviceMenuReady = true;      // 到这里 DOM 引用都拿到了，早期调用可以真正干活了
 
@@ -1609,9 +1630,11 @@ function openDeviceMenu() {
     deviceMenu.hidden = false;
     deviceMenuBtn.setAttribute('aria-expanded', 'true');
     renderDeviceMenu(true);
+    startDeviceMenuTicker();
 }
 
 function closeDeviceMenu() {
+    stopDeviceMenuTicker();
     if (!deviceMenu || !deviceMenuOpen) {
         if (deviceMenu) deviceMenu.hidden = true;
         if (deviceMenuBtn) deviceMenuBtn.setAttribute('aria-expanded', 'false');
@@ -1680,4 +1703,3 @@ if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
     I18N.onChange(function () { renderDeviceMenu(true); });
 }
 renderDeviceMenu(true);
-setInterval(function () { if (deviceMenuOpen) renderDeviceMenu(false); }, 1000);

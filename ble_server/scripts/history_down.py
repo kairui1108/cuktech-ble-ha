@@ -123,11 +123,20 @@ def archive_non_primary(db_path: str, *, dry_run: bool = False,
         stats["port_history"] = conn.execute(
             "SELECT COUNT(*) FROM port_history WHERE device_id != ?",
             (device_id,)).fetchone()[0]
-        # ④ 命名空间 meta 键（`{id}:{key}` 形如 `desk:charge_limit_wh`）
-        meta_sql = "key LIKE '%:%' AND key NOT LIKE ?"
+        # ④ 命名空间 meta 键（`{id}:{key}` 形如 `desk:charge_limit_wh`）。
+        # primary 用的是**裸键**（见 PortHistory.meta_key），所以"属于具名设备"
+        # 的判据是"键里带冒号"；这里再排除本次保留的 device_id 前缀，参数化一次、
+        # 统计/归档/删除共用同一份 SQL 与参数——手抄两次就必然有漂移的一天。
+        # LIKE 的 `%` 与 `_` 都是通配符，而设备 id 允许下划线（`desk_1` 合法）：
+        # 不转义的话 `NOT LIKE 'desk_1:%'` 会连带排除 `deskx1:...` 这类**别的**
+        # 设备的键——该归档的没归档，还留在主库里（stats 也会少算）。
+        like_id = (device_id.replace("\\", "\\\\")
+                   .replace("%", "\\%").replace("_", "\\_"))
+        meta_sql = "key LIKE '%:%' AND key NOT LIKE ? ESCAPE '\\'"
+        meta_params = (f"{like_id}:%",)
         stats["meta"] = conn.execute(
             f"SELECT COUNT(*) FROM meta WHERE {meta_sql}",
-            (f"%:{device_id}",)).fetchone()[0]
+            meta_params).fetchone()[0]
 
         if dry_run or not any(v for k, v in stats.items()):
             return stats
@@ -157,8 +166,8 @@ def archive_non_primary(db_path: str, *, dry_run: bool = False,
             conn.execute(
                 "INSERT OR IGNORE INTO meta_archive (key, value, archived_at) "
                 "SELECT key, value, strftime('%s','now') FROM meta WHERE "
-                f"{meta_sql}", (f"%:{device_id}",))
-            conn.execute(f"DELETE FROM meta WHERE {meta_sql}", (f"%:{device_id}",))
+                f"{meta_sql}", meta_params)
+            conn.execute(f"DELETE FROM meta WHERE {meta_sql}", meta_params)
 
         conn.commit()
         return stats

@@ -2694,8 +2694,13 @@ class Server:
             _LOGGER.error("Config save failed: %s", e)
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
-    #: `devices:` 节允许落盘的字段（与 `DeviceConfig.from_mapping` 对齐）
-    _DEVICE_KEYS = ("id", "name", "mac", "token", "ble_key", "topic_prefix", "bemfa_ble")
+    #: `devices:` 节允许落盘的字段（与 `DeviceConfig.from_mapping` 对齐）。
+    #: `bemfa_<port>` 必须覆盖**全家族**（c1/c2/c3/a/ble）：`from_mapping` 收的是
+    #: 任意 `bemfa_*` 键，这里若只放行 `bemfa_ble`，用户手写的 `bemfa_c1: xxx`
+    #: 会在任意一次 Web 端保存后被静默丢弃——重启后实体 id 回落派生值，巴法云主题
+    #: 随之改变，语音联动失效。清单从 BEMFA_PORTS 派生，不再手抄。
+    _DEVICE_KEYS = ("id", "name", "mac", "token", "ble_key", "topic_prefix",
+                    *(f"bemfa_{port}" for port in BEMFA_PORTS))
 
     def _effective_sections(self, existing: dict) -> dict:
         """合成"本次要写入的那份配置"的有效 YAML 视图，用来跑启动校验。

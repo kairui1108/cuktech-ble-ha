@@ -71,7 +71,11 @@ class TestMultiDeviceShape:
         assert docs["devices"][0]["topic_prefix"] == ""       # 空 = 自动派生
         assert docs["devices"][1]["topic_prefix"] == "cuktech/bed"
         assert docs["devices"][0]["mac"] != docs["devices"][1]["mac"]
-        assert docs["devices"][0]["token"].startswith("ff")
+        # 凭据必须合法 hex（BLEManager 会 bytes.fromhex）、且**逐台不同**：
+        # 早先所有附加设备共用一个 token，任何"凭据不可重复"的校验一加就集体变红。
+        tokens = [d["token"] for d in docs["devices"]]
+        assert all(len(t) == 32 and all(c in "0123456789abcdef" for c in t) for t in tokens)
+        assert tokens[0] != tokens[1]
 
     def test_empty_devices_section_is_written_not_omitted(self):
         """`devices=[]` 写出空节：P1 校验要区分"节缺失"与"节为空"。"""

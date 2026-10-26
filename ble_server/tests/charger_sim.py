@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import struct
 import sys
@@ -199,6 +200,18 @@ class _VirtualBleClient:
         self.is_connected = True
         self.mtu_size = 185
 
+    async def read_gatt_char(self, char):
+        """与 `bleak.BleakClient` 对齐的最小读口。
+
+        `ble_manager._connect_and_run()` 的 60s 静默链路探测会
+        `await client.read_gatt_char(CHAR_FW_VERSION)`；替身缺这个方法时抛的是
+        `AttributeError`，被外层 `except Exception: lost = True` 吃掉 → 测试看到
+        的是"设备掉线 → 触发分级恢复"，而不是"替身少了方法"，排障方向直接跑偏。
+        """
+        if char == CHAR_FW_VERSION:
+            return self._ctrl.charger.firmware.encode("ascii") + b"\x00"
+        return b""
+
     def _queue(self, name: str) -> asyncio.Queue:
         q = self._ctrl._notify_queues.get(name)
         if q is None:
@@ -237,6 +250,7 @@ class _VirtualBleClient:
         if len(data) < 3 or data[0:2] != bytes([0x01, 0x00]):
             return
         plaintext = sim_decrypt_app(self._ctrl._session_keys, data[2:])
+        self._ctrl.request_count += 1      # 文档承诺的"处理过的请求明文帧数"
         replies = self._ctrl.charger.handle_request(plaintext)
         recv = self._queue("cmd_recv")
         for pt in replies:
@@ -335,8 +349,12 @@ class VirtualChargerController(CuktechBLEController):
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                # 推送循环不该抛；真抛了（QueueFull、状态机报错）必须留痕，
+                # 否则"虚拟设备静默停推"在上层只表现为一个无因果的超时。
+                logging.getLogger(__name__).warning("虚拟设备推送循环异常退出: %r", e)
 
     async def _push_loop(self) -> None:
         try:
@@ -359,8 +377,12 @@ def make_controller_factory(*, push_interval: float = 0.05, chargers=None):
     created: dict[str, VirtualChargerController] = {}
 
     def factory(mac: str, token: str):
+        # seed 必须由 MAC 稳定派生：按 `len(created)` 取会让"同一台设备"在重建
+        # （restart_device / per-device 重建用例会再调一次工厂）后换一套随机数，
+        # 断言读数的用例就变成看运气。
+        stable_seed = int(mac.replace(":", ""), 16) % (2 ** 32)
         ctrl = VirtualChargerController(
-            mac, token, charger=chargers.get(mac, VirtualCharger(seed=len(created))),
+            mac, token, charger=chargers.get(mac, VirtualCharger(seed=stable_seed)),
             push_interval=push_interval)
         created[mac] = ctrl
         return ctrl

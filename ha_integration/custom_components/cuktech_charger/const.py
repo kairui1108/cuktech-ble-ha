@@ -1,4 +1,5 @@
 """Constants for CUKTECH Charger integration."""
+from collections.abc import Mapping
 from datetime import timedelta
 
 DOMAIN = "cuktech_charger"
@@ -36,9 +37,17 @@ def entry_string(entry, key: str) -> str | None:
       2. options flow 改过的值写在 entry.options 里，也要生效；
       3. 本仓库的测试用 MagicMock 当 entry，`entry.options.get(...)` 会返回一个
          truthy 的 MagicMock，拿去拼 topic 会得到一堆乱码——只接受真正的 str。
+
+    容器类型必须判 `collections.abc.Mapping`，**不能**判 `dict`：真实 HA 的
+    `ConfigEntry.data` / `.options` 是 `MappingProxyType`（只读视图），它不是
+    `dict` 的子类——判 dict 在生产上恒为假，于是每个 entry 都取不到 device_id
+    与 topic_prefix：两个 entry 订阅同一组 topic（A 的读数进 B 的实体）、
+    `/api/device/...` 全部回落成 primary、options 表单永远显示默认值。测试里
+    entry 替身是普通 dict，所以这条路只有真机上才会塌。第 3 条的防护不依赖容器
+    类型（`isinstance(value, str)` 已经把 MagicMock 挡住），换成 Mapping 不丢它。
     """
     for source in (getattr(entry, "options", None), getattr(entry, "data", None)):
-        if not isinstance(source, dict):
+        if not isinstance(source, Mapping):
             continue
         value = source.get(key)
         if isinstance(value, str) and value.strip():
