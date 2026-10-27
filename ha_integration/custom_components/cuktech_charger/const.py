@@ -21,6 +21,11 @@ CONF_TOPIC_PREFIX = "topic_prefix"
 # （"自动同步"不能变成"自动覆盖用户的选择"）。清空名称保存 = 取消置位，回到自动同步。
 CONF_NAME_PINNED = "name_pinned"
 
+# 自动同步**上次写进 title** 的名字（本子自己的账本）。用途只有一个：识别"用户用
+# HA 原生入口重命名了条目"——那条路径只改 title、不经过我们的 options flow，所以
+# 只能拿 title 与这里的记录比对；不一致就说明用户接管了，同步立刻停手。
+CONF_NAME_SYNCED = "name_synced"
+
 # 服务端 primary 的固定 id（`ble:` 节合成的那台，见 ble_server/config.py 的
 # PRIMARY_DEVICE_ID）。HA 侧只用在"服务端没给 device 配 name"时的显示名兜底。
 PRIMARY_DEVICE_ID = "default"

@@ -51,6 +51,9 @@ ha_helpers.entity = MagicMock()
 # 设备注册表：`__init__` 里的 `from homeassistant.helpers import device_registry as dr`
 # 走的是这个属性，缺了就是 ImportError（被宽 except 吞掉，测试里表现为"这段没跑"）。
 ha_helpers.device_registry = MagicMock()
+# 默认返回值对齐生产：集成刚 setup、设备还没被实体创建出来时，async_get_device()
+# 返回 None。不写这行的话它返回一个 Mock，于是"设备已存在"的分支会假绿。
+ha_helpers.device_registry.async_get.return_value.async_get_device.return_value = None
 ha_helpers.storage = types.ModuleType("homeassistant.helpers.storage")
 
 
@@ -155,9 +158,31 @@ ha_const.UnitOfEnergy = types.SimpleNamespace(
 ha_const.CONF_NAME = "name"
 
 _vol = types.ModuleType("voluptuous")
+
+
+class _VolMarker(str):
+    """schema 的键标记：仍然是 str（既有用例把它当 key 用），但能区分必填/选填。
+
+    真实 voluptuous 里 Required/Optional 是 Marker 对象；替身原先直接返回裸 key，
+    于是"这个字段是不是必填"在测试里无法断言——而 `name` 够不够"可选"正是
+    options flow 里"清空 = 交回自动同步"能不能走通的关键。
+    """
+
+    required = True
+
+    def __new__(cls, key, **kwargs):
+        obj = super().__new__(cls, key)
+        obj.default = kwargs.get("default")
+        return obj
+
+
+class _VolOptional(_VolMarker):
+    required = False
+
+
 _vol.Schema = lambda s: s
-_vol.Optional = lambda key, **kwargs: key
-_vol.Required = lambda key, **kwargs: key
+_vol.Optional = _VolOptional
+_vol.Required = _VolMarker
 _vol.In = lambda values: values
 sys.modules['voluptuous'] = _vol
 

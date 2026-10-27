@@ -719,6 +719,20 @@ class TestOptionsFlow:
         }
 
     @pytest.mark.asyncio
+    async def test_display_name_field_is_optional(self, mock_hass):
+        """选项里的"名称"必须是 Optional。
+
+        清空它是一个有语义的操作（交回自动同步）。Required 在 HA 前端是必填框，
+        空值会在提交前被界面挡住 —— 于是 `name_pinned` 一旦置位就再也解不开。
+        """
+        entry = desk_entry()
+        flow = _options_flow(mock_hass, entry)
+        form = await flow.async_step_init(None)
+        marker = next(k for k in form["data_schema"] if str(k) == CONF_NAME)
+        assert getattr(marker, "required", True) is False, (
+            "name 字段是必填的话，用户就没法清空它来交回自动同步")
+
+    @pytest.mark.asyncio
     async def test_saving_can_change_server_url_and_display_name(self, mock_hass):
         hass = _hass_with_entry_updates(mock_hass)
         entry = desk_entry()
@@ -795,7 +809,7 @@ class TestOptionsFlow:
 
 
 class TestDeviceNaming:
-    """§4.5：设备名取 entry.title，实体 unique_id 仍带 entry_id 前缀。"""
+    """§4.5：设备名取值链 = 服务端同步名 → entry.title → DEVICE_INFO；unique_id 仍带 entry_id 前缀。"""
 
     def test_device_info_name_is_entry_title(self, mock_hass):
         from custom_components.cuktech_charger.sensor import CuktechPortSensor
@@ -910,9 +924,33 @@ class TestDeviceNameSync:
             await coord._async_sync_device_name()
         mock_hass.config_entries.async_update_entry.assert_not_called()
 
-    async def test_same_name_is_a_noop(self, mock_hass):
-        """名字没变就不写 entry（避免每次启动都触发一次 entry 更新）。"""
-        coord = CuktechMQTTCoordinator(mock_hass, desk_entry())
+    async def test_same_name_records_the_marker_but_never_touches_the_title(self, mock_hass):
+        """名字一致时不改 title，只补记"这个值是同步写的"。
+
+        这一笔是必需的：老 entry 升级上来时 title 可能已经等于服务端名、但 data 里
+        没有账本，之后用户用 HA 原生入口改名就检测不出来 —— 下一次同步会把他的
+        名字静默顶掉。
+        """
+        from custom_components.cuktech_charger.const import CONF_NAME_SYNCED
+
+        coord = CuktechMQTTCoordinator(mock_hass, desk_entry())     # title == 服务端名
+        session = _sync_session([_device("desk", "书桌充电器", prefix="cuktech/charger/desk")])
+        with patch(
+            'custom_components.cuktech_charger.config_flow.async_get_clientsession',
+            return_value=session,
+        ):
+            await coord._async_sync_device_name()
+        kwargs = mock_hass.config_entries.async_update_entry.call_args.kwargs
+        assert "title" not in kwargs, "名字没变就不该动 title"
+        assert kwargs["data"][CONF_NAME_SYNCED] == "书桌充电器"
+
+    async def test_repeated_sync_does_not_write_the_entry_again(self, mock_hass):
+        """账本已记录后再同步一次：什么都不写（避免每 5 分钟抖出一堆无意义更新）。"""
+        from custom_components.cuktech_charger.const import CONF_NAME_SYNCED
+
+        entry = desk_entry()
+        entry.data[CONF_NAME_SYNCED] = "书桌充电器"
+        coord = CuktechMQTTCoordinator(mock_hass, entry)
         session = _sync_session([_device("desk", "书桌充电器", prefix="cuktech/charger/desk")])
         with patch(
             'custom_components.cuktech_charger.config_flow.async_get_clientsession',
@@ -920,6 +958,49 @@ class TestDeviceNameSync:
         ):
             await coord._async_sync_device_name()
         mock_hass.config_entries.async_update_entry.assert_not_called()
+
+    async def test_native_rename_by_the_user_is_respected(self, mock_hass):
+        """用户用 HA 原生"重命名条目"改的名（title != 账本）不能被顶回。
+
+        那条路径只写 title、不经过我们的 options flow，所以只能靠账本比对发现。
+        """
+        from custom_components.cuktech_charger.const import CONF_NAME_SYNCED
+
+        entry = desk_entry()
+        entry.title = "我的书桌充电器"
+        entry.data[CONF_NAME_SYNCED] = "书桌充电器"        # 上次同步写的
+        coord = CuktechMQTTCoordinator(mock_hass, entry)
+        session = _sync_session([_device("desk", "服务端新名字", prefix="cuktech/charger/desk")])
+        with patch(
+            'custom_components.cuktech_charger.config_flow.async_get_clientsession',
+            return_value=session,
+        ):
+            await coord._async_sync_device_name()
+        mock_hass.config_entries.async_update_entry.assert_not_called()
+        assert coord.display_name == "服务端新名字", "设备名仍然同步"
+
+    async def test_entry_renamed_before_this_feature_is_respected(self, mock_hass):
+        """升级上来的老 entry：用户在旧 options flow 里改过的名字不能被覆盖。
+
+        老 entry 没有 `name_synced`；但创建时的名字还在 `data[CONF_NAME]` 里
+        （同步只改 title、不动 data），所以 title 与它不同 = 用户改过。
+        """
+        from custom_components.cuktech_charger.const import CONF_DEVICE_ID, CONF_SERVER_URL
+
+        entry = make_entry(
+            "entry_legacy",
+            {CONF_SERVER_URL: SERVER, "name": "CUKTECH 10 GaN Charger Ultra"},
+            title="我的充电站",
+        )
+        coord = CuktechMQTTCoordinator(mock_hass, entry)
+        session = _sync_session([_device("default", "客厅充电器", prefix=TOPIC_PREFIX)])
+        with patch(
+            'custom_components.cuktech_charger.config_flow.async_get_clientsession',
+            return_value=session,
+        ):
+            await coord._async_sync_device_name()
+        mock_hass.config_entries.async_update_entry.assert_not_called()
+        assert coord.display_name == "客厅充电器"
 
     async def test_legacy_entry_syncs_only_when_unambiguous(self, mock_hass):
         """老 entry（无 device_id）：只有服务端刚好报一台时才同步，多台时保持原样。"""
@@ -1073,6 +1154,36 @@ class TestDeviceNameSync:
         assert mock_hass.config_entries.async_update_entry.call_args.kwargs["title"] == "书桌充电器"
 
     @pytest.mark.asyncio
+    async def test_handing_the_label_back_lets_sync_take_over_again(self, mock_hass):
+        """清空名称交回之后，下一次同步必须真的把 label 换成服务端名字（闭环）。"""
+        from custom_components.cuktech_charger.const import (
+            CONF_NAME_PINNED,
+            CONF_NAME_SYNCED,
+        )
+
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        entry.title = "我的书桌充电器"
+        entry.data[CONF_NAME_PINNED] = True
+        flow = _options_flow(hass, entry)
+        await flow.async_step_init({
+            CONF_NAME: "",                 # 交回自动同步
+            CONF_SERVER_URL: SERVER,
+            CONF_TOPIC_PREFIX: "cuktech/charger/desk",
+            CONF_DEVICE_ID: "desk",
+        })
+        assert CONF_NAME_SYNCED in entry.data
+
+        coord = CuktechMQTTCoordinator(hass, entry)
+        session = _sync_session([_device("desk", "服务端新名字", prefix="cuktech/charger/desk")])
+        with patch(
+            'custom_components.cuktech_charger.config_flow.async_get_clientsession',
+            return_value=session,
+        ):
+            await coord._async_sync_device_name()
+        assert entry.title == "服务端新名字", "交回之后 label 应重新跟随服务端"
+
+    @pytest.mark.asyncio
     async def test_unnamed_device_gets_a_distinguishable_title(self):
         """服务端没给设备配 `name` 时，两台不能都叫同一个默认名。"""
         from custom_components.cuktech_charger.config_flow import DEFAULT_NAME
@@ -1130,3 +1241,8 @@ class TestDeviceNameSync:
         })
         assert not entry.data.get(CONF_NAME_PINNED)
         assert entry.title == "我的书桌充电器", "清空名称不该把显示名抹掉，只是交回同步"
+        # 交回时必须把"当前 title"记成上次同步写的值，否则同步会把它当用户选择、
+        # 永远不敢动，"交回"等于没生效。
+        from custom_components.cuktech_charger.const import CONF_NAME_SYNCED
+
+        assert entry.data.get(CONF_NAME_SYNCED) == "我的书桌充电器"

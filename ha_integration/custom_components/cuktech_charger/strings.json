@@ -57,7 +57,7 @@
           "device_id": "Server device ID (optional)"
         },
         "data_description": {
-          "name": "This is the label of the integration card / hub node, not the charger's own name — the device name always follows the server. Renaming here pins the label, so auto-sync stops changing it; leave it empty (or unchanged) to keep following the server's device name.",
+          "name": "This is the label of the integration card / hub node — not the charger's own name. The device name follows the server automatically (unless you renamed the device in Home Assistant, which takes precedence). Renaming here pins the label so auto-sync stops changing it; clear this field and save to hand it back to auto-sync.",
           "server_url": "The ble_server (or ESP32) this entry talks to.",
           "topic_prefix": "Topics this entry subscribes to and publishes on. Empty = cuktech/charger.",
           "device_id": "Leave empty when the server has no per-device addressing (ESP32, old server)."

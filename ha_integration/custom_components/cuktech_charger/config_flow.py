@@ -18,6 +18,7 @@ from .const import (
     API_DEVICES,
     CONF_DEVICE_ID,
     CONF_NAME_PINNED,
+    CONF_NAME_SYNCED,
     CONF_SERVER_URL,
     CONF_TOPIC_PREFIX,
     DEFAULT_SERVER_URL,
@@ -417,9 +418,17 @@ class CuktechOptionsFlow(config_entries.OptionsFlow):
             if new_name and new_name != getattr(entry, "title", None):
                 updates["title"] = new_name
                 new_data[CONF_NAME_PINNED] = True
+                # 用户接管了这个标签，同步的账本作废（否则将来解除固定时会被旧账本误导）
+                new_data.pop(CONF_NAME_SYNCED, None)
             elif not new_name:
-                # 清空名称 = 交回自动同步（下次 setup 会按服务端上报的名字对齐）
+                # 清空名称 = 交回自动同步。把**当前** title 记成"上次同步写的"，
+                # 下一次同步就会认为它归自己管、用服务端名字覆盖它。
+                # （只删置位不记这一笔的话，同步会把这个改过的 title 当成"用户的选择"
+                #  永远不敢动，等于"交回"没生效。）
                 new_data.pop(CONF_NAME_PINNED, None)
+                current = getattr(entry, "title", None)
+                if current:
+                    new_data[CONF_NAME_SYNCED] = current
             self.hass.config_entries.async_update_entry(entry, **updates)
             await self.hass.config_entries.async_reload(entry.entry_id)
             return self.async_create_entry(title="", data={})
@@ -428,7 +437,10 @@ class CuktechOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
+                    # Optional 而不是 Required：这个字段的**清空**是一个有语义的
+                    # 操作（交回自动同步）。Required 在 HA 前端是必填框，空值提交
+                    # 会被界面挡住，于是 `name_pinned` 一旦置位就再也解不开。
+                    vol.Optional(
                         CONF_NAME,
                         default=(getattr(entry, "title", None) or DEFAULT_NAME),
                     ): str,

@@ -9,7 +9,7 @@ from typing import Any
 
 import homeassistant.components.mqtt as mqtt
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_NAME, Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -22,6 +22,7 @@ from .const import (
     CONF_HOST,
     CONF_DEVICE_ID,
     CONF_NAME_PINNED,
+    CONF_NAME_SYNCED,
     CONF_TOPIC_PREFIX,
     DEFAULT_SERVER_URL,
     DEVICE_INFO,
@@ -29,7 +30,7 @@ from .const import (
     PORT_MAP,
     HEALTH_CHECK_INTERVAL,
     NAME_SYNC_INTERVAL,
-    NAME_SYNC_INTERVAL,
+    PRIMARY_DEVICE_ID,
     HTTP_TIMEOUT,
     BLE_OPERATION_TIMEOUT,
     CHARGE_EVENT_BUFFER,
@@ -266,9 +267,13 @@ class CuktechMQTTCoordinator:
 
     @property
     def display_name(self) -> str:
-        """本 entry 对应设备的显示名：服务端名字优先，取不到才回落到 entry title。"""
-        name = getattr(self.entry, "title", None)
-        return self._device_name or (name if isinstance(name, str) and name.strip() else "")
+        """服务端同步来的设备名；没同步到时返回空串，由调用方回落。
+
+        回落链只有一处（`base_entity.device_info`：display_name → entry.title →
+        DEVICE_INFO["name"]）。这里再抄一遍的话，两个地方迟早会对"空串算不算没名字"
+        给出不同答案。
+        """
+        return self._device_name or ""
 
     @property
     def device_info(self) -> dict[str, Any]:
@@ -315,7 +320,11 @@ class CuktechMQTTCoordinator:
         if self.device_id:
             target = next((d for d in devices if d["id"] == self.device_id), None)
         elif len(devices) == 1:
-            target = devices[0]
+            # 老 entry（无 device_id）：只有服务端刚好报一台时才同步。这台必然就是
+            # primary，但**按 id 取而不是取 devices[0]**——服务端某台条目格式异常被
+            # `_normalise_device` 丢掉时，列表也可能只剩一条，那时 devices[0] 未必是
+            # primary，认错了就会把这个 entry 的标签改成别人家的名字。
+            target = next((d for d in devices if d["id"] == PRIMARY_DEVICE_ID), None)
         else:
             target = None
         if target is None:
@@ -331,20 +340,61 @@ class CuktechMQTTCoordinator:
             self._device_name = name
             self._async_rename_registered_device(name)
 
-        # ② 集成条目名（也就是"中枢"那层的标签）：只有在用户没固定过时才跟随。
-        #    多设备时它是最省事的区分方式；一旦用户在选项里起过名（name_pinned），
-        #    那就是他的选择，这里停手——但上面那条设备名同步照常。
-        if (getattr(self.entry, "data", None) or {}).get(CONF_NAME_PINNED):
+        # ② 集成条目名（也就是"中枢"那层的标签）：只在它还归自动同步掌管时跟随。
+        #    多设备时它是最省事的区分方式；用户一旦动过，就停手——但上面那条
+        #    设备名同步照常。
+        if not self._entry_title_is_auto():
             return
         old = getattr(self.entry, "title", None)
         if name == old:
+            # 名字已经一致：只补记"这个值是同步写进来的"，不碰 title。
+            # 少了这一步，升级上来的老 entry 永远没有 `name_synced`，之后用户用
+            # HA 原生入口改名就检测不出来（下一次同步会把他的名字顶掉）。
+            if (getattr(self.entry, "data", None) or {}).get(CONF_NAME_SYNCED) != name:
+                self._async_write_entry_name(name, title=None)
             return
         try:
-            self.hass.config_entries.async_update_entry(self.entry, title=name)
+            self._async_write_entry_name(name, title=name)
         except Exception as err:                  # noqa: BLE001 - 改名失败不该让集成起不来
             _LOGGER.debug("Entry title sync failed (%s)", err)
             return
         _LOGGER.debug("Entry title synced from server: %r -> %r", old, name)
+
+    def _entry_title_is_auto(self) -> bool:
+        """这个 entry 的标签是否仍归自动同步掌管（= 用户没动过）。
+
+        三种"用户动过"的形态都要认出来，否则就是静默覆盖用户的选择：
+
+          1. 选项里改过名 → 有 `name_pinned`（旧策略，行为不变）；
+          2. **HA 原生"重命名条目"**（设置 → 集成 → 条目 → 重命名）：它只写 title、
+             不经过我们的 options flow，所以只能靠"title 与本子上次同步写入的值
+             不一样"来发现；
+          3. **升级上来的老 entry**：那时候还没有本特性，用户在旧 options flow 里
+             起的名字只有一个 title、没有任何标记。老 entry 的创建名一直留在
+             `data[CONF_NAME]` 里（同步只改 title、不动 data），所以
+             `title != data[CONF_NAME]` 恰好就是"用户后来改过名"的可靠信号。
+        """
+        data = getattr(self.entry, "data", None) or {}
+        if data.get(CONF_NAME_PINNED):
+            return False
+        title = getattr(self.entry, "title", None)
+        synced = data.get(CONF_NAME_SYNCED)
+        if synced is not None:
+            return title == synced
+        created = data.get(CONF_NAME)
+        return not created or title == created
+
+    def _async_write_entry_name(self, name: str, *, title: str | None) -> None:
+        """写 entry 的名字，并把"这是自动同步写的"记进 data（`name_synced`）。
+
+        data 变更在 HA 里会触发 entry 重载——只有名字真的变了才会走到这里（一次），
+        重载后同步看到 title == name_synced 就停手，所以不会来回抖。
+        """
+        data = {**dict(getattr(self.entry, "data", None) or {}), CONF_NAME_SYNCED: name}
+        kwargs: dict[str, Any] = {"data": data}
+        if title is not None:
+            kwargs["title"] = title
+        self.hass.config_entries.async_update_entry(self.entry, **kwargs)
 
     def _async_rename_registered_device(self, name: str) -> None:
         """把新名字同步到设备注册表（用户看得见的那个名字）。

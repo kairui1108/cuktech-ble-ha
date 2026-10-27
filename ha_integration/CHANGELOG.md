@@ -23,8 +23,13 @@
   always follows the server, while the entry title (the "hub" label, handy for telling two cards
   apart) follows it only until you rename the entry yourself (`name_pinned`) — pinning the label no
   longer freezes the device name. Deliberate limits: a bound entry only adopts its own device's
-  name; a legacy entry without `device_id` syncs only when the server reports exactly one device;
-  a server that reports no name (it just echoes the id) never overwrites anything
+  name; a legacy entry without `device_id` syncs only when the server reports exactly one device
+  (selected by the primary's id, not by list position); a server that reports no name (it just
+  echoes the id) never overwrites anything. A rename you make is detected in all three shapes —
+  the options flow (`name_pinned`), HA's own "rename entry" action (`title != name_synced`, the
+  bookkeeping value the last sync wrote), and entries upgraded from older versions
+  (`title != data[name]`) — and the only way back to auto-sync is clearing the name field (now
+  `vol.Optional`, since a required field could never be cleared)
 
 ### Changed
 - Backends without `/api/devices` (ESP32 firmware, older ble_server) get a 404, which falls back to
