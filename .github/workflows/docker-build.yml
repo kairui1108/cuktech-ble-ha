@@ -128,10 +128,56 @@ jobs:
         working-directory: ./ble_server
         run: python tests/js/verify_i18n.py
 
+  # 构建成功 ≠ 能跑：Dockerfile 的 COPY 清单曾漏掉模块，`docker build` 照样绿，
+  # 而镜像一启动就 ModuleNotFoundError（测试跑的是源码树，看不见）。这一步真的
+  # build 一次、再真的起一次、再真的敲一下 HTTP 才收工。
+  docker:
+    name: Docker image smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Build the image
+        working-directory: ./ble_server
+        run: docker build -f docker/Dockerfile -t cuktech-ble-server:ci .
+
+      - name: The image can import and serve
+        run: |
+          set -e
+          # ① 文件集合与依赖是否齐（最快的失败点）
+          docker run --rm cuktech-ble-server:ci python -c "import ha_server; print('image imports ok')"
+
+          # ② 真起一次：容器里没有蓝牙适配器，BLE 会一直重连（预期），
+          #    但 HTTP 必须应答——这正是"能 build 不能 run"的判别点。
+          docker run -d --name ci-smoke cuktech-ble-server:ci
+          ok=0
+          for i in $(seq 1 30); do
+            if docker exec ci-smoke python -c \
+              'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8199/api/health", timeout=3)' 2>/dev/null; then
+              echo "HTTP /api/health answered after ${i}s"
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          echo "---- container logs ----"
+          docker logs ci-smoke || true
+          test "$ok" = "1" || { echo "容器起来了但 HTTP 不应答（看上面的日志）"; exit 1; }
+
+      - name: Container logs and cleanup
+        if: always()
+        run: |
+          docker logs ci-smoke 2>&1 | tail -40 || true
+          docker rm -f ci-smoke || true
+
   build-and-push:
     name: Build and Push Docker Image
     # js 必须进来：镜像里带着 web/，前端回归全红却照样发布 = 让用户去发现白屏。
-    needs: [test, js]
+    # docker 必须进来：它才是"这个镜像真的起得来"的唯一证据。
+    needs: [test, js, docker]
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60

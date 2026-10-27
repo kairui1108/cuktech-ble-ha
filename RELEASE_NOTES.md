@@ -2,9 +2,11 @@
 
 ## v2.0.0-Beta
 
-> **多设备标 Beta**：软件链路（注册/路由/SSE/MQTT/DB/限额/UI/HA）由单真机结合虚拟充电器与多 entry
-> 测试覆盖，未经多设备实机验证
-> **单设备路径不受影响**：8 份逐字节 golden 快照锁定，行为与 v1.1.2 一致。设计说明见
+> **多设备支持Beta版本**：软件链路（注册 / 路由 / SSE / MQTT / 数据库 / 限额 / Web UI / HA 集成）
+> 已由单台真机配合虚拟充电器与多 entry 测试覆盖，**尚未做多台真机实测**——
+> 欢迎反馈问题、提 PR。
+
+> **单设备路径不受影响**：单设备场景下，行为与 v1.1.2 一致。设计说明见
 > [docs/multi-device-design.md](docs/multi-device-design.md)。
 
 ### 多设备：同一蓝牙适配器接多台充电器
@@ -39,12 +41,12 @@
 
 ### 测试
 
-- BLE Server **806 passed** · HA 集成 **280 passed** · 前端 node 契约 **836 断言** + i18n 校验
+- BLE Server **824 passed** · HA 集成 **308 passed** · 前端 node 契约 **926 断言** + i18n 校验
 - 单设备 golden：8 份逐字节快照（HTTP body 原串 / SSE 线字节 / MQTT `topic+payload+retain+QoS`），
   唯一白名单是 `uptime_ms`
 - 虚拟充电器：继承真 controller、只替换连接/握手/入站管道，帧几何取自真机 btsnoop、加解密走生产
   AES-CCM——3 台虚拟机跑通注册/路由/SSE/DB/命令隔离
-- CI：改为从 `pyproject` 装依赖（不再手抄包清单），新增前端契约测试 job
+- CI：改为从 `pyproject` 装依赖（不再手抄包清单）；新增前端契约测试 job（11 个套件）
 
 ## v1.1.2
 

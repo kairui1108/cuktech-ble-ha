@@ -22,6 +22,14 @@ COPY web/ web/
 # ——镜像一启动就 ModuleNotFoundError，而测试与 CI 都看不到（它们跑的是源码树）。
 COPY *.py ./
 
+# Python 在非 TTY 下按块缓冲 stdout：容器里 `docker logs` 只会看到 entrypoint 那几行
+# shell 输出，业务日志要等缓冲区满才落出来（出事时看起来像"服务没在跑"）。
+# 这一行让它逐行刷出；日志文件（CUKTECH_LOG_FILE）不受影响。
+ENV PYTHONUNBUFFERED=1
+# 没有 TTY 时默认不加 StreamHandler（避免 ctl 场景日志整份重复），容器里显式打开，
+# 这样 `docker logs` 能看到业务日志而不是只有启动横幅。
+ENV CUKTECH_LOG_STREAM=1
+
 RUN mkdir -p /data
 
 # Copy default config (user can override by mounting their own)

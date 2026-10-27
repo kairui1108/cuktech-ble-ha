@@ -85,7 +85,11 @@ def _setup_logging() -> None:
                 "File log handler disabled (%s): %s", LOG_FILE, e)
     # 仅交互式前台运行时才把日志打到终端。被 cuktech_ctl.sh 重定向到文件时若再加
     # 一个 StreamHandler，会和主日志内容完全重复（实测两文件行数相同），白白翻倍。
-    if sys.stderr.isatty() and not any(
+    # 容器里 stderr 永远不是 TTY，这个默认会让 `docker logs` 只剩启动横幅、业务
+    # 日志全锁在容器内的文件里（容器一重建就没了）——所以给一条显式开关，
+    # Dockerfile 里设 CUKTECH_LOG_STREAM=1。默认值不变，单设备/ctl 场景零影响。
+    want_stream = sys.stderr.isatty() or os.environ.get("CUKTECH_LOG_STREAM") == "1"
+    if want_stream and not any(
             isinstance(h, logging.StreamHandler)
             and not isinstance(h, logging.FileHandler) for h in root.handlers):
         sh = logging.StreamHandler()
