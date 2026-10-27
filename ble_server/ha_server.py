@@ -3,6 +3,7 @@
 BLE data is published to MQTT for real-time updates in Home Assistant.
 """
 import asyncio
+import contextlib
 import re
 import sys
 import warnings
@@ -17,14 +18,24 @@ import os
 import threading
 import time
 from collections import OrderedDict
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
 from aiohttp import web
 
-from config import load_config, LOG_LEVELS
-from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS, PIID_RANGES, PROTOCOL_SWITCH_BITS
-from ble_manager import BLEManager, set_status_cache_invalidator, END_REASON_SHUTDOWN
+from config import (
+    load_config, config_from_mapping, LOG_LEVELS, PRIMARY_DEVICE_ID, DeviceConfig,
+    TopicNamespace, BEMFA_PORTS, BEMFA_PORT_LABELS, BEMFA_DEFAULT_NAMES,
+    bemfa_entity_triple,
+)
+from state import ChargerState, PORT_BITS, PORT_NAMES, PORT_DEFAULT, VALID_PIIDS, PIID_RANGES
+from ble_manager import (
+    BLEManager, set_status_cache_invalidator, END_REASON_SHUTDOWN, END_REASON_LINK_LOSS,
+)
+from adapter_coordinator import AdapterCoordinator
 from energy import MAX_LIMIT_WH, LIMIT_MODES
-from history import PortHistory
+from history import PortHistory, DeviceHistory
+from log_utils import install_log_filter
 from bemfa_client import BemfaClient, MSG_ON, MSG_OFF
 
 
@@ -58,7 +69,7 @@ def _setup_logging() -> None:
     控制台输出由 ctl 重定向到 *.console.log，用于保留"日志系统就绪前"的启动期
     异常（导入错误、解释器告警等）。
     """
-    fmt = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s",
+    fmt = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(device)s%(message)s",
                             "%Y-%m-%d %H:%M:%S")
     root = logging.getLogger()
     root.setLevel(logging.INFO)
@@ -74,16 +85,28 @@ def _setup_logging() -> None:
                 "File log handler disabled (%s): %s", LOG_FILE, e)
     # 仅交互式前台运行时才把日志打到终端。被 cuktech_ctl.sh 重定向到文件时若再加
     # 一个 StreamHandler，会和主日志内容完全重复（实测两文件行数相同），白白翻倍。
-    if sys.stderr.isatty() and not any(
+    # 容器里 stderr 永远不是 TTY，这个默认会让 `docker logs` 只剩启动横幅、业务
+    # 日志全锁在容器内的文件里（容器一重建就没了）——所以给一条显式开关，
+    # Dockerfile 里设 CUKTECH_LOG_STREAM=1。默认值不变，单设备/ctl 场景零影响。
+    want_stream = sys.stderr.isatty() or os.environ.get("CUKTECH_LOG_STREAM") == "1"
+    if want_stream and not any(
             isinstance(h, logging.StreamHandler)
             and not isinstance(h, logging.FileHandler) for h in root.handlers):
         sh = logging.StreamHandler()
         sh.setFormatter(fmt)
         root.addHandler(sh)
+    # 格式串里有 `%(device)s` 后，任何没带该属性的 record 都会被 Formatter 抛
+    # ValueError 并被 handler 吞掉 —— 日志行直接消失。过滤器把缺的属性补成空串
+    # （单设备输出逐字节不变），必须挂在 root 与每个 handler 上，见 log_utils。
+    install_log_filter()
 
 
 _setup_logging()
 _LOGGER = logging.getLogger("cuktech_server")
+
+#: 界面语言是"跨页面的即时偏好"，一旦被浏览器缓存住，用户改了语言也会继续看到
+#: 旧的（真实踩过：页面一半中文一半英文，或者整页英文但设置里写着中文）。
+_NO_STORE = {"Cache-Control": "no-store, max-age=0"}
 
 
 _sse_log = logging.getLogger("cuktech_sse")
@@ -128,6 +151,18 @@ def _chart_cache_bytes(cache) -> int:
     return total
 
 
+def _bemfa_entity_signature(raw) -> list:
+    """`bemfa.entities` 的规范化指纹：排序后的 (设备, 端口, 名称) 三元组。
+
+    用来判断"这次保存有没有动过语音实体"。直接比原始列表不行：前端/手写 YAML 的
+    字段顺序、缺省 device 写法都会让内容完全相同的两份配置看起来不同 —— 那会让
+    每次保存都打上 `modified`，于是每次重启都把巴法云主题删了重建一遍。
+    """
+    return sorted((device, port, name)
+                  for name, device, port in
+                  (bemfa_entity_triple(e) for e in (raw or [])))
+
+
 class SSEEmitter:
     """SSE event broadcaster — push events to all connected browser clients."""
 
@@ -146,7 +181,10 @@ class SSEEmitter:
     def remove_client(self, queue: asyncio.Queue):
         with self._lock:
             self._clients.discard(queue)
-            self._pending_status.pop(id(queue), None)
+            # 多设备时同一个 queue 有 N 个 (qid, device_id) 分桶，全部清掉，
+            # 否则断开的客户端会在 _pending_status 里留下永久"排水沟"。
+            for key in [k for k in self._pending_status if k[0] == id(queue)]:
+                self._pending_status.pop(key, None)
         _sse_log.info("SSE client disconnected (total: %d)", len(self._clients))
 
     def _put_or_drop(self, q: asyncio.Queue, payload: str):
@@ -164,71 +202,746 @@ class SSEEmitter:
             except asyncio.QueueFull:
                 pass
 
-    def emit(self, event_type: str, data: dict):
+    def emit(self, event_type: str, data: dict, device_id: str | None = None):
         """Broadcast event to all connected clients.
+
         Status events are kept as 'latest only' — stale statuses are replaced,
         never enqueued alongside newer statuses.
+
+        `device_id` 只用于 **latest-only 分桶**（§3.8/§3.2）：多设备时每台设备的
+        status 各自保留最新一条，互不覆盖；单设备（device_id=None）时 `_pending_status`
+        的键退化成 `(id(q), None)`，与改造前的 `id(q)` 一一对应、行为不变。
+        事件体**不**在这里加任何字段——payload 里的 `device` 由 `DeviceSSEEmitter`
+        决定加不加（multi 才加），这样单设备字节完全不受影响。
         """
         payload = json.dumps({"type": event_type, **data}, ensure_ascii=False)
         is_status = event_type == "status"
         with self._lock:
             for q in self._clients:
-                qid = id(q)
+                key = (id(q), device_id)
                 if is_status:
                     # Status: just update pending, don't enqueue (replaces stale status)
-                    self._pending_status[qid] = payload
+                    self._pending_status[key] = payload
                 else:
                     # Non-status: flush pending status first, then enqueue
-                    status = self._pending_status.pop(qid, None)
+                    status = self._pending_status.pop(key, None)
                     if status:
                         self._put_or_drop(q, status)
                     self._put_or_drop(q, payload)
 
-    def flush_status(self, q: asyncio.Queue) -> str | None:
+    def flush_status(self, q: asyncio.Queue, device_id: str | None = None) -> str | None:
         """Return and clear the latest pending status for a queue (if any).
         Called by SSE handler before each queue read to ensure the newest status
         is sent ahead of all other events.
         """
         with self._lock:
-            return self._pending_status.pop(id(q), None)
+            return self._pending_status.pop((id(q), device_id), None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 多设备内核（设计文档 §3.2 / §3.3 / §3.13）
+#
+# 一句话：`Server` 从"持有一台设备"变成"持有 registry"，而 `self.ble`/`self.state`/
+# `self.history` 变成**只读 property**——默认 primary，按 per-request ContextVar 解析。
+# 绝不做成可变赋值：两个并发请求在 await 处交错会把命令发给错误的充电器。
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 当前请求所属设备。只由 `device_middleware` 设置；**禁止**把它当成"当前设备"的
+# 通用通道——设备自己触发的后台回调（定时器/quality/MQTT 命令）没有请求上下文，
+# 经它解析会静默落到 primary（见 §3.3 五条红线）。
+_current_rt: ContextVar = ContextVar("cuktech_current_rt", default=None)
+
+
+@dataclass
+class DeviceRuntime:
+    """一台设备的全部运行期资源（§3.2）。"""
+
+    device_id: str                       # primary 固定 "default"
+    mac: str
+    token: str
+    name: str
+    topics: "TopicNamespace"
+    state: ChargerState
+    manager: BLEManager
+    history: "DeviceHistory"
+    spec: "DeviceConfig | None" = None
+    supervisor: "RuntimeSupervisor | None" = None
+    task: asyncio.Task | None = None     # 仅由 supervisor 创建/持有
+
+    @property
+    def is_primary(self) -> bool:
+        return self.device_id == PRIMARY_DEVICE_ID
+
+    def describe(self) -> dict:
+        """`/api/devices` 的单项（§3.7）。"""
+        return {
+            "id": self.device_id,
+            "name": self.name or self.device_id,
+            "mac": self.mac,
+            "connected": bool(self.state.connected),
+            "topic_prefix": self.topics.prefix,
+            "is_primary": self.is_primary,
+        }
+
+
+class DeviceRegistry:
+    """有序设备表（primary 在首位，运行期静态不变）。"""
+
+    def __init__(self):
+        self._items: "OrderedDict[str, DeviceRuntime]" = OrderedDict()
+
+    def add(self, rt: DeviceRuntime) -> DeviceRuntime:
+        if rt.device_id in self._items:
+            raise ValueError(f"设备 id 重复：{rt.device_id}")
+        self._items[rt.device_id] = rt
+        return rt
+
+    def get(self, device_id: str) -> DeviceRuntime | None:
+        return self._items.get(device_id)
+
+    @property
+    def primary(self) -> DeviceRuntime:
+        return next(iter(self._items.values()))
+
+    def __iter__(self):
+        return iter(self._items.values())
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __contains__(self, device_id: str) -> bool:
+        return device_id in self._items
+
+    def __getitem__(self, device_id: str) -> DeviceRuntime:
+        return self._items[device_id]
+
+    def keys(self):
+        return list(self._items.keys())
+
+    def values(self):
+        return list(self._items.values())
+
+    def items(self):
+        return list(self._items.items())
+
+    @property
+    def multi(self) -> bool:
+        """是否多设备：**所有"多设备才加字段"的地方都以它为准**（§3.8）。"""
+        return len(self._items) > 1
+
+
+class DeviceSSEEmitter:
+    """按设备归属的 SSE 出口（§3.2/§3.8）。
+
+    `multi=False` 时**完全透传**——连 `device_id` 都不带给底层分桶，保证单设备事件流
+    与改造前逐字节一致；`multi=True` 时给每条事件注入 `device`，并让 status 按
+    `(queue, device)` 维度各自保留最新。
+    """
+
+    __slots__ = ("base", "device_id", "multi")
+
+    def __init__(self, base: SSEEmitter, device_id: str, multi: bool):
+        self.base = base
+        self.device_id = device_id
+        self.multi = multi
+
+    def emit(self, event_type: str, data: dict) -> None:
+        if not self.multi:
+            self.base.emit(event_type, data)
+            return
+        self.base.emit(event_type, {**data, "device": self.device_id},
+                       device_id=self.device_id)
+
+    def __repr__(self) -> str:
+        return (f"<DeviceSSEEmitter device={self.device_id!r} multi={self.multi}>")
+
+
+class RuntimeSupervisor:
+    """`rt.task` 的唯一持有者：启动、停止、意外退出监控与重建（§3.13）。
+
+    为什么必须有它：task 静默死掉 = 设备永久"假在线"，而 HTTP 还在正常应答，
+    没有任何东西会来发现它。N=1 时这是盲区，N≥2 时不可接受。
+
+    重建走 §3.5 L3 的同一套顺序：重挂全部钩子 → 重启任务。`handle_enable` 只能调
+    `start()/stop()`；直接 cancel/create `rt.task` 会被当成意外退出立刻重建。
+    """
+
+    MAX_REBUILDS = 5            # 连续重建上限：超了只报警不再自动拉，避免无限重启风暴
+    REBUILD_BASE_DELAY = 2.0
+    REBUILD_MAX_DELAY = 60.0
+
+    def __init__(self, runtime: "DeviceRuntime", *, mount_hooks=None,
+                 startup_delay: float = 0.0):
+        self.rt = runtime
+        self._mount_hooks = mount_hooks          # Callable[[DeviceRuntime], None]
+        self._startup_delay = startup_delay
+        self._task: asyncio.Task | None = None
+        self._stopping = False
+        self._rebuilds = 0
+        self._rebuild_task: asyncio.Task | None = None
+
+    def set_startup_delay(self, seconds: float) -> None:
+        """设置启动错峰（§3.4）。装配顺序在注册表填满后才确定，所以是 setter。"""
+        self._startup_delay = float(seconds or 0.0)
+
+    @property
+    def task(self) -> asyncio.Task | None:
+        return self._task
+
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def start(self) -> None:
+        """启动（幂等：已在运行则忽略）。"""
+        self._stopping = False
+        if self.is_running:
+            return
+        self._spawn()
+
+    async def stop(self) -> None:
+        """停止：先标记再请求，最后收割任务。
+
+        顺序不能反 —— 先 `_stopping=True` 才能让 done 回调知道"这是我们要它停的"，
+        而不是意外退出（否则每次正常停止都会触发一次重建）。
+        """
+        self._stopping = True
+        if self._rebuild_task and not self._rebuild_task.done():
+            self._rebuild_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._rebuild_task
+            self._rebuild_task = None
+        mgr = self.rt.manager
+        try:
+            await mgr.request_stop()
+        except Exception as e:
+            _LOGGER.warning("[%s] request_stop failed: %s", self.rt.device_id, e)
+        task = self._task
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        self._task = None
+        self.rt.task = None
+
+    async def schedule_rebuild(self, rebuild_resources) -> None:
+        """在**独立任务**里做 L3 进程内重建（§3.5）。
+
+        为什么不就地做：重建要从"停这个 manager 的任务"开始，而重建请求往往就是
+        这个任务自己发出来的（认证卡死路径）——就地做等于 await 自己的取消。
+        这里只负责调度，调用方（manager）随后自行退出重连循环。
+        """
+        if self._rebuild_task is not None and not self._rebuild_task.done():
+            _LOGGER.info("[%s] 重建已在进行中，忽略重复请求", self.rt.device_id)
+            return
+        self._rebuild_task = asyncio.create_task(
+            self._do_rebuild(rebuild_resources),
+            name=f"rebuild-{self.rt.device_id}")
+
+    async def _do_rebuild(self, rebuild_resources) -> None:
+        try:
+            await self.stop()                 # 停任务（request_stop 里按 link_loss 收尾会话）
+            await rebuild_resources(self.rt)  # 换 manager + 重挂钩子
+            self._rebuilds = 0                # 重建成功：清连续失败计数
+            self.start()
+        except Exception as e:
+            _LOGGER.error("[%s] 进程内重建失败：%s: %s",
+                          self.rt.device_id, type(e).__name__, e)
+
+    def _spawn(self) -> None:
+        self._task = asyncio.create_task(self._run(), name=f"ble-{self.rt.device_id}")
+        self.rt.task = self._task
+        self._task.add_done_callback(self._on_done)
+
+    async def _run(self) -> None:
+        if self._startup_delay > 0:
+            # 启动错峰（§3.4）：N 台同时上电时的认证风暴防护，代价为零
+            await asyncio.sleep(self._startup_delay)
+        await self.rt.manager.start()
+
+    def _on_done(self, task: asyncio.Task) -> None:
+        if self._stopping:
+            return
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            # manager.start() 正常返回 = 它自己决定不干了（stop_event 被置位等），
+            # 不算异常退出，但也要留痕：否则就是又一个静默假在线。
+            _LOGGER.warning("[%s] BLE 任务自行返回，不再自动重建", self.rt.device_id)
+            return
+        _LOGGER.error("[%s] BLE 任务意外退出：%s: %s",
+                      self.rt.device_id, type(exc).__name__, exc)
+        self._publish_offline()
+        self._schedule_rebuild()
+
+    def _publish_offline(self) -> None:
+        """立刻发布该设备 offline（MQTT retained + scoped SSE）——"假在线"的对手。"""
+        try:
+            self.rt.manager.publish_status(
+                {"connected": False, "error": "task_exited"}, retain=True)
+        except Exception as e:
+            _LOGGER.warning("[%s] offline 发布失败：%s", self.rt.device_id, e)
+
+    def _schedule_rebuild(self) -> None:
+        if self._rebuilds >= self.MAX_REBUILDS:
+            _LOGGER.critical(
+                "[%s] 已连续重建 %d 次，停止自动重建（需人工介入或升级为进程重启）",
+                self.rt.device_id, self._rebuilds)
+            return
+        self._rebuilds += 1
+        delay = min(self.REBUILD_BASE_DELAY * (2 ** (self._rebuilds - 1)),
+                    self.REBUILD_MAX_DELAY)
+        _LOGGER.warning("[%s] %.1fs 后重建 BLE 任务（第 %d 次）",
+                        self.rt.device_id, delay, self._rebuilds)
+        self._rebuild_task = asyncio.create_task(self._rebuild_after(delay))
+
+    async def _rebuild_after(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        if self._stopping:
+            return
+        try:
+            # 重挂**全部**钩子：新 manager 实例不能继承旧实例的 publisher/invalidator
+            if self._mount_hooks:
+                self._mount_hooks(self.rt)
+            self._spawn()
+        except Exception as e:
+            _LOGGER.error("[%s] 重建失败：%s", self.rt.device_id, e)
+            self._schedule_rebuild()
 
 
 class Server:
-    def __init__(self):
-        self.config = load_config()
-        self.state = ChargerState()
-        self.ble = BLEManager(self.config.ble.mac, self.config.ble.token, self.state, self.config)
+    """单进程单事件循环，持有 N 台设备（§3.1）。
+
+    **P0-2 禁令**：这里的 `__init__` 只构建 registry / history_store，**绝不**出现
+    `self.ble = ...` / `self.state = ...` / `self.history = ...` 赋值。一旦写了，
+    三个 property 的 setter 会把值塞进 `_xxx_assigned`，getter 见其非空就永久短路
+    —— ContextVar 永不生效，所有 per-device 请求静默落到 primary（history 更糟：
+    落到无设备维度的共享 store，16 处查询/写入全部串台）。比直接报错更危险，
+    所以 `__init__` 尾部有断言（`_assert_no_assignment`）。
+    """
+
+    def __init__(self, config=None, *, controller_factory=None):
+        self.config = config if config is not None else load_config()
+        # ── 测试装配 / 显式覆盖槽位（仅 `Server.__new__` 与老测试使用）──
+        self._ble_assigned = None
+        self._state_assigned = None
+        self._history_assigned = None
+        # 虚拟充电器注入点（§7 P1）：可传单个工厂或 {device_id: 工厂}
+        self._controller_factory = controller_factory
+        # 共享 BLE 适配器协调器（§3.4/§3.5，P2）：进程内**唯一**允许触碰适配器/
+        # bluetoothctl 的模块。必须在 _build_runtime 之前建好——每个 manager 都要拿它。
+        self.adapter = AdapterCoordinator(
+            connect_limit=2,
+            startup_stagger_sec=self.config.server.startup_stagger_sec,
+            log=_LOGGER,
+        )
+        # 共享存储 + 设备注册表（primary 在首位，运行期静态不变）
+        self._history_store = PortHistory(
+            db_path=self.config.server.history_db_path,
+            retention_days=self.config.server.history_retention_days,
+        )
+        self.registry = DeviceRegistry()
+        for spec in self.config.device_specs():
+            self._build_runtime(spec)
         self.mqtt_client = None
         self._mqtt_connect_time = 0.0
         self._mqtt_disconnect_count = 0
         self._mqtt_publish_failures = 0
         self.loop = None
         self._start_lock = asyncio.Lock()
-        self._status_cache_bytes = None
-        self._status_cache_valid = False
+        # 状态缓存按设备分桶（§3.2：容器留在 Server，键升级为复合键——比搬进
+        # runtime 对 17 处测试装配的破坏小得多）
+        self._status_cache: dict[str, bytes] = {}
         self._chart_cache: OrderedDict = OrderedDict()
         self._chart_cache_ttl = 10
         self._chart_cache_max = 10
+        # 协调器的判定依赖"现在有几台设备 / 重建找得到 rt"，所以钩子在 registry 建好
+        # 之后才接（above 的 _build_runtime 已经跑完）。
+        self.adapter.set_device_count_provider(lambda: len(self.registry))
+        self.adapter.set_rebuild_hook(self._rebuild_device_inprocess)
+        self.adapter.set_process_restart_hook(self._restart)
         self._chart_cache_max_bytes = CHART_CACHE_MAX_BYTES
         self._chart_cache_max_entry_bytes = CHART_CACHE_MAX_ENTRY_BYTES
         self.sse = SSEEmitter()
-        self._xiaomi_sessions: dict[str, tuple[Any, asyncio.TimerHandle | None]] = {}  # session_id -> (client, timer)
+        # 会话形状 {client, timer, devices}：`devices` 在扫码完成后落一次，供批量导入
+        # 用——凭据（token/ble_key）只在服务端内存里过一遍，前端不必拿在手里再回传。
+        self._xiaomi_sessions: dict[str, dict] = {}
         self._start_time = time.time()
-        self.history = PortHistory(
-            db_path=self.config.server.history_db_path,
-            retention_days=self.config.server.history_retention_days,
-        )
         self.bemfa: BemfaClient | None = None
+        # (device_id, port) → 巴法云实体 id 的映射，`setup_bemfa` 装配时落一次。
+        # `_bemfa_publish` 走它而不是每次现算：自定义实体表后"哪个实体绑哪个口"只有
+        # 装好的那份 plan 说得准（派生规则只是兜底）。
+        self._bemfa_map: dict = {}
         # 后台任务挂在实例上而不是 aiohttp 的 app_ 里：应用启动完成后再写 app_
         # 会触发 aiohttp 的 DeprecationWarning（"Changing state of started or
         # joined application is deprecated"），未来版本会直接报错。
-        self._ble_task: asyncio.Task | None = None
+        # 任务持有归 `rt.supervisor`（§3.2/§3.13）：`Server._ble_task` 已删除，
+        # handle_enable 只调 supervisor.start()/stop()。
         self._backfill_task: asyncio.Task | None = None
         effective_level = self.config.server.log_level
         logging.getLogger().setLevel(LOG_LEVELS.get(effective_level, logging.INFO))
         env_var = os.environ.get("CUKTECH_LOG_LEVEL")
         source = "环境变量 CUKTECH_LOG_LEVEL" if env_var else "config.yaml"
         _LOGGER.info("日志级别: %s (来源: %s)", effective_level, source)
+        self._assert_no_assignment()
+
+    # ── 设备注册表构建 ──
+
+    def _build_runtime(self, spec, *, mount_hooks=None) -> DeviceRuntime:
+        """按一份 `DeviceConfig` 建齐该设备的运行期资源（§3.2）。"""
+        topics = self.config.topics_for(spec)
+        state = ChargerState()
+        manager = self._make_manager(spec, state, topics)
+        rt = DeviceRuntime(
+            device_id=spec.device_id,
+            mac=spec.mac,
+            token=spec.token,
+            name=spec.display_name,
+            topics=topics,
+            state=state,
+            manager=manager,
+            history=DeviceHistory(self.history_store, spec.device_id),
+            spec=spec,
+        )
+        rt.supervisor = RuntimeSupervisor(rt, mount_hooks=self.mount_device_hooks)
+        self.registry.add(rt)
+        return rt
+
+    def _make_manager(self, spec, state, topics) -> BLEManager:
+        factory = self._controller_factory
+        if isinstance(factory, dict):
+            factory = factory.get(spec.device_id)
+        return BLEManager(
+            spec.mac, spec.token, state, self.config,
+            device_id=spec.device_id,
+            topics=topics,
+            controller_factory=factory,
+            adapter=self.adapter,
+        )
+
+    def emit_device_event(self, event_type: str, data: dict) -> None:
+        """发一条**带设备归属**的 SSE（§3.8）。只给设备维度的 handler 用。
+
+        为什么不能直接 `self.sse.emit(...)`：共享出口不知道事件属于哪台设备，多设备
+        时前端 `deviceOf(msg)` 会把它归给 primary，于是"给 B 拨协议开关，A 的界面跟着
+        变"——命令打对了，展示串了。设备归属只有 `DeviceSSEEmitter` 知道。
+
+        退化路径：手工装配（`Server.__new__`，17 处老测试）或钩子未挂的 manager 没有
+        出口，此时退回共享 `sse`，与改造前逐字节一致（单设备事件流本来就不该带
+        device 字段）。
+        """
+        try:
+            manager = self.current_runtime().manager
+        except (AttributeError, RuntimeError):
+            manager = None            # registry 尚未装配
+        if manager is not None and manager.sse_emitter is not None:
+            manager.emit_event(event_type, data)
+            return
+        if hasattr(self, "sse"):
+            self.sse.emit(event_type, data)
+
+    # ── 装配面：每台设备的 10 项钩子（§3.2 P0-1） ──
+
+    def mount_device_hooks(self, rt: DeviceRuntime) -> None:
+        """把一台设备的**全部**钩子挂到它的 manager 上。
+
+        缺任何一项都会让这台设备残废，而且多数是静默的：
+        1 scoped SSE（缺 → 事件无设备归属，前端把设备 2 画成 primary）
+        2 MQTT publisher（缺 → 完全不发 MQTT）
+        3 status invalidator（缺 → 该设备 /api/status 永不失效）
+        4 restart handler（缺 → 认证卡死无人重建，且绝不能捕获 s.ble）
+        5 quality provider（缺/捕获错 → quality 显示成 primary）
+        6 history（缺 → 不落库；捕获错 → 写进 default 行）
+        7 录像开关 8 限额 9 常供 10 即停（缺 → 只加载 primary 的设置）
+        """
+        multi = self.registry.multi
+        rt.manager.set_sse_emitter(DeviceSSEEmitter(self.sse, rt.device_id, multi=multi))
+        rt.manager.set_mqtt_publisher(self.mqtt_publish)
+        rt.manager.set_status_cache_invalidator(
+            lambda rt=rt: self.invalidate_status_cache(rt.device_id))
+        rt.manager.set_restart_handler(self.make_restart_handler(rt))
+        rt.manager.set_quality_provider(self.make_quality_provider(rt))
+        rt.manager.set_history(rt.history)
+        rt.manager.record_sessions = rt.history.get_session_recording()
+        rt.manager.set_charge_limits(rt.history.get_charge_limits())
+        # 顺序：先常供再即停 —— set_permanent_ports 会剔除同口的即停标记（互斥）
+        rt.manager.set_permanent_ports(rt.history.get_permanent_ports())
+        rt.manager.set_full_off(rt.history.get_full_off())
+
+    def make_restart_handler(self, rt: DeviceRuntime):
+        """per-device 重启处理器（§3.3 红线 4：**捕获 rt，不捕获 s.ble**）。"""
+        async def _restart_this_device(*args, **kwargs):
+            await self.restart_device(rt)
+        return _restart_this_device
+
+    def make_quality_provider(self, rt: DeviceRuntime):
+        """per-device quality（§3.3 红线 3：由每设备的 timer 在请求上下文之外调用）。"""
+        def _quality():
+            return {
+                "ble": rt.manager.connection_quality(),
+                "mqtt": self.mqtt_quality(),
+                "bemfa": (self.bemfa.quality() if self.bemfa else
+                          {"score": 0, "uptime": 0, "ping_lost": 0, "reconnect_count": 0}),
+            }
+        return _quality
+
+    async def restart_device(self, rt: DeviceRuntime) -> None:
+        """认证卡死的处置（§3.5 L3）。
+
+        N=1：仍走进程重启（与改造前完全一致 —— P1 原则优先于"理论更优"）。
+        N>1：进程内重建**这一台**，按 L3 生命周期：停任务 → cmd_queue 的待应答
+        future 全部 settle 为失败 → 以 link_loss 关闭本设备活跃会话（once 限额保留、
+        已积分能量保留）→ 新建 manager 实例 → 重挂全部钩子 → 启动。
+
+        升级为进程重启的条件（≥2 台同时 auth-stuck / 适配器级错误）属 P2 的
+        分级恢复策略；这里只保证"不会为了一台设备把全场打下线"。
+        """
+        if len(self.registry) <= 1:
+            await self._restart()
+            return
+        _LOGGER.error("[%s] 认证卡死，进程内重建该设备（其他设备不受影响）", rt.device_id)
+        # 关键：**不能就地重建**。本方法是从该设备的 manager 任务里被调用的，而重建
+        # 第一步就是 `supervisor.stop()` → cancel 掉那个任务 → 等于 await 自己的取消，
+        # 重建永远走不完（P1 遗留的自取消死锁）。所以交给 supervisor 的独立任务。
+        await rt.supervisor.schedule_rebuild(self._rebuild_device_resources)
+
+    async def _rebuild_device_resources(self, rt: DeviceRuntime) -> None:
+        """L3 重建的资源层部分（此任务已停、会话已按 link_loss 收尾）。"""
+        # 队列里等待响应的命令全部失败收尾，否则调用方会挂到超时
+        while True:
+            try:
+                item = rt.manager.cmd_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            fut = item[2] if isinstance(item, tuple) and len(item) > 2 else None
+            if fut is not None and not fut.done() and not fut.cancelled():
+                fut.set_exception(ConnectionError("device restarting"))
+        rt.manager.close_active_sessions(END_REASON_LINK_LOSS)
+        rt.manager = self._make_manager(rt.spec, rt.state, rt.topics)
+        # 重挂**全部** 10 项钩子：新 manager 是干净实例，漏一项这台设备就残废
+        self.mount_device_hooks(rt)
+        _LOGGER.info("[%s] 设备重建完成", rt.device_id)
+
+    async def _rebuild_device_inprocess(self, mac: str) -> None:
+        """协调器 L3 钩子：按 MAC 找到 runtime 并重建（§3.5）。"""
+        for rt in self.registry:
+            if rt.mac.lower() == str(mac).lower():
+                await self.restart_device(rt)
+                return
+        _LOGGER.warning("L3 rebuild requested for unknown MAC %s", mac)
+
+    def _assert_no_assignment(self) -> None:
+        """P0-2 第③条：生产构造后三个槽位必须为空，否则 ContextVar 已失效。
+
+        **故意用 raise 而不是 assert**：它守的是"per-device 路由静默失效"这条最危险
+        的红线（界面照常响应，只是所有命令都打到 primary）。`python -O` 会把 assert
+        整条删掉，于是最该拦住的那种部署反而没有任何检查——宁可启动崩掉。
+        """
+        leaked = [name for name, val in (
+            ("_ble_assigned", self._ble_assigned),
+            ("_state_assigned", self._state_assigned),
+            ("_history_assigned", self._history_assigned),
+        ) if val is not None]
+        if leaked:
+            raise RuntimeError(
+                f"生产 __init__ 给 {leaked} 赋了值：`ble`/`state`/`history` 的 getter 会永久"
+                "短路，per-device 路由静默失效（设计文档 §3.3 P0-2）")
+
+    @property
+    def history_store(self):
+        """共享存储（服务级 meta / connect / close / backfill 的唯一入口）。
+
+        `history_store` 未构造且测试只装配了 `_history_assigned` 时回退到它（§3.2）。
+        **不得**在这里回退 `self.history` —— 那会让 history getter 与它互相递归。
+        """
+        store = getattr(self, "_history_store", None)
+        if store is not None:
+            return store
+        return getattr(self, "_history_assigned", None)
+
+    # ── primary 兼容层（§3.3）：只读 property，按请求上下文解析 ──
+
+    @property
+    def primary(self) -> DeviceRuntime:
+        return self.registry.primary
+
+    def current_runtime(self) -> DeviceRuntime:
+        """当前请求的设备；无上下文（全局后台路径）→ primary。
+
+        **适用边界**：只对"没有设备归属"的全局路径成立。由设备 X 触发的回调必须
+        闭包捕获 rt，不能靠它解析（§3.3 五条红线）。
+        """
+        return self._current_rt_or_primary(required=True)
+
+    def _current_rt_or_primary(self, *, required: bool):
+        """解析当前设备；`required=False` 时"没有设备"返回 None。
+
+        后者专供 `self.history` 这类**可缺省**依赖：老代码里 `if self.history:` 是
+        "历史功能可能没开"的守卫，手工装配（`Server.__new__`、无 registry）时必须
+        继续得到 None，而不是抛异常。
+        """
+        rt = _current_rt.get()
+        if rt is not None:
+            return rt
+        registry = getattr(self, "registry", None)
+        if registry is None or len(registry) == 0:
+            if required:
+                raise RuntimeError("设备注册表尚未初始化（生产路径不应发生）")
+            return None
+        return registry.primary
+
+    def current_device_id(self) -> str:
+        try:
+            return self.current_runtime().device_id
+        except Exception:
+            # 未装配 registry（`Server.__new__` 测试路径）：退回 primary 的存储 id，
+            # 让缓存键/日志等纯记账用途仍然可用。生产构造后 registry 一定存在。
+            return PRIMARY_DEVICE_ID
+
+    @property
+    def _status_cache_map(self) -> dict:
+        """状态缓存字典（懒创建）。
+
+        `Server.__new__` 手工装配的 17 处老测试不会设置它；懒创建让这些用例继续
+        工作，而生产路径在 `__init__` 里已经建好，行为无差别。
+        """
+        cache = getattr(self, "_status_cache", None)
+        if cache is None:
+            cache = {}
+            self._status_cache = cache
+        return cache
+
+    @property
+    def ble(self):
+        if getattr(self, "_ble_assigned", None) is not None:
+            return self._ble_assigned
+        return self.current_runtime().manager
+
+    @ble.setter
+    def ble(self, value):
+        # 仅供测试装配（`Server.__new__`）与显式覆盖；生产 __init__ 禁止走到这里。
+        self._ble_assigned = value
+
+    @property
+    def state(self):
+        if getattr(self, "_state_assigned", None) is not None:
+            return self._state_assigned
+        return self.current_runtime().state
+
+    @state.setter
+    def state(self, value):
+        self._state_assigned = value
+
+    @property
+    def history(self):
+        """当前设备的 history 视图（assigned-fallback，§3.2）。
+
+        顺序：`_history_assigned`（测试装配）→ 当前 runtime 的 facade → primary 的。
+        **不在 getter 里回退 `self.history`**（那就是自己，无限递归）。
+        """
+        if getattr(self, "_history_assigned", None) is not None:
+            return self._history_assigned
+        rt = self._current_rt_or_primary(required=False)
+        return rt.history if rt is not None else None
+
+    @history.setter
+    def history(self, value):
+        self._history_assigned = value
+
+    # ── 设备命名空间的残留清理（§3.6/§3.10） ──
+
+    #: 清 retained 用的 QoS。与 `clean_retained.py` 对齐（那边一直是 qos=1）：
+    #: qos=0 只是"交给本地 socket"，紧接着的 `_restart()` 会断 MQTT，消息可能根本没
+    #: 出去——而那时旧前缀已经不在配置里，脚本也推导不出来，等于永久幽灵。
+    RETAINED_CLEAR_QOS = 1
+    #: `wait_for_publish()` 的等待上限（秒）。**必须给**：paho 的默认值是 None，
+    #: 语义是"永远等"（内部 `Condition.wait(None)`）。而这段代码跑在 aiohttp 的
+    #: 事件循环里——broker 连着却不回 PUBACK（broker 卡死 / TCP 缓冲满 / 半死连接）
+    #: 时，一次配置保存就能把整台服务器冻住：所有设备的 HTTP、SSE、命令全部停摆。
+    RETAINED_CLEAR_TIMEOUT = 2.0
+
+    def _mqtt_clear_retained(self, topic: str) -> bool:
+        """清掉一条 retained 消息（**空负载** + retain + qos 1）。
+
+        不能用 `mqtt_publish(topic, None, retain=True)`：那个函数会
+        `json.dumps(None)` → 往 retained 里塞一个字符串 "null"，订阅方看到的仍是
+        一条"有内容"的消息。清除 retained 的唯一正确形状是空 payload。
+
+        `wait_for_publish(timeout)`：清理发生在"写盘之后、重启之前"的 1 秒窗口里，
+        没确认就断电式重启 = 清除白做；但**必须带超时**，理由见
+        `RETAINED_CLEAR_TIMEOUT`。老版本 paho 没有这个方法，`getattr` 兜底。
+
+        **阻塞调用**（paho 内部等 threading.Condition）——只允许从工作线程调，
+        见 `_purge_namespace`。
+        """
+        if not (self.mqtt_client and self.mqtt_client.is_connected()):
+            return False
+        try:
+            info = self.mqtt_client.publish(topic, "", retain=True, qos=self.RETAINED_CLEAR_QOS)
+            waiter = getattr(info, "wait_for_publish", None)
+            if callable(waiter):
+                try:
+                    waiter(self.RETAINED_CLEAR_TIMEOUT)
+                except TypeError:      # paho 1.x 的签名不接受参数：宁可不等也别卡死
+                    waiter()
+            return True
+        except Exception as e:
+            self._mqtt_publish_failures += 1
+            _LOGGER.warning("清 retained 失败 %s: %s", topic, e)
+            return False
+
+    def _clear_retained_batch(self, topics) -> list[str]:
+        """逐条清（**阻塞**，只允许在线程里调）。"""
+        return [t for t in topics if self._mqtt_clear_retained(t)]
+
+    @staticmethod
+    def _namespace_topics(ns) -> list[str]:
+        """一台设备的全部"状态型"主题（要清的就是这些）。"""
+        topics = [ns.status, ns.settings, ns.port, ns.ble, ns.charge_event]
+        topics += [ns.port_topic(name) for name in PORT_NAMES.values()]
+        return topics
+
+    async def _purge_namespace(self, ns, device_id: str, why: str) -> list[str]:
+        """清一台设备命名空间下的 retained（在**工作线程**里跑，不占事件循环）。
+
+        为什么必须丢线程：`wait_for_publish()` 是阻塞调用，paho 内部就是在等一个
+        `threading.Condition`。放在事件循环里调，broker 一卡住整台服务器就冻住
+        （所有设备的 HTTP/SSE/命令一起停摆）——清 9 条 × N 台设备，每条都可能等。
+        `mqtt_client.publish()` 本身是线程安全的（paho 明确支持跨线程 publish）。
+        """
+        topics = self._namespace_topics(ns)
+        cleared = await asyncio.to_thread(self._clear_retained_batch, topics)
+        _LOGGER.warning("[%s] %s：清理 %d/%d 条 retained 主题（历史数据保留）",
+                        device_id, why, len(cleared), len(topics))
+        return cleared
+
+    async def purge_removed_devices(self, removed) -> list[str]:
+        """设备从配置里消失后，清掉它在 broker 上的 retained 状态。
+
+        为什么必须清：`{prefix}/status`、`.../port/c1` 等都是 retained 的，设备没了
+        它们还留在 broker 上——HA / MQTT Explorer 会看到一个**永远停在最后一次上报**
+        的幽灵设备，用户以为设备还在。清理是幂等的：同 id 加回来，几秒内就被真实
+        状态覆盖。
+
+        **历史数据一个字不动**：那是用户数据，删了不可逆。同 id 重新加回来时曲线与
+        会话会原样回来；确需清库走 `clean_retained.py` / `history_down.py`。
+        """
+        cleared: list[str] = []
+        for rt in removed:
+            cleared += await self._purge_namespace(
+                rt.topics, rt.device_id, "设备已从配置移除（同 id 加回即恢复）")
+        return cleared
+
+    async def purge_stale_prefix(self, rt, new_prefix: str) -> list[str]:
+        """设备**还在**、但 `topic_prefix` 改了：旧前缀的 retained 同样是幽灵。
+
+        这条缺口以前没人补：`purge_removed_devices` 只对比"消失的设备"，
+        而 `clean_retained.py` 的前缀是从**当前配置**推导的——旧前缀改完之后就不在
+        配置里了，脚本也推导不出来，等于永久幽灵。所以必须在改前缀的当场清。
+        """
+        return await self._purge_namespace(
+            rt.topics, rt.device_id, f"topic 前缀已改为 {new_prefix}")
 
     def mqtt_publish(self, topic, payload, retain=False):
         """Publish to all enabled MQTT clients (multiplex)."""
@@ -242,27 +955,154 @@ class Server:
         if self.bemfa and self.bemfa.is_connected:
             self._bemfa_publish(topic, payload)
 
+    def _bemfa_entity_ids(self, rt) -> dict:
+        """一台设备的语音实体 id（§3.11）。
+
+        primary **必须**沿用现有 id（`cuktech_c1/…/cuktech_ble`）——用户配好的
+        语音指令不能因为多设备改造失效；其他设备用 `{device_id}_c1` 前缀。
+        """
+        if rt.device_id == PRIMARY_DEVICE_ID:
+            ids = {"c1": "cuktech_c1", "c2": "cuktech_c2", "c3": "cuktech_c3",
+                   "a": "cuktech_usb_a", "ble": "cuktech_ble"}
+        else:
+            prefix = rt.device_id
+            ids = {name: f"{prefix}_{'usb_a' if name == 'a' else name}"
+                   for name in ("c1", "c2", "c3", "a")} | {"ble": f"{prefix}_ble"}
+        # `bemfa_<name>:` 覆盖项（老用户的实体 id 可能是任意值，改名会让巴法云里
+        # 的自动化全断，所以允许逐项钉死；没写就用上面的派生规则）
+        overrides = getattr(getattr(rt, "spec", None), "bemfa_names", None) or {}
+        for name, entity_id in overrides.items():
+            if entity_id:
+                ids[name] = str(entity_id)
+        return ids
+
+    def _bemfa_device_for_topic(self, topic):
+        """topic 前缀 → 设备（§3.6 命名空间：前缀就是设备身份）。
+
+        前缀可能互相前缀包含（`cuktech/charger` 与 `cuktech/charger/desk`），所以
+        必须取**最长匹配**，否则 primary 会吃掉别的设备的事件。
+        """
+        best = None
+        for rt in self.registry:
+            prefix = rt.topics.prefix
+            if (topic == prefix or topic.startswith(prefix + "/")) and (
+                    best is None or len(prefix) > len(best.topics.prefix)):
+                best = rt
+        return best
+
+    def _bemfa_entity_plan(self) -> list:
+        """本次要建到巴法云的实体清单（§3.11）：一行 = 一台设备的某个开关。
+
+        返回 `[{device_id, port, name, entity_id, rt}]`，**`rt` 一并带上**：命令回调
+        必须捕获它（红线：回调里没有请求上下文，用 `self.ble` 会永远落到 primary）。
+
+        两种来源：
+        - 配了实体表（`bemfa.entities` 非空，或显式写了这个键）→ 完全照表来，
+          名字/设备/端口都是用户填的；
+        - 否则 → 老配置（`allowed_devices` × 5 个开关 + `name_c*`），行为与改造前
+          逐字节一致，老用户升级后语音指令一个都不变。
+        """
+        plan: list = []
+        seen_ids: set = set()
+
+        def _push(rt, port, name, eid):
+            # 同一个实体 id 绝不能建两次：`BemfaClient._devices` 是 dict，后来者会
+            # 覆盖前者 → 两个开关抢一个 topic，按哪个都只动其中一处。
+            if not eid or eid in seen_ids:
+                if eid:
+                    _LOGGER.warning("Bemfa 实体 id 重复（%s），已跳过 %s/%s",
+                                    eid, rt.device_id, port)
+                return
+            seen_ids.add(eid)
+            plan.append({"device_id": rt.device_id, "port": port, "name": name,
+                         "entity_id": eid, "rt": rt})
+
+        entries = list(getattr(self.config.bemfa, "entities", None) or [])
+        # `entities_defined` 才决定"用不用这张表"：空表 + 有键 = 用户就要 0 个实体；
+        # 空表 + 没键 = 老配置，走下面的兜底派生（升级后语音指令一个都不变）。
+        if entries or getattr(self.config.bemfa, "entities_defined", False):
+            for ent in entries:
+                name, device_id, port = bemfa_entity_triple(ent)
+                name = name.strip() or f"{BEMFA_PORT_LABELS.get(port, port)}开关"
+                rt = self.registry.get(device_id)
+                if rt is None:
+                    # 配置校验（validate_bemfa_entities）已经拦过，走到这里只可能是
+                    # 运行期把设备删了：跳过，但要在日志里能查到
+                    _LOGGER.warning("Bemfa 实体 `%s` 指向的设备 `%s` 不存在，已跳过",
+                                    name, device_id)
+                    continue
+                _push(rt, port, name, self._bemfa_entity_ids(rt).get(port))
+            return plan
+
+        # ── 老配置兜底 ──
+        for item in self._derived_bemfa_plan():
+            _push(item["rt"], item["port"], item["name"], item["entity_id"])
+        return plan
+
+    def _derived_bemfa_plan(self) -> list:
+        """老配置（没写过 `bemfa.entities` 键）的派生清单：`allowed_devices` × 5。
+
+        独立成方法是为了让**配置页也能拿到同一份派生结果**：老用户第一次在新页面上
+        点保存时，前端必须把这张表原样铺出来再提交，否则"配了 `allowed_devices: ["*"]`
+        的用户"会因为页面只铺 primary 的 5 行而丢掉其它设备的语音开关——而且服务端
+        随后会把它们从巴法云真的删掉（`registered` 差集）。派生规则只有这一份，
+        前端不再自己拼名字（`GET /api/config` 直接回 `derivedEntities`）。
+        """
+        registry = getattr(self, "registry", None)
+        if registry is None:          # `Server.__new__` 手工装配的测试路径
+            return []
+        plan: list = []
+        allowed = self.config.bemfa.allowed_devices or [PRIMARY_DEVICE_ID]
+        names = {"c1": self.config.bemfa.name_c1, "c2": self.config.bemfa.name_c2,
+                 "c3": self.config.bemfa.name_c3, "a": self.config.bemfa.name_a,
+                 "ble": self.config.bemfa.name_ble}
+        for rt in registry:
+            if "*" not in allowed and rt.device_id not in allowed:
+                continue
+            ids = self._bemfa_entity_ids(rt)
+            for port in BEMFA_PORTS:
+                if rt.device_id == PRIMARY_DEVICE_ID:
+                    label = names.get(port) or BEMFA_DEFAULT_NAMES.get(port, port)
+                elif port == "ble":
+                    label = f"{rt.name} 蓝牙开关"
+                else:
+                    label = f"{rt.name} {BEMFA_PORT_LABELS.get(port, port)}"
+                plan.append({"device_id": rt.device_id, "port": port,
+                             "name": label, "entity_id": ids.get(port), "rt": rt})
+        return plan
+
+    def _bemfa_entity_for(self, rt, port):
+        """(设备, 端口) → 实体 id。表里没有这个开关就返回 None（不发状态）。
+
+        装配过的映射优先；没有映射时**只有一种情况可以退回派生规则**：还没装配
+        （单元测试、早于 `setup_bemfa` 的发布）。一旦配了实体表，派生 id 就不是
+        "这个口有开关"的证据——比如用户删掉了 primary 的 C2，那时再按派生规则发
+        状态，服务端会往一个没注册过的实体上发（线上是空转，测试里则是假阳性）。
+        """
+        plan_map = getattr(self, "_bemfa_map", None) or {}
+        eid = plan_map.get((rt.device_id, port))
+        if eid:
+            return eid
+        if plan_map or getattr(self.config.bemfa, "entities_defined", False):
+            return None
+        return self._bemfa_entity_ids(rt).get(port)
+
     def _bemfa_publish(self, topic, payload):
-        """Map HA MQTT topics to Bemfa device states."""
-        topic_prefix = self.config.mqtt.topic_prefix
-        # Port state: {prefix}/port/{port_name}
-        if topic.startswith(f"{topic_prefix}/port/"):
-            port_name = topic.split("/")[-1]
-            entity_map = {
-                "c1": "cuktech_c1",
-                "c2": "cuktech_c2",
-                "c3": "cuktech_c3",
-                "a": "cuktech_usb_a",
-            }
-            entity_id = entity_map.get(port_name)
-            if entity_id and isinstance(payload, dict):
-                state = MSG_ON if payload.get("active") else MSG_OFF
-                self.bemfa.publish_state(entity_id, state)
-        # BLE status: {prefix}/status
-        elif topic == f"{topic_prefix}/status":
-            if isinstance(payload, dict):
-                connected = payload.get("connected", False)
-                self.bemfa.publish_state("cuktech_ble", MSG_ON if connected else MSG_OFF)
+        """Map HA MQTT topics to Bemfa device states（按设备命名空间路由）。"""
+        rt = self._bemfa_device_for_topic(topic)
+        if rt is None:
+            return
+        if not isinstance(payload, dict):
+            return
+        rest = topic[len(rt.topics.prefix):].lstrip("/")
+        if rest.startswith("port/"):
+            entity_id = self._bemfa_entity_for(rt, rest.split("/")[-1])
+            if entity_id:
+                self.bemfa.publish_state(entity_id, MSG_ON if payload.get("active") else MSG_OFF)
+        elif rest == "status":
+            entity_id = self._bemfa_entity_for(rt, "ble")
+            if entity_id:
+                self.bemfa.publish_state(entity_id, MSG_ON if payload.get("connected") else MSG_OFF)
 
     async def setup_bemfa(self):
         """Initialize Bemfa client if enabled."""
@@ -276,71 +1116,170 @@ class Server:
 
         self.bemfa = BemfaClient(self.config.bemfa.uid, modified=self.config.bemfa.modified)
 
-        # Register devices with custom display names
-        self.bemfa.add_device("cuktech_c1", self.config.bemfa.name_c1)
-        self.bemfa.add_device("cuktech_c2", self.config.bemfa.name_c2)
-        self.bemfa.add_device("cuktech_c3", self.config.bemfa.name_c3)
-        self.bemfa.add_device("cuktech_usb_a", self.config.bemfa.name_a)
-        self.bemfa.add_device("cuktech_ble", self.config.bemfa.name_ble)
+        plan = self._bemfa_entity_plan()
+        self._bemfa_map = {(item["device_id"], item["port"]): item["entity_id"]
+                           for item in plan}
 
-        # Register command callbacks
-        def _port_cmd(port, on):
-            _LOGGER.info("Bemfa command: %s %s", port, "on" if on else "off")
+        def _port_cmd(rt, port, on):
+            """命令回调**必须捕获 rt**（§3.3 红线）：这里没有请求上下文，
+
+            用 `self.ble` 解析会永远落到 primary —— 一条语音指令就会去开别人家的口。
+            """
+            _LOGGER.info("Bemfa command [%s]: %s %s", rt.device_id, port,
+                         "on" if on else "off")
             try:
                 self.loop.call_soon_threadsafe(
-                    self.ble.cmd_queue.put_nowait,
+                    rt.manager.cmd_queue.put_nowait,
                     ("port", (port, "on" if on else "off"), None))
                 return True
             except Exception as e:
-                _LOGGER.error("Bemfa port cmd failed: %s", e)
+                _LOGGER.error("Bemfa port cmd failed [%s]: %s", rt.device_id, e)
                 return False
 
-        def _ble_cmd(on):
-            _LOGGER.info("Bemfa BLE command: %s", "on" if on else "off")
+        def _ble_cmd(rt, on):
+            """BLE 开关：只能经 supervisor 启停（§3.13），不得直接 cancel/create 任务。"""
+            _LOGGER.info("Bemfa BLE command [%s]: %s", rt.device_id,
+                         "on" if on else "off")
             try:
                 if on:
-                    asyncio.run_coroutine_threadsafe(self.ble.start(), self.loop)
+                    self.loop.call_soon_threadsafe(rt.supervisor.start)
                 else:
-                    asyncio.run_coroutine_threadsafe(self.ble.request_stop(), self.loop)
+                    asyncio.run_coroutine_threadsafe(
+                        rt.supervisor.stop(), self.loop)
                 return True
             except Exception as e:
-                _LOGGER.error("Bemfa BLE cmd failed: %s", e)
+                _LOGGER.error("Bemfa BLE cmd failed [%s]: %s", rt.device_id, e)
                 return False
 
-        self.bemfa.on_command("cuktech_c1", lambda on: _port_cmd("c1", on))
-        self.bemfa.on_command("cuktech_c2", lambda on: _port_cmd("c2", on))
-        self.bemfa.on_command("cuktech_c3", lambda on: _port_cmd("c3", on))
-        self.bemfa.on_command("cuktech_usb_a", lambda on: _port_cmd("a", on))
-        self.bemfa.on_command("cuktech_ble", _ble_cmd)
+        for item in plan:
+            eid, rt, port = item["entity_id"], item["rt"], item["port"]
+            self.bemfa.add_device(eid, item["name"])
+            if port == "ble":
+                self.bemfa.on_command(eid, lambda on, rt=rt: _ble_cmd(rt, on))
+            else:
+                self.bemfa.on_command(
+                    eid, lambda on, rt=rt, port=port: _port_cmd(rt, port, on))
+
+        # ── 云端残留：从配置里删掉的实体，在巴法云 App 里还留着一个按了没反应的开关 ──
+        # 用上一次成功注册的 id 快照做差集——只有服务端自己知道上一轮到底注册过什么
+        # （用户手改 YAML 也照样对得上）。快照存在 **DB meta**，见 `_bemfa_registered_snapshot`。
+        previous = self._bemfa_registered_snapshot()
+        stale = [eid for eid in previous if eid not in set(self._bemfa_map.values())]
+        if stale:
+            _LOGGER.info("Bemfa 清理已删除的实体 %d 个: %s", len(stale), ", ".join(stale))
+            await self.bemfa.delete_topics(stale)
 
         await self.bemfa.start()
 
         # Clear modified flag after successful topic registration
         if self.config.bemfa.modified:
             self._clear_bemfa_modified()
+        # 记下这一轮注册的实体 id，供下次启动做残留清理
+        registered = sorted(set(self._bemfa_map.values()))
+        if registered != previous:
+            self._save_bemfa_registered(registered)
 
     def _config_path(self) -> Path:
         return Path(os.environ.get("CUKTECH_CONFIG_PATH", str(Path(__file__).parent / "config.yaml")))
 
+    #: 上一轮注册到巴法云的实体 id 快照（供下次启动清云端残留）。
+    #: **存在 DB meta 而不是 config.yaml**：这是服务端自己的运行期记账，而
+    #: `yaml.safe_load + yaml.dump` 会把用户手写的注释、键序、引号风格整份抹掉
+    #: （config.yaml.example 就是一份带注释的模板，README 让人 cp 过去改）。
+    #: meta 表本来就是干这个的（`permanent_ports` / `web_language` 都在那儿）。
+    BEMFA_REGISTERED_META_KEY = "bemfa_registered"
+
+    def _bemfa_registered_snapshot(self) -> list[str]:
+        """上一次成功注册的实体 id（DB meta 为准，兼容早期写在 YAML 里的字段）。"""
+        store = self.history_store
+        ids: list[str] = []
+        if store is not None:
+            try:
+                raw = store.get_meta(self.BEMFA_REGISTERED_META_KEY, "")
+            except Exception:
+                raw = ""
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    parsed = None
+                if isinstance(parsed, list):
+                    ids = [str(x) for x in parsed if x]
+        if not ids:
+            # 迁移：10fed6b 曾把它写进 config.yaml 的 `bemfa.registered`，读一次并迁走
+            legacy = [str(x) for x in (getattr(self.config.bemfa, "registered", None) or []) if x]
+            if legacy:
+                _LOGGER.info("Bemfa registered 快照从 config.yaml 迁移到 DB meta（%d 项）",
+                             len(legacy))
+                ids = sorted(set(legacy))
+                self._save_bemfa_registered(ids)
+        return sorted(set(ids))
+
+    def _save_bemfa_registered(self, entity_ids) -> None:
+        """记下本轮注册的实体 id（只写 DB meta，绝不碰 config.yaml）。"""
+        store = self.history_store
+        if store is None:                 # 手工装配的测试路径
+            return
+        payload = json.dumps(sorted(set(entity_ids)))
+        try:
+            store.set_meta(self.BEMFA_REGISTERED_META_KEY, payload)
+            _LOGGER.info("Bemfa 已记录本轮注册的实体 %d 个", len(set(entity_ids)))
+        except Exception:
+            _LOGGER.warning("Bemfa registered 快照写入失败", exc_info=True)
+
+    def _set_bemfa_yaml_bool(self, key: str, value: bool) -> bool:
+        """只改 config.yaml 里 `bemfa.<key>` 这**一行**，其余字节原样保留。
+
+        为什么要做到"只改一行"：服务端记账曾经用 `yaml.safe_load` + `yaml.dump`
+        整份重写，那会把用户手写的注释、顶层键顺序（dump 默认 sort_keys）和引号风格
+        全部抹掉——用户只会看到"我保存了一次设置，注释全没了"。
+        找不到该键时在 `bemfa:` 节头后补一行；找不到 `bemfa:` 节就整体追加。
+        失败一律返回 False（记账失败绝不影响启动）。
+        """
+        try:
+            config_path = self._config_path()
+            if not config_path.exists():      # 纯环境变量部署：不凭空造文件
+                return False
+            text = config_path.read_text(encoding="utf-8")
+            lines = text.splitlines(keepends=True)
+            literal = "true" if value else "false"
+            section_start = None
+            for idx, line in enumerate(lines):
+                if re.match(r"^bemfa\s*:\s*(#.*)?$", line.rstrip("\n")):
+                    section_start = idx
+                    break
+            if section_start is None:
+                suffix = "" if text.endswith(("\n", "")) else "\n"
+                config_path.write_text(f"{text}{suffix}bemfa:\n  {key}: {literal}\n",
+                                       encoding="utf-8")
+                return True
+            # 在节内找 `key:`（缩进 > 0；遇到下一个顶层键就停）
+            body_end = len(lines)
+            for idx in range(section_start + 1, len(lines)):
+                if lines[idx].strip() and not lines[idx].startswith((" ", "\t")):
+                    body_end = idx
+                    break
+            for idx in range(section_start + 1, body_end):
+                m = re.match(r"^(\s+)" + re.escape(key) + r"\s*:", lines[idx])
+                if m:
+                    indent = m.group(1)
+                    newline = "\n" if lines[idx].endswith("\n") else ""
+                    lines[idx] = f"{indent}{key}: {literal}{newline}"
+                    config_path.write_text("".join(lines), encoding="utf-8")
+                    return True
+            # 节存在但没有这个键：插在节头后面
+            newline = "\n" if lines[section_start].endswith("\n") else "\n"
+            lines.insert(section_start + 1, f"  {key}: {literal}{newline}")
+            config_path.write_text("".join(lines), encoding="utf-8")
+            return True
+        except Exception:
+            _LOGGER.warning("更新 config.yaml 的 bemfa.%s 失败", key, exc_info=True)
+            return False
+
     def _clear_bemfa_modified(self):
         """Set bemfa.modified=false in config.yaml after topic re-registration."""
-        try:
-            import yaml
-            config_path = self._config_path()
-            cfg = {}
-            if config_path.exists():
-                with open(config_path) as f:
-                    cfg = yaml.safe_load(f) or {}
-            if cfg.get("bemfa", {}).get("modified"):
-                cfg["bemfa"]["modified"] = False
-                # Atomic write: write to temp file then rename
-                tmp_path = config_path.with_suffix(".tmp")
-                with open(tmp_path, "w") as f:
-                    yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-                os.replace(tmp_path, config_path)
-                _LOGGER.info("Bemfa modified flag cleared")
-        except Exception:
-            _LOGGER.warning("Failed to clear bemfa modified flag", exc_info=True)
+        if self._set_bemfa_yaml_bool("modified", False):
+            _LOGGER.info("Bemfa modified flag cleared")
 
     async def handle_health(self, request):
         """GET /api/health - health check endpoint."""
@@ -348,7 +1287,7 @@ class Server:
         mqtt_connected = self.mqtt_client is not None and self.mqtt_client.is_connected()
         bemfa_connected = self.bemfa is not None and self.bemfa.is_connected
         all_healthy = bool(ble_connected or self.config.server.port > 0)
-        return web.json_response({
+        payload = {
             "ok": True,
             "healthy": all_healthy,
             "components": {
@@ -357,7 +1296,39 @@ class Server:
                 "bemfa": bemfa_connected,
             },
             "uptime_ms": int((time.time() - getattr(self, '_start_time', time.time())) * 1000),
-        })
+        }
+        # 单设备：响应保持原样（不改变 healthy 语义，避免破坏既有 docker/监控假设）；
+        # 多设备：附加 devices 真值分区（§3.13）。`healthy` 字段本身的语义缺陷
+        # （ble_connected or port>0 实际恒真）留给独立立项，不与多设备耦合。
+        if self.registry.multi:
+            payload["devices"] = {
+                rt.device_id: {
+                    "connected": bool(rt.state.connected),
+                    "authenticated": bool(rt.state.authenticated),
+                }
+                for rt in self.registry
+            }
+        return web.json_response(payload)
+
+    async def handle_devices(self, request):
+        """GET /api/devices - 设备清单（§3.7，多设备发现端点）。
+
+        无遗留消费者，因此它的存在本身不构成字节一致性破坏——"老面不变"指的是
+        老端点的响应。单设备时返回一台 primary，Web UI 据此隐藏切换器（§3.12）。
+
+        `recovery` 只在**卡在 L1.5 退避里**的设备上加：多设备且有活连接时阶梯升不
+        上去（L2 会掐断别人），它会无限重试，运维在界面上只看得到 connected=false。
+        正常设备不带这个键，响应逐字节不变。
+        """
+        adapter = getattr(self, "adapter", None)
+        devices = []
+        for rt in self.registry:
+            item = rt.describe()
+            state = adapter.backoff_state(rt.mac) if adapter is not None else None
+            if state:
+                item["recovery"] = state
+            devices.append(item)
+        return web.json_response({"ok": True, "devices": devices})
 
     async def handle_bemfa(self, request):
         """GET /api/bemfa - get Bemfa status."""
@@ -390,8 +1361,9 @@ class Server:
             _LOGGER.info("MQTT connected (rc=%s)", rc)
             s = get_server()
             s._mqtt_connect_time = time.time()
-            if s.ble:
-                s.ble.set_mqtt_publisher(s.mqtt_publish)
+            # 遍历 registry（§3.2 P0-1）：只给 s.ble 挂 publisher 会让设备 2 完全
+            # 不发 MQTT —— 而且静默（没有异常、没有日志、界面只是"不动"）。
+            s.mount_mqtt_publishers()
             s.setup_mqtt_subscriptions()
 
         def on_disconnect(client, userdata, flags, rc, properties=None):
@@ -402,7 +1374,9 @@ class Server:
         self.mqtt_client.on_disconnect = on_disconnect
 
         self.mqtt_client.will_set(
-            self.config.topic_status,
+            # LWT 只有一个，保留挂在 primary 的 status 上（§3.6）。多设备的离线判定
+            # 由 HA 侧已有的 30s HTTP 健康检查兜底 —— 它本来就不依赖遗嘱（ESP32 也没有）。
+            self._lwt_topic(),
             json.dumps({"connected": False}),
             retain=True, qos=1
         )
@@ -422,82 +1396,146 @@ class Server:
                     self.mqtt_client = None
 
         if self.mqtt_client:
-            self.ble.set_mqtt_publisher(self.mqtt_publish)
+            self.mount_mqtt_publishers()
+
+    def mount_mqtt_publishers(self) -> None:
+        """给**每一台**设备重挂 MQTT publisher（§3.2 P0-1 第2项）。
+
+        独立的公开方法是因为它有两条调用路径：`setup_mqtt()` 结尾、以及 paho 的
+        `on_connect` 回调（重连后必须重挂，否则重连即失声）。漏掉任何一条路径，
+        设备 2 就完全不发 MQTT。
+        """
+        registry = getattr(self, "registry", None)
+        if registry is None:
+            # `Server.__new__` 手工装配的测试路径：只有显式给的 manager。
+            assigned = getattr(self, "_ble_assigned", None)
+            if assigned is not None:
+                assigned.set_mqtt_publisher(self.mqtt_publish)
+            return
+        for rt in registry:
+            rt.manager.set_mqtt_publisher(self.mqtt_publish)
+
+    def _lwt_topic(self) -> str:
+        """遗嘱主题 = primary 的 status（§3.6：paho 只有一个遗嘱）。"""
+        try:
+            return self.config.topics_for(self.registry.primary.spec).status
+        except Exception:
+            return self.config.topic_status
 
     def setup_mqtt_subscriptions(self):
+        """为每台设备订阅 `{prefix}/set`、`{prefix}/port`、`{prefix}/ble`（§3.6）。
+
+        **路由按 topic 精确查表**：MQTT 回调没有请求上下文，也不该有（§3.3 红线 1）。
+        这里**禁止**使用 `self.ble` —— 它会在无上下文时解析到 primary，把设备 2 的
+        命令发给设备 1。单设备时订阅集合与改造前完全相同（3 条 topic）。
+        """
         if not self.mqtt_client:
             return
+        if getattr(self, "registry", None) is None:
+            # `Server.__new__` 手工装配的测试路径（无 registry）：没有设备就谈不上
+            # 按前缀路由，直接跳过。生产构造后 registry 一定存在。
+            return
         server = self
+        # topic → (device_id, kind)。精确匹配，无 wildcard，天然不会串台。
+        routes: dict[str, tuple[str, str]] = {}
+        for rt in self.registry:
+            routes[rt.topics.set] = (rt.device_id, "set")
+            routes[rt.topics.port] = (rt.device_id, "port")
+            routes[rt.topics.ble] = (rt.device_id, "ble")
 
         def on_mqtt_message(client, userdata, msg):
             try:
+                target = routes.get(msg.topic)
+                if target is None:
+                    # 不是本进程任何设备的命令主题（可能是残留的 retained，
+                    # 或回滚后遗留的幽灵前缀）：静默丢弃，不要误会成"当前设备"。
+                    return
+                device_id, kind = target
+                rt = server.registry.get(device_id)
+                if rt is None:
+                    return
                 payload = json.loads(msg.payload)
                 if server.loop is None:
                     return
-                if msg.topic == f"{server.config.mqtt.topic_prefix}/set":
+                if kind == "set":
                     piid = payload.get("piid")
                     value = payload.get("value")
                     if piid is None or value is None:
-                        _LOGGER.warning("Invalid set command: missing piid or value")
+                        _LOGGER.warning("[%s] Invalid set command: missing piid or value", device_id)
                         return
                     try:
                         piid_int = int(piid)
                         value_int = int(value)
                     except (ValueError, TypeError):
-                        _LOGGER.warning("Invalid set command: piid/value must be integers")
+                        _LOGGER.warning("[%s] Invalid set command: piid/value must be integers", device_id)
                         return
                     if piid_int not in VALID_PIIDS:
-                        _LOGGER.warning("Invalid set command: piid %d not valid", piid_int)
+                        _LOGGER.warning("[%s] Invalid set command: piid %d not valid", device_id, piid_int)
                         return
                     min_val, max_val = PIID_RANGES[piid_int]
                     if not (min_val <= value_int <= max_val):
-                        _LOGGER.warning("Invalid set command: value %d out of range [%d, %d]", value_int, min_val, max_val)
+                        _LOGGER.warning("[%s] Invalid set command: value %d out of range [%d, %d]",
+                                        device_id, value_int, min_val, max_val)
                         return
                     server.loop.call_soon_threadsafe(
-                        server.ble.cmd_queue.put_nowait,
+                        rt.manager.cmd_queue.put_nowait,
                         ("set", (piid_int, value_int), None))
-                    _LOGGER.info("MQTT set command: piid=%d value=%d", piid_int, value_int)
-                elif msg.topic == f"{server.config.mqtt.topic_prefix}/port":
+                    _LOGGER.info("[%s] MQTT set command: piid=%d value=%d", device_id, piid_int, value_int)
+                elif kind == "port":
                     port = payload.get("port")
                     action = payload.get("action")
                     if not port or action not in ("on", "off"):
-                        _LOGGER.warning("Invalid port command: port=%s action=%s", port, action)
+                        _LOGGER.warning("[%s] Invalid port command: port=%s action=%s",
+                                        device_id, port, action)
                         return
                     if port not in PORT_BITS and port != "all":
-                        _LOGGER.warning("Invalid port command: unknown port %s", port)
+                        _LOGGER.warning("[%s] Invalid port command: unknown port %s", device_id, port)
                         return
                     server.loop.call_soon_threadsafe(
-                        server.ble.cmd_queue.put_nowait,
+                        rt.manager.cmd_queue.put_nowait,
                         ("port", (port, action), None))
-                    _LOGGER.info("MQTT port command: port=%s action=%s", port, action)
-                elif msg.topic == f"{server.config.mqtt.topic_prefix}/ble":
+                    _LOGGER.info("[%s] MQTT port command: port=%s action=%s", device_id, port, action)
+                elif kind == "ble":
                     enabled = payload.get("enabled")
                     if enabled is None or not isinstance(enabled, bool):
-                        _LOGGER.warning("Invalid BLE command: 'enabled' must be a bool")
+                        _LOGGER.warning("[%s] Invalid BLE command: 'enabled' must be a bool", device_id)
                         return
-                    _LOGGER.info("MQTT BLE command: %s", "enable" if enabled else "disable")
+                    _LOGGER.info("[%s] MQTT BLE command: %s", device_id,
+                                 "enable" if enabled else "disable")
                     try:
                         if enabled:
-                            asyncio.run_coroutine_threadsafe(server.ble.start(), server.loop)
+                            # supervisor 是任务唯一持有者（§3.13）：直接 create/cancel
+                            # 会被当成意外退出、立刻触发重建。
+                            server.loop.call_soon_threadsafe(rt.supervisor.start)
                         else:
-                            asyncio.run_coroutine_threadsafe(server.ble.request_stop(), server.loop)
+                            asyncio.run_coroutine_threadsafe(rt.supervisor.stop(), server.loop)
                     except Exception as e:
-                        _LOGGER.error("MQTT BLE cmd failed: %s", e)
+                        _LOGGER.error("[%s] MQTT BLE cmd failed: %s", device_id, e)
             except (json.JSONDecodeError, ValueError, TypeError) as e:
                 _LOGGER.error("MQTT cmd parse error: %s", e)
             except Exception as e:
                 _LOGGER.error("MQTT cmd error: %s", e)
 
         self.mqtt_client.on_message = on_mqtt_message
-        self.mqtt_client.subscribe(f"{self.config.mqtt.topic_prefix}/set")
-        self.mqtt_client.subscribe(f"{self.config.mqtt.topic_prefix}/port")
-        # /ble: HA "BLE连接" switch — enable/disable BLE connection
-        self.mqtt_client.subscribe(f"{self.config.mqtt.topic_prefix}/ble")
+        for topic in routes:
+            self.mqtt_client.subscribe(topic)
 
-        _LOGGER.info("MQTT subscriptions ready")
+        _LOGGER.info("MQTT subscriptions ready (%d device(s), %d topic(s))",
+                     len(self.registry), len(routes))
 
-    def invalidate_status_cache(self):
-        self._status_cache_valid = False
+    def invalidate_status_cache(self, device_id=None):
+        """失效**目标设备**的状态缓存（§3.2 第3项）。
+
+        `device_id=None` ⇒ 取当前上下文（无上下文即 primary）：单设备部署与老调用点
+        `invalidate_status_cache()` 的行为因此与改造前完全一致。
+        装配时必须给每台 manager 注册 `lambda rt=rt: s.invalidate_status_cache(rt.device_id)`
+        —— 共用 primary 的闭包会让设备 2 的状态变更永远不失效自己的缓存。
+        """
+        cache = self._status_cache_map
+        if device_id is not None:
+            cache.pop(device_id, None)
+            return
+        cache.pop(self.current_device_id(), None)
 
     def mqtt_quality(self) -> dict:
         """Return MQTT connection quality metrics."""
@@ -517,9 +1555,12 @@ class Server:
                 "publish_failures": self._mqtt_publish_failures}
 
     async def handle_status(self, request):
-        if self._status_cache_valid and self._status_cache_bytes:
+        device_id = self.current_device_id()
+        cache = self._status_cache_map
+        cached = cache.get(device_id)
+        if cached:
             return web.Response(
-                body=self._status_cache_bytes,
+                body=cached,
                 content_type="application/json",
             )
         data = await self.state.to_dict()
@@ -528,12 +1569,12 @@ class Server:
         modes = self.ble.get_port_modes_state()
         data["permanent_ports"] = modes["permanent_ports"]
         data["full_off_ports"] = modes["full_off_ports"]
-        self._status_cache_bytes = await asyncio.to_thread(
+        body = await asyncio.to_thread(
             lambda: json.dumps(data, ensure_ascii=False).encode()
         )
-        self._status_cache_valid = True
+        cache[device_id] = body
         return web.Response(
-            body=self._status_cache_bytes,
+            body=body,
             content_type="application/json",
         )
 
@@ -635,9 +1676,9 @@ class Server:
                 # 同步本地状态，确保后续 GET 读到最新值
                 if result and result.get("ok"):
                     await state.update_protocol_extend(new_val)
-                    if hasattr(self, 'sse'):
-                        self.sse.emit("protocol", {"switches": state.protocol_switches,
-                                                    "protocol_extend": new_val})
+                    self.emit_device_event(
+                        "protocol", {"switches": state.protocol_switches,
+                                     "protocol_extend": new_val})
                 self.invalidate_status_cache()
                 return web.json_response(result)
             else:
@@ -647,52 +1688,49 @@ class Server:
             result = await self.ble.send_command("set", (21, new_val))
             if result and result.get("ok"):
                 await state.update_protocol_extend(new_val)
-                if hasattr(self, 'sse'):
-                    self.sse.emit("protocol", {"switches": state.protocol_switches,
-                                               "protocol_extend": new_val})
+                self.emit_device_event(
+                    "protocol", {"switches": state.protocol_switches,
+                                 "protocol_extend": new_val})
             return web.json_response(result)
         except Exception as e:
             _LOGGER.error("Protocol switch error: %s", e)
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def handle_enable(self, request):
+        """启停 BLE 连接（**唯一**需要动内线的端点，§3.2）。
+
+        只调 `rt.supervisor.start()/stop()`：supervisor 是任务唯一持有者，直接
+        cancel/create `rt.task` 会被 done 回调当成"意外退出"立刻重建。
+        """
         try:
             body = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
         enabled = body.get("enabled", True)
+        # 设备由 middleware 解析（`/api/device/{id}/enable` 或 `?device=`）；
+        # 老端点无参 → primary，行为与改造前一致。
+        rt = self.current_runtime()
         if enabled:
             async with self._start_lock:
-                if self.ble.is_running:
+                if rt.supervisor.is_running:
                     return web.json_response({"ok": True, "enabled": True, "note": "already running"})
-                old = self._ble_task
-                if old and not old.done():
-                    old.cancel()
-                    try:
-                        await old
-                    except asyncio.CancelledError:
-                        pass
-                self._ble_task = asyncio.create_task(self.ble.start())
+                rt.supervisor.start()
         else:
             async with self._start_lock:
-                await self.ble.request_stop()
-                task = self._ble_task
-                if task and not task.done():
-                    try:
-                        await asyncio.wait_for(task, timeout=10)
-                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                        pass
+                await rt.supervisor.stop()
                 # _disconnect() (在 start() 的 finally 中) 已进行完整的 Bleak 清理，
                 # 不需要额外调用 _force_disconnect_bluetooth()（仅用于错误恢复/关机）
             for piid in range(1, 5):
-                await self.state.update_port(piid, PORT_DEFAULT)
+                await rt.state.update_port(piid, PORT_DEFAULT)
             if self.mqtt_client and self.mqtt_client.is_connected():
+                # 清零用的是**本设备**的 topic（沿用 self.config.topic_* 会清掉
+                # primary 的主题 —— §3.2 明确点名的 bug）。
                 for piid, pname in PORT_NAMES.items():
-                    self.mqtt_publish(f"{self.config.topic_port}/{pname}", PORT_DEFAULT)
-                self.mqtt_publish(self.config.topic_status, {"connected": False}, retain=True)
+                    self.mqtt_publish(rt.topics.port_topic(pname), PORT_DEFAULT)
+                self.mqtt_publish(rt.topics.status, {"connected": False}, retain=True)
             else:
                 _LOGGER.warning("MQTT not connected, port data not cleared via MQTT")
-        self.invalidate_status_cache()
+        self.invalidate_status_cache(rt.device_id)
         return web.json_response({"ok": True, "enabled": enabled})
 
     async def handle_log_level(self, request):
@@ -869,8 +1907,10 @@ class Server:
         'auto' 表示跟随浏览器/系统语言（回退中文）。
         """
         if request.method == "GET":
-            lang = self.history.get_web_language() if self.history else "auto"
-            return web.json_response({"ok": True, "language": lang})
+            # 服务级 meta，不经设备 facade（§3.9：web_language 不属于任何设备）
+            store = getattr(self, "history_store", None)
+            lang = store.get_web_language() if store else "auto"
+            return web.json_response({"ok": True, "language": lang}, headers=_NO_STORE)
         try:
             data = await request.json()
         except json.JSONDecodeError:
@@ -885,9 +1925,11 @@ class Server:
         else:
             return web.json_response({"ok": False, "error": "invalid language"}, status=400)
         if self.history:
-            self.history.set_web_language(canonical)
+            store = getattr(self, "history_store", None)
+            if store:      # 无 store 的手工装配（测试）→ 仅本次生效，不持久化
+                store.set_web_language(canonical)
         _LOGGER.info("Web UI language set to %s", canonical)
-        return web.json_response({"ok": True, "language": canonical})
+        return web.json_response({"ok": True, "language": canonical}, headers=_NO_STORE)
 
     async def handle_charge_limits(self, request):
         """GET/POST /api/charge-limits — 指定充电量后自动关断端口。
@@ -993,7 +2035,9 @@ class Server:
         # 长区间强制更粗的桶：body 是整段 JSON，720h@30s 会生成 6.6MB（只是把同样的
         # 点画得更密）。先粗化再算 cache_key，保证缓存键反映真正生效的 interval。
         interval = max(interval, _chart_interval_floor(hours))
-        cache_key = f"{hours}:{interval}"
+        # 缓存键加设备维度（§3.7）：`{device_id}:{hours}:{interval}`。
+        # interval 仍在末段，运维/测试按 `:1800` 之类后缀匹配键的习惯不受影响。
+        cache_key = f"{self.current_device_id()}:{hours}:{interval}"
 
         # Check cache
         now = time.time()
@@ -1260,7 +2304,16 @@ class Server:
             window_sec = float(self.ble.PERMANENT_RETAIN_SEC)
 
         loop = asyncio.get_running_loop()
+        # 归属校验先行：别的设备的 sid、以及根本不存在的 sid，一律 404。
+        # 以前这里靠 `get_session_points` 的"非本设备 → 空列表"返回 200 + no_curve，
+        # 前端与排障者看到的是"这次会话没有曲线"，而真实原因是"这不是你的会话"
+        # ——和同组的 /sessions/{id}/export（404）自相矛盾（§3.9）。
+        # 常供会话的曲线只在内存窗口里、可能还没有 DB 行，所以窗口命中就不判 404。
+        session = await loop.run_in_executor(None, self.history.get_session, sid)
         win = self.ble.get_permanent_session_window(sid, window_sec, to_ts)
+        if win is None and session is None:
+            return web.json_response(
+                {"ok": False, "error": "session not found"}, status=404)
         if win is not None:
             points = win["points"]
             if target > 0 and len(points) > target:
@@ -1280,7 +2333,6 @@ class Server:
         if not points:
             # 长期供电会话不落曲线点：明确告诉前端"是没存曲线"，不是加载失败
             resp["no_curve"] = True
-        session = await loop.run_in_executor(None, self.history.get_session, sid)
         # 服务端是常供与否的唯一权威，且必须**每次都给出**（含 false）：
         # 端口中途退出常供后，前端若只"见到 true 才置位"会一直挂着旧标题与
         # "没有曲线"提示。DB 回落分支同样要回答这个问题。
@@ -1416,9 +2468,13 @@ class Server:
 
         # Send full state on connect so client can initialize
         try:
+            # 长连接期间不依赖请求上下文：设备列表用显式 registry 构造（§3.3 红线 2），
+            # 且只在多设备时附加（§3.8：单设备事件流必须逐字节不变）。
             full_state = await self.state.to_dict()
             full_state["type"] = "init"
             full_state["mqtt_connected"] = self.mqtt_client is not None and self.mqtt_client.is_connected()
+            if self.registry.multi:
+                full_state["devices"] = [rt.describe() for rt in self.registry]
             await response.write(
                 f"data: {json.dumps(full_state, ensure_ascii=False)}\n\n".encode()
             )
@@ -1428,9 +2484,17 @@ class Server:
         try:
             while True:
                 # Send latest pending status before each event (stale status never delivered)
-                status_msg = self.sse.flush_status(queue)
-                if status_msg:
-                    await response.write(f"data: {status_msg}\n\n".encode())
+                # 多设备时每个设备的 status 各有 (queue, device) 分桶，逐个 flush；
+                # 单设备时只有一个桶（device_id=None），与改造前完全一致。
+                if self.registry.multi:
+                    for rt in self.registry:
+                        pending = self.sse.flush_status(queue, rt.device_id)
+                        if pending:
+                            await response.write(f"data: {pending}\n\n".encode())
+                else:
+                    status_msg = self.sse.flush_status(queue)
+                    if status_msg:
+                        await response.write(f"data: {status_msg}\n\n".encode())
                 # Keepalive every 15s + event wait
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=15.0)
@@ -1467,6 +2531,7 @@ class Server:
             "config": {
                 "ble": {
                     "mac": cfg.ble.mac,
+                    "name": cfg.ble.name,
                     "token": self._mask(cfg.ble.token),
                     "ble_key": self._mask(cfg.ble.ble_key),
                     "scan_timeout": cfg.ble.scan_timeout,
@@ -1487,12 +2552,38 @@ class Server:
                     "name_c3": cfg.bemfa.name_c3,
                     "name_a": cfg.bemfa.name_a,
                     "name_ble": cfg.bemfa.name_ble,
+                    # 自定义语音实体表（§3.11）：前端据此画"一行一个开关"的表格
+                    "entities": [{"name": name, "device": device, "port": port}
+                                 for name, device, port in
+                                 (bemfa_entity_triple(e) for e in (cfg.bemfa.entities or []))],
+                    # 老配置（没写过 entities 键）要让前端知道"这空表是没配过，不是配了 0 条"
+                    "entitiesDefined": bool(cfg.bemfa.entities_defined),
+                    "ports": list(BEMFA_PORTS),
+                    # 老配置的**派生清单**（`allowed_devices` × 5，服务端同一份实现）：
+                    # 前端拿它当"首次保存"的种子，才不会把 `allowed_devices: ["*"]`
+                    # 那些设备的开关丢掉。名字也由这里给，前端不再自己拼。
+                    "derivedEntities": [
+                        {"name": item["name"], "device": item["device_id"],
+                         "port": item["port"]}
+                        for item in self._derived_bemfa_plan()],
+                    "allowedDevices": list(cfg.bemfa.allowed_devices or []),
                 },
                 "server": {
                     "port": cfg.server.port,
                     "log_level": cfg.server.log_level,
                     "history_retention_days": cfg.server.history_retention_days,
                 },
+                # 设备卡片数据源（§3.12 config.html）：primary 恒在第一位且
+                # `is_primary=True`（前端据此禁用删除按钮）。敏感字段照旧打码。
+                "devices": [{
+                    "device_id": rt.device_id,
+                    "name": rt.name,
+                    "mac": rt.mac,
+                    "token": self._mask(rt.token),
+                    "ble_key": self._mask(rt.spec.ble_key),
+                    "topic_prefix": rt.topics.prefix,
+                    "is_primary": rt.device_id == PRIMARY_DEVICE_ID,
+                } for rt in self.registry],
             },
         })
 
@@ -1535,24 +2626,64 @@ class Server:
                     )
                     existing["server"]["log_level"] = "info"
 
-            # Detect bemfa name changes → set modified flag for topic re-registration
+            # ── 设备列表（§3.10/§3.12）：前端发统一数组，后端决定文件结构 ──
+            devices_payload = config_data.get("devices")
+            if devices_payload is not None:
+                error = self._apply_devices_payload(existing, devices_payload)
+                if error:
+                    return web.json_response({"ok": False, "error": error}, status=400)
+
+            # 巴法云实体名/绑定变了 → 打 modified：云端主题的**显示名是注册时定的**
+            # （主题本身只由 entity_id 派生），改名必须 delete+recreate 才生效。
             if "bemfa" in config_data:
                 bemfa_existing = existing.get("bemfa", {})
-                NAME_KEYS = {"name_c1", "name_c2", "name_c3", "name_a", "name_ble"}
-                old_names = {}
+                NAME_KEYS = ("name_c1", "name_c2", "name_c3", "name_a", "name_ble")
+                old_bemfa: dict = {}
                 if config_path.exists():
                     with open(config_path) as f:
-                        old_cfg = yaml.safe_load(f) or {}
-                        old_names = {k: old_cfg.get("bemfa", {}).get(k) for k in NAME_KEYS}
-                new_names = {k: config_data["bemfa"].get(k) for k in NAME_KEYS}
-                if old_names != new_names:
+                        old_bemfa = (yaml.safe_load(f) or {}).get("bemfa", {}) or {}
+                old_view = ({k: old_bemfa.get(k) for k in NAME_KEYS},
+                            _bemfa_entity_signature(old_bemfa.get("entities")))
+                new_view = ({k: config_data["bemfa"].get(k) for k in NAME_KEYS},
+                            _bemfa_entity_signature(config_data["bemfa"].get("entities")))
+                if old_view != new_view:
                     bemfa_existing["modified"] = True
 
             # Atomic write: write to temp file then rename
             tmp_path = config_path.with_suffix(".tmp")
             with open(tmp_path, "w") as f:
                 yaml.dump(existing, f, allow_unicode=True, default_flow_style=False)
+
+            # ── 不变式：**保存 = 启动可接受**（§3.10）──
+            # 落盘前用与启动**完全相同**的入口（load_config）把这份文件试算一遍。
+            # 保存期的分节校验再全也可能漏掉某种组合，而漏掉的代价不是"保存失败"，
+            # 是 _delayed_restart() 之后进程被 load_config 拒绝启动、Web UI 一起
+            # 消失，用户只能手改 YAML 才能救回来。宁可现在 400，也不写一个起不来的文件。
+            try:
+                validated = load_config(tmp_path)
+            except Exception as e:
+                with contextlib.suppress(OSError):
+                    tmp_path.unlink()
+                _LOGGER.error("Config rejected before write: %s", e)
+                return web.json_response({"ok": False, "error": str(e)}, status=400)
+
             os.replace(tmp_path, config_path)
+
+            # 设备被删掉后的残留：清它的 retained（否则 broker 上留下幽灵设备），
+            # 但保留历史数据。放在重启之前——重启会断 MQTT，那时就发不出清了。
+            kept_ids = {spec.device_id for spec in validated.device_specs()}
+            removed = [rt for rt in self.registry if rt.device_id not in kept_ids]
+            if removed:
+                await self.purge_removed_devices(removed)
+            # 设备**还在**但改了 topic 前缀：旧前缀的 retained 同样是幽灵，而且
+            # clean_retained.py 从当前配置推导前缀，改完就再也推导不出旧的了。
+            new_prefixes = {spec.device_id: validated.topics_for(spec).prefix
+                            for spec in validated.device_specs()}
+            for rt in self.registry:
+                if rt.device_id in kept_ids:
+                    new_prefix = new_prefixes.get(rt.device_id)
+                    if new_prefix and new_prefix != rt.topics.prefix:
+                        await self.purge_stale_prefix(rt, new_prefix)
 
             _LOGGER.info("Config saved to %s, restarting...", config_path)
 
@@ -1567,6 +2698,144 @@ class Server:
             _LOGGER.error("Config save failed: %s", e)
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
+    #: `devices:` 节允许落盘的字段（与 `DeviceConfig.from_mapping` 对齐）。
+    #: `bemfa_<port>` 必须覆盖**全家族**（c1/c2/c3/a/ble）：`from_mapping` 收的是
+    #: 任意 `bemfa_*` 键，这里若只放行 `bemfa_ble`，用户手写的 `bemfa_c1: xxx`
+    #: 会在任意一次 Web 端保存后被静默丢弃——重启后实体 id 回落派生值，巴法云主题
+    #: 随之改变，语音联动失效。清单从 BEMFA_PORTS 派生，不再手抄。
+    _DEVICE_KEYS = ("id", "name", "mac", "token", "ble_key", "topic_prefix",
+                    *(f"bemfa_{port}" for port in BEMFA_PORTS))
+
+    def _effective_sections(self, existing: dict) -> dict:
+        """合成"本次要写入的那份配置"的有效 YAML 视图，用来跑启动校验。
+
+        两个来源：**盘上待写的内容优先**（它含本次修改，比如换了 mqtt.topic_prefix），
+        进程当前配置补齐缺项（前端拿不到明文凭证，`existing` 里通常没有 token/
+        password——缺项不等于"没配"，照启动口径填上现在的有效值）。
+
+        用 `asdict(self.config)` 而不是手抄字段清单：抄一份就多一处会漂移的地方，
+        而这条校验的全部意义就是"与启动同一口径"。
+        """
+        from dataclasses import asdict
+        merged = asdict(self.config)
+        merged.pop("devices", None)          # 由调用方给"本次要落盘"的形态
+        for section, values in (existing or {}).items():
+            current = merged.get(section)
+            if isinstance(values, dict) and isinstance(current, dict):
+                current.update(values)
+            else:
+                merged[section] = values
+        return merged
+
+    def _apply_devices_payload(self, existing: dict, devices) -> str | None:
+        """把前端的设备数组写回 yaml 结构；返回错误消息（None = 成功）。
+
+        **两种形状都接受**（前端在演进，后端必须两种都吃得住）：
+
+        A) 统一数组：每项带 `is_primary` 标记 —— 存的是"一组设备卡片"，后端决定
+           文件结构（primary → `ble:` 节，其余 → `devices:` 节）；
+        B) 前端当前形状：primary 已在 `config.ble` 里（走通用合并逻辑），
+           `config.devices` 只放附加设备 —— 这里只负责把附加设备落成 `devices:` 节。
+
+        结构约束（§3.10）：primary **永远**展开回 `ble:` 节（老版本工具/脚本仍能读）；
+        primary 不可删除；写盘前用**生产校验规则**验一遍——多设备配错的代价是
+        "控制到错误的充电器"，不能落盘再说。
+        """
+        if devices is None:
+            return None                      # 前端没提交设备列表：保持 YAML 原样
+        if not isinstance(devices, list):
+            return "配置错误：设备列表格式非法（应为数组）"
+
+        # ── 形状 A：统一数组（任一项带 `is_primary` 键即为 A 形；前端 B 形从不下发该键）──
+        if any(isinstance(d, dict) and "is_primary" in d for d in devices):
+            primaries = [d for d in devices if isinstance(d, dict) and d.get("is_primary")]
+            if len(primaries) != 1:
+                return "配置错误：必须且只能有一台 primary 设备（primary 不可删除）"
+            primary = primaries[0]
+            ble_section = dict(existing.get("ble") or {})
+            for key in ("mac", "name", "token", "ble_key"):
+                val = primary.get(key)
+                if val is None:
+                    continue
+                if key in ("token", "ble_key") and ("****" in str(val)
+                                                    or not str(val).strip()):
+                    # 打码值 = 用户没改；空串 = 用户清空了输入框（页面拿不到明文，
+                    # 清框是很容易的误操作）。两者都必须按 no-op 处理——凭证擦除
+                    # 是不可逆的，救回来只能手改 YAML。B 形的 extras 一直是这么判的。
+                    continue
+                if key == "name" and not str(val).strip():
+                    continue             # 清空名字按 no-op（宁可不变也不误删）
+                ble_section[key] = val
+            if "scan_timeout" in primary:
+                ble_section["scan_timeout"] = primary["scan_timeout"]
+            existing["ble"] = ble_section
+            extras_in = [d for d in devices if not d.get("is_primary")]
+        else:
+            # ── 形状 B：附加设备已在 devices 数组里，primary 在 ble 段 ──
+            extras_in = [d for d in devices if isinstance(d, dict)]
+
+        # ── 附加设备：清洗字段 + 打码/空 token 继承 YAML 里的旧值 ──
+        old_by_id = {}
+        for entry in (existing.get("devices") or []):
+            if isinstance(entry, dict) and entry.get("id"):
+                old_by_id[str(entry["id"])] = entry
+
+        extras = []
+        for raw in extras_in:
+            norm = dict(raw)
+            if not norm.get("id") and norm.get("device_id"):
+                norm["id"] = norm["device_id"]      # 两种键名都收（见 DeviceConfig.from_mapping）
+            entry = {k: norm[k] for k in self._DEVICE_KEYS if norm.get(k) not in (None, "")}
+            dev_id = str(entry.get("id") or "").strip()
+            if dev_id:
+                entry["id"] = dev_id
+                prev = old_by_id.get(dev_id) or {}
+                token = str(entry.get("token") or "")
+                if not token or "****" in token:
+                    # 空/打码 = "没改"：沿用 YAML 里的旧 token（页面拿不到明文，
+                    # 不这样处理就只能逼用户把 token 重填一遍）
+                    if prev.get("token"):
+                        entry["token"] = prev["token"]
+                    else:
+                        entry.pop("token", None)
+                ble_key = str(entry.get("ble_key") or "")
+                if "****" in ble_key:
+                    entry["ble_key"] = prev.get("ble_key", "")
+                    if not entry["ble_key"]:
+                        entry.pop("ble_key")
+            extras.append(entry)
+
+        # ── 必填项（与 `_parse_devices` 对齐）：缺了就明确报错，而不是写个半残 YAML ──
+        for entry in extras:
+            dev_id = entry.get("id") or ""
+            if not dev_id:
+                return "配置错误：附加设备缺少 id（id 即 MQTT 前缀后缀）"
+            if not str(entry.get("mac") or "").strip():
+                return f"配置错误：设备 `{dev_id}` 缺少 mac"
+            if not str(entry.get("token") or "").strip():
+                return f"配置错误：设备 `{dev_id}` 缺少 token（新增设备必须填 token）"
+
+        # ── 用生产校验规则验一遍（id 规则 / MAC 全局唯一 / 前缀 / token hex）──
+        #
+        # 走 `config_from_mapping`（= `load_config` 的实现体），而不是拿进程启动时的
+        # `self.config.mqtt` 拼一份临时 Config：同一份 payload 里既改 mqtt.topic_prefix
+        # 又带设备前缀时，旧基前缀会让"前缀撞车"校验判成通过，写盘后重启才被拒——
+        # 那时服务已经重启，Web UI 也没了，用户只能手改 YAML（§3.10 最怕的形态）。
+        try:
+            probe = self._effective_sections(existing)
+            probe["devices"] = extras       # 校验的是**本次要落盘**的形态
+            config_from_mapping(probe)
+        except ValueError as e:
+            return str(e)
+        except Exception as e:      # 形如 token 不是 hex 之类
+            return f"配置错误：{e}"
+
+        if extras:
+            existing["devices"] = extras
+        else:
+            existing.pop("devices", None)    # 删光附加设备后不留空节残留
+        return None
+
     async def _delayed_restart(self):
         """Delay 1 second then restart."""
         await asyncio.sleep(1.0)
@@ -1576,10 +2845,12 @@ class Server:
         """Gracefully restart the server by re-exec-ing the process."""
         _LOGGER.info("Restarting server...")
         s = get_server()
-        try:
-            await asyncio.wait_for(s.ble.request_stop(), timeout=5.0)
-        except Exception:
-            pass
+        # 先停全部 supervisor（防重建）→ 收尾连接 → 关共享 store → execv。
+        # 顺序不能反：先拿掉任务持有者，否则停机过程中某台设备的"意外退出"回调
+        # 会立刻把任务重建起来。
+        for rt in s.registry:
+            with contextlib.suppress(Exception):
+                await rt.supervisor.stop()
         if s.mqtt_client:
             s.mqtt_client.loop_stop()
             s.mqtt_client.disconnect()
@@ -1588,7 +2859,7 @@ class Server:
                 await asyncio.wait_for(s.bemfa.stop(), timeout=3.0)
             except Exception:
                 pass
-        s.history.close()
+        s.history_store.close()
         # Windows 下 os.execv 替换映像后 WinRT/bleak 的事件循环无法在新映像内重建:
         # HTTP 还能应答, 但 BLE 循环不再运转（connected 恒 false、无扫描日志）,
         # 只能手动触发才恢复。因此 win32 改为干净退出, 由拉起方(监听进程退出的
@@ -1609,14 +2880,51 @@ class Server:
 
     # ── Xiaomi Cloud API ──
 
+    #: 等扫码的会话寿命（秒）
+    XIAOMI_SCAN_TTL = 300
+    #: 批量导入的整体预算（秒）。必须明显小于 30s 的请求上限（留出云调用的读超时
+    #: 15s 与收尾时间）：超预算的设备逐台返回 `timeout`，而不是让浏览器等到 504。
+    XIAOMI_IMPORT_BUDGET = 20.0
+
+    def _xiaomi_session_lock(self, entry: dict) -> asyncio.Lock:
+        """会话级互斥锁（懒创建）：一个 `requests.Session` 同时只能被一个线程用。"""
+        lock = entry.get("lock")
+        if lock is None:
+            lock = asyncio.Lock()
+            entry["lock"] = lock
+        return lock
+
+    #: 扫码完成后可以导入的窗口（秒）。每次导入都重新计时，够用户分批选设备；
+    #: 别设太短：用户可能先去翻设备铭牌确认 MAC，回来时"会话已过期要重扫"很恼人。
+    XIAOMI_IMPORT_TTL = 300
+
+    def _arm_xiaomi_timer(self, session_id: str, ttl: float) -> None:
+        """给会话（重）挂一个超时清理定时器。
+
+        扫码完成时必须**重挂**而不是取消：等扫码的阶段已经过了，但会话里还留着
+        云客户端与设备清单，没有定时器就等于永久泄漏（`requests.Session` + token）。
+        """
+        entry = self._xiaomi_sessions.get(session_id)
+        if entry is None:
+            return
+        timer = entry.get("timer")
+        if timer and not timer.cancelled():
+            timer.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            entry["timer"] = None
+            return
+        entry["timer"] = loop.call_later(ttl, self._cleanup_xiaomi_session, session_id)
+
     def _cleanup_xiaomi_session(self, session_id: str):
-        """5 分钟超时清理：移除过期 Xiaomi session，释放相关资源。"""
+        """超时清理：移除过期 Xiaomi session，释放相关资源。"""
         entry = self._xiaomi_sessions.pop(session_id, None)
         if entry:
-            client, timer = entry
+            timer = entry.get("timer")
             if timer and not timer.cancelled():
                 timer.cancel()
-            _LOGGER.info("Xiaomi session %s timed out (5 min), cleaned up", session_id[:8])
+            _LOGGER.info("Xiaomi session %s expired, cleaned up", session_id[:8])
 
     async def handle_xiaomi_login(self, request):
         """POST /api/xiaomi/login — start QR code login, return QR URL."""
@@ -1647,9 +2955,11 @@ class Server:
 
             result, client = await loop.run_in_executor(None, _start)
             session_id = _secrets.token_hex(16)
-            # 5 分钟超时：启动延时清理，session 完成（beaconkey 获取）时取消
-            timer = loop.call_later(300, self._cleanup_xiaomi_session, session_id)
-            self._xiaomi_sessions[session_id] = (client, timer)
+            # 等扫码的 5 分钟窗口；扫码完成后改挂"导入窗口"（见 qr_complete）
+            self._xiaomi_sessions[session_id] = {
+                "client": client, "timer": None, "devices": [],
+            }
+            self._arm_xiaomi_timer(session_id, self.XIAOMI_SCAN_TTL)
 
             return web.json_response({
                 "ok": True,
@@ -1677,7 +2987,7 @@ class Server:
         entry = self._xiaomi_sessions.get(session_id)
         if not entry:
             return web.json_response({"ok": False, "error": "会话已过期，请重新获取二维码"}, status=400)
-        client, _timer = entry
+        client = entry["client"]
 
         # 延迟导入（此时客户端实例已存在，模块通常已加载，仅取异常类型）
         try:
@@ -1695,10 +3005,11 @@ class Server:
                 return client.get_devices()
 
             devices = await loop.run_in_executor(None, _complete)
-            # QR 扫码已完成，最耗时的阶段已过，取消超时定时器
-            if _timer and not _timer.cancelled():
-                _timer.cancel()
-            self._xiaomi_sessions[session_id] = (client, None)  # 清除定时器引用，保留 client 供 beaconkey 使用
+            # 设备清单留在服务端会话里：批量导入时按 did 取 BLE Key，前端不必
+            # 把 token 拿在手里回传（见 handle_xiaomi_import）。
+            entry["devices"] = devices
+            # 等扫码的阶段结束 → 改挂"导入窗口"定时器（不能取消，否则会话永久泄漏）
+            self._arm_xiaomi_timer(session_id, self.XIAOMI_IMPORT_TTL)
 
             cuktech_devices = [d for d in devices if "njcuk" in d.model or "fitting" in d.model]
             all_devices = [{"did": d.did, "mac": d.mac, "token": d.token,
@@ -1717,14 +3028,18 @@ class Server:
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def handle_xiaomi_beaconkey(self, request):
-        """POST /api/xiaomi/beaconkey — get BLE key for a device."""
+        """POST /api/xiaomi/beaconkey — 取**一台**设备的 BLE Key。
+
+        保留给脚本/调试；配置页已改走 `/api/xiaomi/import`（批量 + 名称同步）。
+        会话不再用完即弃：导入窗口内可以继续取其它设备（到期由定时器回收）。
+        """
         try:
             data = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
 
-        session_id = data.get("session_id", "").strip()
-        did = data.get("did", "").strip()
+        session_id = str(data.get("session_id", "")).strip()
+        did = str(data.get("did", "")).strip()
 
         if not session_id or not did:
             return web.json_response({"ok": False, "error": "参数不完整"}, status=400)
@@ -1732,9 +3047,7 @@ class Server:
         entry = self._xiaomi_sessions.get(session_id)
         if not entry:
             return web.json_response({"ok": False, "error": "会话已过期，请重新扫码"}, status=400)
-        client, _timer = entry
 
-        # 延迟导入（此时客户端实例已存在，模块通常已加载，仅取异常类型）
         try:
             XiaomiCloudLoginError = _load_xiaomi_cloud()[1]
         except ImportError as e:
@@ -1743,31 +3056,117 @@ class Server:
                 {"ok": False, "error": f"小米云登录依赖缺失: {e}"}, status=503)
 
         try:
-            loop = asyncio.get_running_loop()
-
-            def _get_key():
-                return client.get_beaconkey(did)
-
-            ble_key = await loop.run_in_executor(None, _get_key)
-            # Session completed — cancel timeout timer and clean up
-            if _timer and not _timer.cancelled():
-                _timer.cancel()
-            self._xiaomi_sessions.pop(session_id, None)
-
+            async with self._xiaomi_session_lock(entry):
+                ble_key = await asyncio.get_running_loop().run_in_executor(
+                    None, entry["client"].get_beaconkey, did)
+            self._arm_xiaomi_timer(session_id, self.XIAOMI_IMPORT_TTL)
             if ble_key:
                 return web.json_response({"ok": True, "ble_key": ble_key})
             return web.json_response({"ok": False, "error": "未找到 BLE Key"}, status=404)
         except XiaomiCloudLoginError as e:
-            if _timer and not _timer.cancelled():
-                _timer.cancel()
-            self._xiaomi_sessions.pop(session_id, None)
             return web.json_response({"ok": False, "error": str(e)}, status=400)
         except Exception as e:
             _LOGGER.error("Get beaconkey failed: %s", e)
-            if _timer and not _timer.cancelled():
-                _timer.cancel()
-            self._xiaomi_sessions.pop(session_id, None)
             return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    async def handle_xiaomi_import(self, request):
+        """POST /api/xiaomi/import — 一次导入**多台**设备（名称 + token + BLE Key）。
+
+        为什么必须是批量端点：BLE Key 只能**按 did 单取**
+        （`blt_get_beaconkey`），多台设备就是多次云调用。让前端逐台循环发请求意味着
+        N 次网络往返 + N 次会话过期风险，而且要由前端把 token 拿在手里再回传——
+        凭据没必要离开服务端。这里一次调用、服务端内循环、逐台报错。
+
+        请求：`{"session_id": "...", "dids": ["did1", "did2"]}`
+        响应：`{"ok": true, "devices": [{did, name, mac, token, model, ble_key} | {did, error}]}`
+
+        单台失败**不影响**其它台（返回逐台结果，前端据此报告"N 台新增 / M 台失败"）。
+        """
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+
+        session_id = str(data.get("session_id", "")).strip()
+        dids = data.get("dids")
+        if isinstance(dids, str):
+            dids = [dids]
+        if not session_id:
+            return web.json_response({"ok": False, "error": "缺少 session_id"}, status=400)
+        if not isinstance(dids, list) or not dids:
+            return web.json_response({"ok": False, "error": "请至少选择一台设备"}, status=400)
+        dids = [str(d).strip() for d in dids if str(d).strip()]
+        if not dids:
+            return web.json_response({"ok": False, "error": "请至少选择一台设备"}, status=400)
+
+        entry = self._xiaomi_sessions.get(session_id)
+        if not entry:
+            return web.json_response({"ok": False, "error": "会话已过期，请重新扫码"}, status=400)
+
+        try:
+            XiaomiCloudLoginError = _load_xiaomi_cloud()[1]
+        except ImportError as e:
+            _LOGGER.error("Xiaomi cloud client unavailable: %s", e)
+            return web.json_response(
+                {"ok": False, "error": f"小米云登录依赖缺失: {e}"}, status=503)
+
+        known = {d.did: d for d in (entry.get("devices") or [])}
+        client = entry["client"]
+
+        # 截止时间：HTTP 请求本身有 30s 上限（request_timeout_middleware），批量导入
+        # 必须在它之前收尾，否则浏览器拿到 504 而线程还在跑——那正是"无超时网络调用
+        # 被放大 N 倍"的形态。
+        #
+        # 只判"下一发之前还剩多少"是不够的：已经发出去的那一发照样能跑满它自己的
+        # 超时（连接 5s + 读取 15s），于是总耗时 = 预算 + 一发的最坏值（20+20=40s > 30s）。
+        # 所以**把剩余预算当成这一发的超时下发**，让"最后一发"也不可能超支。
+        budget = self.XIAOMI_IMPORT_BUDGET
+        started = time.monotonic()
+
+        def _remaining() -> float:
+            return budget - (time.monotonic() - started)
+
+        def _fetch_all():
+            out = []
+            for did in dids:
+                dev = known.get(did)
+                if dev is None:
+                    # 不在本次扫码拿到的清单里（伪造的 did / 清单已过期）：明确报错，
+                    # 不要拿个空 token 让配置页把设备写残。
+                    out.append({"did": did, "error": "device_not_in_list"})
+                    continue
+                left = _remaining()
+                if left <= 0.5:            # 0.5s 以内不值得再开一发
+                    out.append({"did": did, "name": dev.name, "mac": dev.mac,
+                                "model": dev.model, "error": "timeout"})
+                    continue
+                try:
+                    key = client.get_beaconkey(did, timeout=min(left, 15.0)) or ""
+                except Exception as e:      # 单台失败不能拖垮整批
+                    out.append({"did": did, "name": dev.name, "mac": dev.mac,
+                                "model": dev.model, "error": str(e)})
+                    continue
+                out.append({"did": dev.did, "name": dev.name, "mac": dev.mac,
+                            "token": dev.token, "model": dev.model, "ble_key": key})
+            return out
+
+        # `requests.Session` 不是线程安全的：两个标签页同时点导入（或边导入边取单台
+        # key）就是两个线程操作同一个 Session。按会话串行化——批量导入本来就该独占。
+        lock = self._xiaomi_session_lock(entry)
+        async with lock:
+            try:
+                results = await asyncio.get_running_loop().run_in_executor(None, _fetch_all)
+            except XiaomiCloudLoginError as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400)
+            except Exception as e:
+                _LOGGER.error("Xiaomi import failed: %s", e)
+                return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+        # 每次导入重挂窗口：允许用户分两批选设备，都算同一次登录
+        self._arm_xiaomi_timer(session_id, self.XIAOMI_IMPORT_TTL)
+        ok_count = len([r for r in results if not r.get("error")])
+        _LOGGER.info("Xiaomi import: %d/%d device(s) resolved", ok_count, len(results))
+        return web.json_response({"ok": True, "devices": results})
 
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -1978,12 +3377,38 @@ async def cache_middleware(request, handler):
     return response
 
 
+@web.middleware
+async def device_middleware(request, handler):
+    """把"请求指向哪台设备"解析成 ContextVar（§3.3 方案 A，安全相关）。
+
+    两种寻址都支持（§3.12 决策 3）：路径 `/api/device/{id}/...`（HA 集成用，404 可探测
+    回退）与 `?device=` 查询参数（Web UI 用，对现有 URL 拼接最友好）。
+    无参请求不设上下文 → 落到 primary，老端点的行为因此完全不变。
+
+    并发安全：aiohttp 每个请求独立 task，ContextVar 是 context 局部——请求之间互不
+    可见，不存在"B 改了 A 的设备"这种交错。
+    """
+    dev = request.match_info.get("device_id") or request.query.get("device")
+    if not dev:
+        return await handler(request)
+    rt = get_server().registry.get(dev)
+    if rt is None:
+        return web.json_response({"ok": False, "error": "device_not_found"}, status=404)
+    token = _current_rt.set(rt)
+    try:
+        return await handler(request)
+    finally:
+        _current_rt.reset(token)
+
+
 app = web.Application(middlewares=[
     request_size_limit_middleware,
     cors_middleware,
     gzip_middleware,
     cache_middleware,
     request_timeout_middleware,
+    # 放在最后 = 最内层：设备解析必须在其它中间件之后、handler 之前生效
+    device_middleware,
 ])
 app.router.add_get("/", lambda r: get_server().handle_index(r))
 app.router.add_get("/phone.html", handle_cached_static)
@@ -2020,6 +3445,42 @@ app.router.add_post("/api/config", lambda r: get_server().handle_config_save(r))
 app.router.add_post("/api/xiaomi/login", lambda r: get_server().handle_xiaomi_login(r))
 app.router.add_post("/api/xiaomi/qr/complete", lambda r: get_server().handle_xiaomi_qr_complete(r))
 app.router.add_post("/api/xiaomi/beaconkey", lambda r: get_server().handle_xiaomi_beaconkey(r))
+app.router.add_post("/api/xiaomi/import", lambda r: get_server().handle_xiaomi_import(r))
+
+# ── 多设备寻址（§3.7）：同一组 handler 的第二种挂载，**零 handler 复制** ──
+#
+# 新路径不是 20 个复制品：路由表把同一批 handler 再挂一遍，设备解析统一由
+# `device_middleware` 完成（未知名 404），handler 与其辅助方法经 property 自动取
+# 当前设备，对路由无感。老端点一条不动，响应形状不变。
+app.router.add_get("/api/devices", lambda r: get_server().handle_devices(r))
+
+_DEVICE_SCOPED_ROUTES = (
+    ("GET", "/status", "handle_status"),
+    ("POST", "/set", "handle_set"),
+    ("POST", "/port", "handle_port"),
+    ("POST", "/enable", "handle_enable"),
+    ("POST", "/protocol", "handle_protocol"),
+    ("GET", "/session-recording", "handle_session_recording"),
+    ("POST", "/session-recording", "handle_session_recording"),
+    ("GET", "/charge-limits", "handle_charge_limits"),
+    ("POST", "/charge-limits", "handle_charge_limits"),
+    ("GET", "/port-modes", "handle_port_modes"),
+    ("POST", "/port-modes", "handle_port_modes"),
+    ("GET", "/chart", "handle_chart"),
+    ("GET", "/statistics/{port}", "handle_statistics"),
+    ("GET", "/export/{port}", "handle_export"),
+    ("GET", "/sessions", "handle_sessions"),
+    ("GET", "/sessions/{id}/points", "handle_session_points"),
+    ("GET", "/sessions/{id}/export", "handle_session_export"),
+    ("GET", "/energy/stats", "handle_energy_stats"),
+    ("GET", "/energy/protocols", "handle_energy_protocols"),
+)
+
+for _method, _path, _handler_name in _DEVICE_SCOPED_ROUTES:
+    app.router.add_route(
+        _method, f"/api/device/{{device_id}}{_path}",
+        (lambda name: (lambda r: getattr(get_server(), name)(r)))(_handler_name),
+    )
 
 
 async def on_startup(app_):
@@ -2031,46 +3492,34 @@ async def on_startup(app_):
     s = get_server()
     async with s._start_lock:
         s.loop = asyncio.get_running_loop()
+        # 模块级 shim 只服务 primary/测试（§3.5：保留为兼容 shim）；每台设备另有
+        # 自己的实例钩子，在 mount_device_hooks 里注册。
         set_status_cache_invalidator(s.invalidate_status_cache)
-        s.ble.set_sse_emitter(s.sse)
-        # 认证连续失败到上限时让 BLE 层回调这里重启：Linux 走 os.execv（本机没有
-        # systemd/supervisor 也能自愈），win32 干净退出交给拉起方 —— 具体分流在
-        # _restart() 里。不注册的话 BLE 层只能 os._exit(1) 等外部管理器，而本机没有。
-        s.ble.set_restart_handler(s._restart)
-        s.ble.set_quality_provider(lambda: {
-            "ble": s.ble.connection_quality(),
-            "mqtt": s.mqtt_quality(),
-            "bemfa": s.bemfa.quality() if s.bemfa else {"score": 0, "uptime": 0, "ping_lost": 0, "reconnect_count": 0},
-        })
-        s.history.connect()
-        # connect() 内部已经收尾了上次强杀/崩溃遗留的未闭合会话（见 history.py），
-        # 这里不再重复调用：清理只有一个入口，免得两处口径不一致。
-        s.ble.set_history(s.history)
-        # 加载充电会话记录开关（history.db meta 单源，默认开启，即时切换无需重启）
-        s.ble.record_sessions = s.history.get_session_recording()
-        # 加载充电量阈值（history.db meta 单源，即时生效无需重启）。
-        # 重启本身不算"会话终止"：once 限额只在"观察到真实会话终止"（端口关闭/
-        # 拔出/充电自然结束）或"触发关断"时消费，因此这里直接读取、不做任何清零。
-        # 代价：进程被强杀期间若用户已拔插（未被观测到），限额会留到下次充电。
-        s.ble.set_charge_limits(s.history.get_charge_limits())
-        # 加载端口模式（长期供电 / 充满即停，history.db meta 单源）。
-        # 顺序：先常供再即停 —— set_permanent_ports 会剔除同口的即停标记（互斥）。
-        s.ble.set_permanent_ports(s.history.get_permanent_ports())
-        s.ble.set_full_off(s.history.get_full_off())
+        s.history_store.connect()
+        # connect() 内部已经以 `close_stale_sessions(None)`（全设备）收尾了上次强杀/
+        # 崩溃遗留的未闭合会话，这里不再重复调用：清理只有一个入口。
+        stagger = float(s.adapter.startup_stagger_sec or 0.0)
+        for index, rt in enumerate(s.registry):
+            # 10 项钩子，见 mount_device_hooks —— 缺一项设备 2 就残废
+            s.mount_device_hooks(rt)
+            # 启动错峰（§3.4）：N 台同时上电时的认证风暴防护，成本为零
+            rt.supervisor.set_startup_delay(stagger * index)
         await s.setup_mqtt()
         if s.mqtt_client:
             s.setup_mqtt_subscriptions()
         if s.config.bemfa.enabled:
             await s.setup_bemfa()
-        s._ble_task = asyncio.create_task(s.ble.start())
+        for rt in s.registry:
+            # rt.task 只由 supervisor 创建/持有（取代原 Server._ble_task）
+            rt.supervisor.start()
         # 回填历史会话的均压/均流：旧版本闭合会话时落库的是"断电瞬间"的瞬时值
-        # (≈0)，导致历史摘要恒为 0。有采样点的已闭合会话重算一次。
+        # (≈0)，导致历史摘要恒为 0。有采样点的已闭合会话重算一次（全设备一次跑完）。
         # 放在 MQTT/BLE 起来之后再跑（fire-and-forget），避免维护性任务拖慢就绪；
         # 修正值只被历史接口消费，晚几秒无影响。
         async def _backfill_session_avg():
             try:
                 fixed = await asyncio.get_running_loop().run_in_executor(
-                    None, s.history.backfill_session_avg_vi)
+                    None, s.history_store.backfill_session_avg_vi)
                 if fixed:
                     _LOGGER.info("Session avg backfill done: %d sessions", fixed)
             except Exception as e:
@@ -2082,30 +3531,23 @@ async def on_startup(app_):
 async def on_shutdown(app_):
     _LOGGER.info("Shutting down...")
     s = get_server()
-    # Close active sessions first. 必须标注 shutdown 原因：只有"用户意图终止"
-    # （端口关闭/拔出/充电自然结束）才消费 once 限额，服务停止不是用户意图终止。
-    s.ble._close_active_sessions(END_REASON_SHUTDOWN)
-    # BLE disconnect with timeout
-    try:
-        await asyncio.wait_for(s.ble.request_stop(), timeout=5.0)
-    except asyncio.TimeoutError:
-        _LOGGER.warning("BLE stop timed out, forcing disconnect")
-        await asyncio.wait_for(s.ble._disconnect(), timeout=3.0)
-    except Exception as e:
-        _LOGGER.error("BLE stop error: %s", e)
+    # ① 先停全部 supervisor（防重建）：不先拿掉任务持有者，下面收尾期间任何一次
+    #    "意外退出"都会立刻把任务建回来，收尾永远收不干净。
+    #    supervisor.stop() 内部 request_stop() 会以 shutdown 原因关闭活跃会话。
+    for rt in s.registry:
+        with contextlib.suppress(Exception):
+            await rt.supervisor.stop()
+    # ② 兜底再收一次：必须标注 shutdown 原因 —— 只有"用户意图终止"（端口关闭/
+    #    拔出/充电自然结束）才消费 once 限额，服务停止不是用户意图终止。
+    for rt in s.registry:
+        with contextlib.suppress(Exception):
+            rt.manager.close_active_sessions(END_REASON_SHUTDOWN)
     if s.bemfa:
         try:
             await asyncio.wait_for(s.bemfa.stop(), timeout=3.0)
         except Exception:
             pass
-    ble_task = s._ble_task
-    if ble_task:
-        ble_task.cancel()
-        try:
-            await ble_task
-        except asyncio.CancelledError:
-            pass
-    # 回填任务同样要收尾：它跑在 executor 线程里访问 history 连接，
+    # ③ 回填任务同样要收尾：它跑在 executor 线程里访问 history 连接，
     # 若不取消/等待就 close() 连接，会与在途查询/写入竞争（报错且工作静默丢弃，
     # 事件循环还可能报 "Task was destroyed but it is pending"）。
     backfill_task = s._backfill_task
@@ -2120,7 +3562,8 @@ async def on_shutdown(app_):
     if s.mqtt_client:
         s.mqtt_client.loop_stop()
         s.mqtt_client.disconnect()
-    s.history.close()
+    # ④ 最后关共享 store（N 台设备的唯一写者）
+    s.history_store.close()
 
 
 app.on_startup.append(on_startup)

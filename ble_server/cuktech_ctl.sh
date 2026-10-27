@@ -280,6 +280,29 @@ do_clear_history() {
     fi
 }
 
+do_history_down() {
+    # 回滚用（设计文档 §6.1）：把非 primary 设备的历史归档到 *_archive，主表恢复
+    # 为旧代码可读。先停服务再跑（写库进程持有 WAL）。幂等，可重跑。
+    local db="$SCRIPT_DIR/port_history.db"
+    if [ ! -f "$db" ]; then
+        echo "No history database found at $db"
+        return 1
+    fi
+    if pid=$(get_pid); then
+        echo "Server is running (PID: $pid) — 先 stop 再归档，否则 WAL 写入会与之竞争"
+        return 1
+    fi
+    echo "Backing up $db → ${db}.bak ..."
+    cp -f "$db" "${db}.bak"
+    "$PYTHON" "$SCRIPT_DIR/scripts/history_down.py" --db "$db" "$@"
+}
+
+do_clean_retained() {
+    # 回滚用（§6.1）：清掉非 primary 设备的 retained 消息，否则 broker 里留着
+    # "幽灵设备"。前缀按配置推导（不硬编码 cuktech/#）。
+    "$PYTHON" "$SCRIPT_DIR/scripts/clean_retained.py" "$@"
+}
+
 case "${1:-help}" in
     start)        do_start ;;
     stop)         do_stop ;;
@@ -288,8 +311,10 @@ case "${1:-help}" in
     log)          do_log "${2:-50}" ;;
     clear-log)    do_clear_log ;;
     clear-history) do_clear_history ;;
+    history-down) shift; do_history_down "$@" ;;
+    clean-retained) shift; do_clean_retained "$@" ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|log [lines]|clear-log|clear-history}"
+        echo "Usage: $0 {start|stop|restart|status|log [lines]|clear-log|clear-history|history-down|clean-retained}"
         echo ""
         echo "Commands:"
         echo "  start         - Start the BLE server"
@@ -299,6 +324,8 @@ case "${1:-help}" in
         echo "  log [n]       - Show last n lines of log (default: 50)"
         echo "  clear-log     - Clear service log file"
         echo "  clear-history - Clear history database"
+        echo "  history-down  - 回滚前归档非 primary 设备的历史（幂等，先自动备份）"
+        echo "  clean-retained- 清理非 primary 设备的 retained MQTT 消息（回滚用）"
         exit 1
         ;;
 esac

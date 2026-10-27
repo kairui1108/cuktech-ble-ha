@@ -1,5 +1,48 @@
 # Changelog
 
+## [2.0.0-Beta] - 2026-10-25
+
+### Added
+- **One entry per device.** A single BLE server can now front several chargers: add the integration
+  N times, each entry bound to one device. Discovery goes through `GET /api/devices`, then a device
+  picker (name · MAC · connection state · topic prefix — enough to tell two identical chargers
+  apart). The entry stores `{server_url, device_id, topic_prefix}`
+- **Per-entry MQTT namespace.** The module-level topic constants in `const.py` are downgraded to
+  *defaults*; the coordinator resolves `topic_port/settings/status/set/charge_event/ble` per entry
+  and every subscribe/publish/command goes through those instance attributes, so two entries can
+  no longer read each other's frames
+- **Options flow**: rename, change `server_url`, `topic_prefix` or `device_id` after creation, and
+  the entry reloads immediately — previously the only way to change a prefix was delete + re-add,
+  which changes `entry_id` and breaks every entity's unique_id and all automations
+- Device registry name now comes from the entry title; charge-limit probing is device-scoped
+  (`/api/device/{id}/charge-limits` → legacy `/api/charge-limits` → local, downgrading only on 404)
+- **Device name auto-sync.** Every setup (including reload / HA restart) pulls `/api/devices` and
+  writes the server's name for *this* entry back into the entry title, plus a 5-minute background
+  refresh so a Web-UI rename shows up without restarting HA (two identical chargers used to differ
+  only by a `_2` suffix). The device name and the entry title are kept separate: the device name
+  always follows the server, while the entry title (the "hub" label, handy for telling two cards
+  apart) follows it only until you rename the entry yourself (`name_pinned`) — pinning the label no
+  longer freezes the device name. Deliberate limits: a bound entry only adopts its own device's
+  name; a legacy entry without `device_id` syncs only when the server reports exactly one device
+  (selected by the primary's id, not by list position); a server that reports no name (it just
+  echoes the id) never overwrites anything. A rename you make is detected in all three shapes —
+  the options flow (`name_pinned`), HA's own "rename entry" action (`title != name_synced`, the
+  bookkeeping value the last sync wrote), and entries upgraded from older versions
+  (`title != data[name]`) — and the only way back to auto-sync is clearing the name field (now
+  `vol.Optional`, since a required field could never be cleared)
+
+### Changed
+- Backends without `/api/devices` (ESP32 firmware, older ble_server) get a 404, which falls back to
+  the single-device flow — behaviour there is unchanged
+- Legacy entries (no `device_id` / `topic_prefix` keys) resolve to the defaults at runtime:
+  their unique_id is **not** recomputed and no migration step runs
+
+### Fixed
+- `async_step_reauth` keeps the entry's existing unique_id instead of recomputing it from
+  `server_url` (recomputing created a duplicate entry on reauth)
+
+---
+
 ## [1.1.1] - 2026-09-25
 
 ### Fixed

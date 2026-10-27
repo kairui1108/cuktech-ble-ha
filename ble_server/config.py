@@ -5,6 +5,7 @@ YAML file takes precedence over environment variables.
 """
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,14 +19,41 @@ LOG_LEVELS = {
     "error": logging.ERROR,
 }
 
+# primary 设备的固定标识（§3.10）。history/meta/legacy topic 的兼容全部锚定在它上面，
+# 因此**不可配置**：老库里的行、老 HA entry 的 topic、老 Web UI 的请求都默认它。
+PRIMARY_DEVICE_ID = "default"
 
-def _load_yaml_config():
-    """Load config from YAML file if exists."""
-    config_path = Path(os.environ.get("CUKTECH_CONFIG_PATH", str(Path(__file__).parent / "config.yaml")))
-    if not config_path.exists():
-        config_path = Path.cwd() / "config.yaml"
-    if not config_path.exists():
-        return {}
+# 设备 id 会成为 MQTT 前缀的一段，必须与保留字冲突安全（§3.6：`{base}/{id}/...`）
+_DEVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_RESERVED_DEVICE_IDS = frozenset({
+    "all", "set", "port", "status", "settings", "ble", "charge_event",
+    PRIMARY_DEVICE_ID,
+})
+
+# 巴法云语音实体的"端口"取值（§3.11）：c1/c2/c3/a 与 `{prefix}/port/{name}` 的第二段
+# 同名（同一个开关就是同一个口的 power），`ble` 是整机蓝牙开关（绑 status.connected）。
+BEMFA_PORTS = ("c1", "c2", "c3", "a", "ble")
+BEMFA_PORT_LABELS = {"c1": "C口1", "c2": "C口2", "c3": "C口3", "a": "USB-A", "ble": "蓝牙"}
+BEMFA_DEFAULT_NAMES = {"c1": "C口1开关", "c2": "C口2开关", "c3": "C口3开关",
+                       "a": "USB-A开关", "ble": "蓝牙开关"}
+
+
+def _load_yaml_config(path=None):
+    """Load config from YAML file if exists.
+
+    `path` 显式指定时只读这一个文件（保存前试算用）：此时**不允许**回退到 cwd，
+    否则"验的是别的文件"这种事故会静默发生。
+    """
+    if path is not None:
+        config_path = Path(path)
+        if not config_path.exists():
+            return {}
+    else:
+        config_path = Path(os.environ.get("CUKTECH_CONFIG_PATH", str(Path(__file__).parent / "config.yaml")))
+        if not config_path.exists():
+            config_path = Path.cwd() / "config.yaml"
+        if not config_path.exists():
+            return {}
     try:
         import yaml
         with open(config_path) as f:
@@ -40,6 +68,8 @@ class BLEConfig:
     token: str = ""
     ble_key: str = ""
     scan_timeout: int = 10
+    # 显示名（可选）：多设备时 Web UI/HA 用它区分；为空则回落 "default"。
+    name: str = ""
 
     def __post_init__(self):
         if not self.mac or self.mac == "XX:XX:XX:XX:XX:XX":
@@ -60,6 +90,96 @@ class MQTTConfig:
 
 
 @dataclass
+class DeviceConfig:
+    """一台充电器的配置（§3.10）。
+
+    primary 由老 `ble:` 节合成，`device_id` 固定 `default`；其余来自 `devices:` 节。
+    两类在同一个类型里表达，因为**下游（registry/manager/topic）看待它们没有区别**。
+    """
+
+    device_id: str = PRIMARY_DEVICE_ID
+    name: str = ""
+    mac: str = ""
+    token: str = ""
+    ble_key: str = ""
+    scan_timeout: int = 10
+    topic_prefix: str = ""          # 空 = 派生自 mqtt.topic_prefix（非 primary）
+    is_primary: bool = False
+    bemfa_names: dict = field(default_factory=dict)   # 可选覆盖 Bemfa 实体名（§3.11）
+
+    @property
+    def display_name(self) -> str:
+        return self.name or self.device_id
+
+    @classmethod
+    def from_mapping(cls, item: dict, *, default_scan_timeout: int = 10) -> "DeviceConfig":
+        """从 `devices:` 节的一项（或等价的 dict）构造。
+
+        接受 `id` 与 `device_id` 两种键：配置文件/schema 里叫 `id`（短、YAML 友好），
+        程序里叫 `device_id`（与 registry 键、history 列一致）。两种写法都收，避免
+        调用方记两套名字。
+        """
+        device_id = str(item.get("id") or item.get("device_id") or "").strip()
+        bemfa_names = {k[len("bemfa_"):]: v for k, v in item.items()
+                       if k.startswith("bemfa_") and v}
+        return cls(
+            device_id=device_id,
+            name=str(item.get("name") or "").strip(),
+            mac=str(item.get("mac") or "").strip(),
+            token=str(item.get("token") or "").strip(),
+            ble_key=str(item.get("ble_key") or "").strip(),
+            scan_timeout=int(item.get("scan_timeout", default_scan_timeout)),
+            topic_prefix=str(item.get("topic_prefix") or "").strip(),
+            is_primary=False,
+            bemfa_names=bemfa_names,
+        )
+
+
+@dataclass(frozen=True)
+class TopicNamespace:
+    """一台设备的 MQTT 命名空间（§3.6：前缀即设备）。
+
+    primary 的 `prefix` 就是 `mqtt.topic_prefix`，因此 `status`/`port/c1`… 与今天
+    **逐字节一致**——primary 不是"镜像"legacy 主题，它**就是** legacy 命名空间；
+    其他设备是 `{base}/{device_id}`，结构与 legacy 同形（HA 侧单一 schema）。
+    """
+
+    prefix: str
+
+    @property
+    def status(self) -> str:
+        return f"{self.prefix}/status"
+
+    @property
+    def settings(self) -> str:
+        return f"{self.prefix}/settings"
+
+    @property
+    def port(self) -> str:
+        return f"{self.prefix}/port"
+
+    @property
+    def set(self) -> str:
+        return f"{self.prefix}/set"
+
+    @property
+    def ble(self) -> str:
+        return f"{self.prefix}/ble"
+
+    @property
+    def charge_event(self) -> str:
+        return f"{self.prefix}/charge_event"
+
+    def port_topic(self, port_name: str) -> str:
+        return f"{self.prefix}/port/{port_name}"
+
+    @property
+    def command_topics(self) -> tuple[str, str, str]:
+        """订阅侧的三条命令 topic（§3.6：精确匹配，不用 wildcard，避免串台）。"""
+        return (self.set, self.port, self.ble)
+
+
+@dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
     port: int = field(default_factory=lambda: 18199 if sys.platform == "win32" else 8199)
@@ -70,6 +190,42 @@ class ServerConfig:
     history_db_path: str = "port_history.db"
     reconnect_base_delay: float = 1.0
     reconnect_max_delay: float = 300.0
+    # 启动错峰（§3.4）：第 index 台设备启动前等 index × 该值。N=1 恒为 0 延迟，
+    # 所以单设备时序与改造前完全一致；多设备时避免"10 台同时上电 → 认证风暴"。
+    startup_stagger_sec: float = 2.0
+
+
+@dataclass
+class BemfaEntityConfig:
+    """一条巴法云语音实体 = 用户自定义显示名 + 它绑定的(设备, 端口)（§3.11）。
+
+    为什么要显式成表：老形状 `name_c1…name_ble` + `allowed_devices` 只能表达
+    "同一套名字铺给所有设备"——多设备后用户要的是"客厅那台的 C1 叫 A、书房那台的
+    C1 叫 B"，名字必须与(设备,端口)成对出现才说得清，也才可能"只给某台设备的某个口
+    建实体"。
+    """
+
+    name: str = ""
+    device: str = PRIMARY_DEVICE_ID
+    port: str = "c1"
+
+    @property
+    def key(self) -> tuple:
+        return (self.device, self.port)
+
+
+def bemfa_entity_triple(ent) -> tuple:
+    """(name, device, port)——同时接受 `BemfaEntityConfig` 与裸 dict。
+
+    dict 形态必须也认：YAML 直读、`/api/config` 回包、测试里的手写配置都可能是
+    dict，而"只认 dataclass"会在某一处静默变成空实体清单（语音开关全消失）。
+    """
+    if isinstance(ent, dict):
+        return (str(ent.get("name") or ""), str(ent.get("device") or PRIMARY_DEVICE_ID),
+                str(ent.get("port") or ""))
+    return (str(getattr(ent, "name", "") or ""),
+            str(getattr(ent, "device", PRIMARY_DEVICE_ID) or PRIMARY_DEVICE_ID),
+            str(getattr(ent, "port", "") or ""))
 
 
 @dataclass
@@ -82,6 +238,22 @@ class BemfaConfig:
     name_a: str = "USB-A开关"
     name_ble: str = "蓝牙开关"
     modified: bool = False  # set true when names change, triggers topic delete+recreate on next start
+    # 语音实体给哪些设备建模（§3.11）：缺省只给 primary，避免 N 台设备时实体爆炸。
+    # 写成 ["*"] 或包含某 device_id 才给那台设备建 `{id}_c1` 这类实体。
+    # 仅在 `entities` 为空（老配置）时生效——见 ha_server._bemfa_entity_plan。
+    allowed_devices: list = field(default_factory=lambda: [PRIMARY_DEVICE_ID])
+    # 自定义实体表：**写了这个键**就完全接管建模（allowed_devices/name_c* 退居兜底）。
+    entities: list = field(default_factory=list)
+    # `entities` 键是否出现过。区分"老配置（没有这个键 → 按 allowed_devices 派生出
+    # 5×N 个实体，升级后语音指令一个都不变）"与"用户把这行全删了（明确要用 0 个
+    # 实体）"——两者在数据上都是空列表，只有键的存在与否能分开。
+    entities_defined: bool = False
+    # 上一次成功注册到巴法云云端的实体 id。
+    # **只读遗留字段**：服务端记账已改存 DB meta（`bemfa_registered`），因为写回
+    # config.yaml 要用 yaml.safe_load + yaml.dump 整份重写，会把用户手写的注释、
+    # 顶层键序和引号风格一起抹掉。这里保留解析只是为了把早期版本写下的值**迁移**到
+    # meta（见 `Server._bemfa_registered_snapshot`）；不会再被写回。
+    registered: list = field(default_factory=list)
 
 
 @dataclass
@@ -90,6 +262,9 @@ class Config:
     mqtt: MQTTConfig = field(default_factory=MQTTConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     bemfa: BemfaConfig = field(default_factory=BemfaConfig)
+    # 附加设备（`devices:` 节）。**不含 primary**：primary 永远由 `ble:` 节合成，
+    # 所以 `devices` 为空列表 = 单设备部署，行为与改造前 100% 一致。
+    devices: list = field(default_factory=list)
 
     @property
     def topic_port(self):
@@ -107,10 +282,51 @@ class Config:
     def topic_charge_event(self):
         return f"{self.mqtt.topic_prefix}/charge_event"
 
+    # ── 设备视图（§3.10：primary 来自 ble: 节，其余来自 devices:） ──
 
-def load_config() -> Config:
-    """Load config from YAML file, then override with environment variables."""
-    ycfg = _load_yaml_config()
+    def primary_device(self) -> DeviceConfig:
+        return DeviceConfig(
+            device_id=PRIMARY_DEVICE_ID,
+            name=self.ble.name or "",
+            mac=self.ble.mac,
+            token=self.ble.token,
+            ble_key=self.ble.ble_key,
+            scan_timeout=self.ble.scan_timeout,
+            topic_prefix=self.mqtt.topic_prefix,
+            is_primary=True,
+        )
+
+    def device_specs(self) -> list:
+        """registry 的唯一输入：primary 在前，附加设备按配置顺序在后。"""
+        specs = [self.primary_device()]
+        for dev in self.devices:
+            specs.append(dev if isinstance(dev, DeviceConfig)
+                         else DeviceConfig.from_mapping(dev, default_scan_timeout=self.ble.scan_timeout))
+        return specs
+
+    def topics_for(self, spec: DeviceConfig) -> TopicNamespace:
+        """解析一台设备的 topic 前缀（§3.10：空 = 自动派生 `{base}/{id}`）。"""
+        if spec.is_primary or spec.device_id == PRIMARY_DEVICE_ID:
+            return TopicNamespace(self.mqtt.topic_prefix)
+        prefix = (spec.topic_prefix or "").strip() or f"{self.mqtt.topic_prefix}/{spec.device_id}"
+        return TopicNamespace(prefix.rstrip("/"))
+
+
+def load_config(path=None) -> Config:
+    """Load config from YAML file, then override with environment variables.
+
+    `path` 让"保存配置前试算"走**与启动完全同一条路**（§3.10 不变式：保存 =
+    启动可接受）。另写一份校验必然与这里漂移，而漂移的代价是"存得进去、起不来"
+    ——重启被 load_config 拒绝，Web UI 也就跟着没了，用户只能手改 YAML 救回来。
+    """
+    return config_from_mapping(_load_yaml_config(path))
+
+
+def config_from_mapping(ycfg: dict) -> Config:
+    """把 YAML 映射解析成 Config（env 覆盖 + `validate_device_specs` 都在这里）。
+
+    启动（`load_config`）与"保存前试算"共用同一条实现，不各写一份。
+    """
 
     ble_cfg = ycfg.get("ble", {})
     mqtt_cfg = ycfg.get("mqtt", {})
@@ -121,6 +337,7 @@ def load_config() -> Config:
         token=os.environ.get("CUKTECH_DEVICE_TOKEN", ble_cfg.get("token", "")),
         ble_key=os.environ.get("CUKTECH_DEVICE_BLE_KEY", ble_cfg.get("ble_key", "")),
         scan_timeout=ble_cfg.get("scan_timeout", 10),
+        name=ble_cfg.get("name", ""),
     )
 
     try:
@@ -164,9 +381,12 @@ def load_config() -> Config:
         history_db_path=os.environ.get("CUKTECH_HISTORY_DB_PATH", server_cfg.get("history_db_path", "port_history.db")),
         reconnect_base_delay=reconnect_base_delay,
         reconnect_max_delay=reconnect_max_delay,
+        startup_stagger_sec=float(server_cfg.get("startup_stagger_sec", 2.0)),
     )
 
     bemfa_cfg = ycfg.get("bemfa", {})
+    if not isinstance(bemfa_cfg, dict):
+        raise ValueError("配置错误：`bemfa` 必须是映射")
     bemfa_enabled_env = os.environ.get("BEMFA_ENABLED", "").lower()
     bemfa_enabled = bemfa_enabled_env in ("1", "true", "yes") or bemfa_cfg.get("enabled", False)
     bemfa = BemfaConfig(
@@ -178,6 +398,177 @@ def load_config() -> Config:
         name_a=bemfa_cfg.get("name_a", "USB-A开关"),
         name_ble=bemfa_cfg.get("name_ble", "蓝牙开关"),
         modified=bemfa_cfg.get("modified", False),
+        allowed_devices=list(bemfa_cfg.get("allowed_devices") or [PRIMARY_DEVICE_ID]),
+        entities=_parse_bemfa_entities(bemfa_cfg.get("entities")),
+        entities_defined="entities" in bemfa_cfg,
+        registered=[str(x) for x in (bemfa_cfg.get("registered") or [])],
     )
 
-    return Config(ble=ble, mqtt=mqtt, server=server, bemfa=bemfa)
+    devices = _parse_devices(ycfg, ble)
+    cfg = Config(ble=ble, mqtt=mqtt, server=server, bemfa=bemfa, devices=devices)
+    validate_device_specs(cfg)
+    validate_bemfa_entities(cfg)
+    return cfg
+
+
+# ── 多设备配置：解析与启动校验（§3.10） ──
+
+def _parse_devices(ycfg: dict, ble: BLEConfig) -> list:
+    """把 `devices:` 节解析成 `DeviceConfig` 列表（不含 primary）。
+
+    **字段清洗只有一份实现**（`DeviceConfig.from_mapping`）：这里以前自己抄了一遍
+    键名（只认 `id`，而 from_mapping 认 `id`/`device_id`）、字段清洗与默认
+    `scan_timeout`，两套解析器迟早会漂移——而漂移的后果是"配置页存得进、启动读
+    不出"或者反过来。本函数只保留**它独有的价值**：带 `devices[i]` 下标的报错
+    （YAML 里有几十行时，能直接跳到出错那一条）与列表形状检查。
+    """
+    raw = ycfg.get("devices")
+    if raw in (None, ""):
+        return []
+    if raw == []:
+        # 显式空节：等价单设备（无附加设备）。给配置工具留一个"确实没有附加设备"的表达。
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("配置错误：`devices` 必须是列表（每项一台附加充电器）")
+    specs: list = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"配置错误：`devices[{idx}]` 必须是映射（id/mac/token）")
+        spec = DeviceConfig.from_mapping(item, default_scan_timeout=ble.scan_timeout)
+        # 必填校验：报错要能定位到具体哪一条，所以留在这里而不是 from_mapping
+        if not spec.device_id:
+            raise ValueError(f"配置错误：`devices[{idx}]` 缺少 `id`（id 即 MQTT 前缀后缀）")
+        if not spec.mac:
+            raise ValueError(f"配置错误：设备 `{spec.device_id}` 缺少 `mac`")
+        if not spec.token:
+            raise ValueError(f"配置错误：设备 `{spec.device_id}` 缺少 `token`")
+        specs.append(spec)
+    return specs
+
+
+def validate_device_specs(cfg: Config) -> None:
+    """启动期设备校验（§3.10）。有问题一律 raise ValueError，绝不"能跑就先跑"。
+
+    多设备串台的代价是**控制到错误的充电器**（安全事故），所以宁可拒绝启动。
+    """
+    specs = cfg.device_specs()
+    primary = specs[0]
+    extras = specs[1:]
+
+    if extras and not (cfg.ble.mac and cfg.ble.token):
+        raise ValueError(
+            "配置错误：primary 设备必须在 `ble:` 节配置（mac/token）；"
+            "`devices:` 只是附加设备")
+
+    # ── id ──
+    seen_ids = {PRIMARY_DEVICE_ID}
+    for spec in extras:
+        if not _DEVICE_ID_RE.match(spec.device_id):
+            raise ValueError(
+                f"配置错误：设备 id `{spec.device_id}` 非法（只允许小写字母/数字/_-，且以字母或数字开头）")
+        if spec.device_id in _RESERVED_DEVICE_IDS:
+            raise ValueError(
+                f"配置错误：设备 id `{spec.device_id}` 与保留字冲突"
+                f"（{', '.join(sorted(_RESERVED_DEVICE_IDS))}）")
+        if spec.device_id in seen_ids:
+            raise ValueError(f"配置错误：设备 id `{spec.device_id}` 重复")
+        seen_ids.add(spec.device_id)
+
+    # ── mac：全局唯一（跨节） ──
+    seen_macs: dict = {}
+    for spec in specs:
+        mac = (spec.mac or "").strip().upper()
+        if not mac:
+            continue
+        if mac in seen_macs:
+            raise ValueError(
+                f"配置错误：MAC {spec.mac} 同时出现在 "
+                f"`{seen_macs[mac]}` 与 `{spec.device_id}`")
+        seen_macs[mac] = spec.device_id
+
+    # ── token：必须是合法 hex（BLEManager 构造即 bytes.fromhex） ──
+    for spec in extras:
+        token = (spec.token or "").strip()
+        try:
+            if len(token) % 2:
+                raise ValueError
+            bytes.fromhex(token)
+        except ValueError:
+            raise ValueError(
+                f"配置错误：设备 `{spec.device_id}` 的 token 不是合法十六进制串") from None
+
+    # ── topic 前缀：唯一，且不得与任何其他设备的 topic 撞车 ──
+    #
+    # 注意：**前缀互相嵌套是合法的、也是默认形态**（§3.6：primary=`cuktech/charger`，
+    # 设备 2=`cuktech/charger/desk`）。命令订阅是精确匹配（`{prefix}/set`，无 wildcard），
+    # 所以 `cuktech/charger/desk/set` 不会被 primary 的 `cuktech/charger/set` 收走。
+    # 真正危险的是"某台设备的前缀正好等于另一台设备的某个 topic"——那才会真串台，
+    # 例如显式配 `topic_prefix: cuktech/charger/port`（等于 primary 的端口命令主题）。
+    namespaces = [(spec.device_id, cfg.topics_for(spec)) for spec in specs]
+
+    def _all_topics(ns) -> set:
+        return {ns.status, ns.settings, ns.port, ns.set, ns.ble, ns.charge_event}
+
+    for i, (id_a, ns_a) in enumerate(namespaces):
+        for id_b, ns_b in namespaces[i + 1:]:
+            a, b = ns_a.prefix.rstrip("/"), ns_b.prefix.rstrip("/")
+            if a == b:
+                raise ValueError(
+                    f"配置错误：设备 `{id_a}` 与 `{id_b}` 的 MQTT 前缀相同（{a}）")
+            if b in _all_topics(ns_a) or a in _all_topics(ns_b):
+                raise ValueError(
+                    f"配置错误：设备 `{id_a}`（{a}）与 `{id_b}`（{b}）的 MQTT 主题重叠"
+                    f"（一方的前缀正好是另一方的某个主题）")
+
+
+
+# ── 巴法云语音实体：解析与校验（§3.11） ──
+
+def _parse_bemfa_entities(raw) -> list:
+    """把 `bemfa.entities:` 解析成 `BemfaEntityConfig` 列表。
+
+    空 = 老配置（`name_c*` + `allowed_devices` 兜底），所以 `None`/`""`/`[]` 都返回
+    空列表而不是报错：升级后第一次启动手里就是这种配置。
+    """
+    if raw in (None, ""):
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("配置错误：`bemfa.entities` 必须是列表（每项一条语音实体）")
+    entities: list = []
+    seen: dict = {}
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"配置错误：`bemfa.entities[{idx}]` 必须是映射（name/device/port）")
+        name, device, port = bemfa_entity_triple(item)
+        name, device, port = name.strip(), device.strip(), port.strip()
+        if not name:
+            raise ValueError(
+                f"配置错误：`bemfa.entities[{idx}]` 缺少 `name`（巴法云里的显示名）")
+        if port not in BEMFA_PORTS:
+            raise ValueError(
+                f"配置错误：`bemfa.entities[{idx}]` 的 `port` 非法（{port or '空'}），"
+                f"只允许 {'/'.join(BEMFA_PORTS)}")
+        if (device, port) in seen:
+            raise ValueError(
+                f"配置错误：`bemfa.entities[{idx}]` 与第 {seen[(device, port)]} 条重复"
+                f"（同一台设备的同一个开关只能有一条实体）")
+        seen[(device, port)] = idx
+        entities.append(BemfaEntityConfig(name=name, device=device, port=port))
+    return entities
+
+
+def validate_bemfa_entities(cfg: Config) -> None:
+    """实体表里引用的设备必须真的存在。
+
+    这里必须 raise 而不是"跳过这条"：被跳过的实体在用户眼里就是"我明明配了语音
+    开关却喊不动"——而原因藏在启动日志里。指向不存在的设备只可能是配置写错了
+    （或删设备时忘了删实体），保存时就该被拦下。
+    """
+    known = {spec.device_id for spec in cfg.device_specs()}
+    for idx, ent in enumerate(cfg.bemfa.entities or []):
+        _, device, _ = bemfa_entity_triple(ent)
+        if device not in known:
+            raise ValueError(
+                f"配置错误：`bemfa.entities[{idx}]` 指向的设备 `{device}` 不存在"
+                f"（已配置的设备：{', '.join(sorted(known))}）")

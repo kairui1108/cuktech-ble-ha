@@ -327,11 +327,13 @@ test('applyTranslations handles option elements', () => {
 
 test('data-i18n-params interpolate at DOM translation time', () => {
     const { I18N, document } = buildSandbox('zh-CN');
-    const label = document.body.append(new FakeEl('span', { 'data-i18n': 'config.portName', 'data-i18n-params': '{"port":"C1"}' }));
+    // 用一个**真实存在**的带参 key：这条测的是 data-i18n-params 的机制，
+    // 拿一个随时可能被删掉的文案当夹具，机制没坏也会因为缺 key 红掉。
+    const label = document.body.append(new FakeEl('span', { 'data-i18n': 'device.todayWh', 'data-i18n-params': '{"wh":"12.5"}' }));
     I18N.applyTranslations();
-    assertEq(label.textContent, 'C1 端口名称');
+    assertEq(label.textContent, '今日 12.5 Wh');
     I18N.setLocale('en');
-    assertEq(label.textContent, 'C1 Port Name');
+    assertEq(label.textContent, '12.5 Wh today');
 });
 
 // ── Server-configured language (config.html is the single source) ──

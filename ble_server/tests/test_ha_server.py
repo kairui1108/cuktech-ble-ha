@@ -125,8 +125,10 @@ class TestHandleChart:
         """
         from collections import OrderedDict
         server._chart_cache = OrderedDict()
-        server._chart_cache["1.0:20"] = (0, "stale", b"x" * 4096, 0)   # 队首且已过期
-        server._chart_cache["2.0:20"] = (0, "stale2", b"y" * 4096, 0)
+        # P1 起缓存键带设备维度（§3.7）：`{device_id}:{hours}:{interval}`。
+        # 单设备时 device_id = primary 的 "default"，其余语义不变。
+        server._chart_cache["default:1.0:20"] = (0, "stale", b"x" * 4096, 0)   # 队首且已过期
+        server._chart_cache["default:2.0:20"] = (0, "stale2", b"y" * 4096, 0)
         server._chart_cache_max = 50
         server._chart_cache_max_entry_bytes = 10 ** 9
         server._chart_cache_max_bytes = 5000           # 总量已超上限，必触发淘汰
@@ -136,8 +138,8 @@ class TestHandleChart:
         request.headers = {}
         await server.handle_chart(request)
 
-        assert "1.0:20" in server._chart_cache, "刚重算的条目被淘汰了"
-        assert "2.0:20" not in server._chart_cache, "应淘汰更旧的那条"
+        assert "default:1.0:20" in server._chart_cache, "刚重算的条目被淘汰了"
+        assert "default:2.0:20" not in server._chart_cache, "应淘汰更旧的那条"
 
     @pytest.mark.asyncio
     async def test_chart_oversized_body_not_cached(self, server):
@@ -592,6 +594,21 @@ class TestWebLanguageAPI:
         assert server.history.get_web_language() == "zh-CN"
 
     @pytest.mark.asyncio
+    async def test_responses_are_never_cached(self, server):
+        """GET/POST 都带 no-store：语言是即时偏好，被浏览器缓存住就会出现
+        "设置里写着中文、页面还是英文"这种自相矛盾的界面。"""
+        get_req = AsyncMock()
+        get_req.method = "GET"
+        get_result = await server.handle_web_language(get_req)
+        assert "no-store" in get_result.headers["Cache-Control"]
+
+        post_req = AsyncMock()
+        post_req.method = "POST"
+        post_req.json = AsyncMock(return_value={"language": "en"})
+        post_result = await server.handle_web_language(post_req)
+        assert "no-store" in post_result.headers["Cache-Control"]
+
+    @pytest.mark.asyncio
     async def test_post_rejects_invalid_language(self, server):
         """不支持的语言值时拒绝。"""
         request = AsyncMock()
@@ -847,9 +864,12 @@ class TestShutdownPreservesOnceLimit:
     async def test_on_shutdown_source_passes_shutdown_reason(self):
         """静态断言：on_shutdown 里必须显式传 shutdown 原因（防止回归成无参调用）。"""
         import inspect
+        import re
         import ha_server
         src = inspect.getsource(ha_server.on_shutdown)
-        assert "_close_active_sessions(END_REASON_SHUTDOWN)" in src, \
+        # 公开方法名（`.close_active_sessions`）而不是私有 `._close_active_sessions`：
+        # 服务层不再伸手改 manager 的私有方法，但"必须显式传 shutdown 原因"这条不变。
+        assert re.search(r"\.close_active_sessions\(END_REASON_SHUTDOWN\)", src), \
             "on_shutdown 必须以 END_REASON_SHUTDOWN 关闭会话，否则关机误消费 once 限额"
 
 
@@ -977,11 +997,19 @@ class TestNoAppStateWrites:
         assert 'app_["ble_task"]' not in src
         assert 'app_["backfill_task"]' not in src
 
-    def test_tasks_are_server_attributes(self):
+    def test_tasks_are_owned_by_supervisor(self):
+        """P1 起任务持有归 `rt.supervisor`（§3.2/§3.13），`Server._ble_task` 已删除。
+
+        这条断言的方向反了过来：以前要求 handle_enable **必须**碰 `self._ble_task`，
+        现在要求它**绝不**碰 —— 直接 cancel/create 任务会被 supervisor 的 done 回调
+        当成"意外退出"，立刻触发一次重建，等于启停变成自杀式重启。
+        """
         import inspect
         import ha_server
         enable_src = inspect.getsource(ha_server.Server.handle_enable)
-        assert "self._ble_task" in enable_src
+        assert "self._ble_task" not in enable_src, "handle_enable 不得直接持有任务"
+        assert "supervisor.start()" in enable_src
+        assert "supervisor.stop()" in enable_src
         assert "app_" not in enable_src, "handle_enable 仍在写 app state"
 
 

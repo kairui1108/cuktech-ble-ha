@@ -48,6 +48,12 @@ ha_helpers.aiohttp_client = MagicMock()
 ha_helpers.entity_platform = MagicMock()
 ha_helpers.event = MagicMock()
 ha_helpers.entity = MagicMock()
+# 设备注册表：`__init__` 里的 `from homeassistant.helpers import device_registry as dr`
+# 走的是这个属性，缺了就是 ImportError（被宽 except 吞掉，测试里表现为"这段没跑"）。
+ha_helpers.device_registry = MagicMock()
+# 默认返回值对齐生产：集成刚 setup、设备还没被实体创建出来时，async_get_device()
+# 返回 None。不写这行的话它返回一个 Mock，于是"设备已存在"的分支会假绿。
+ha_helpers.device_registry.async_get.return_value.async_get_device.return_value = None
 ha_helpers.storage = types.ModuleType("homeassistant.helpers.storage")
 
 
@@ -119,9 +125,26 @@ class _FakeConfigFlow:
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__()
 
+
+class _FakeOptionsFlow:
+    """OptionsFlow 占位：真实 HA 里由流程管理器注入 config_entry 属性。"""
+
+    def __init__(self, *args, **kwargs):
+        self.config_entry = kwargs.get("config_entry")
+
+
 ha_config = types.ModuleType("homeassistant.config_entries")
 ha_config.ConfigEntry = MagicMock()
 ha_config.ConfigFlow = _FakeConfigFlow
+ha_config.OptionsFlow = _FakeOptionsFlow
+
+# 选择器：多设备下拉框用 SelectSelector。测试只需要"能构造、能塞进 schema"，
+# 真实校验由 HA 侧完成，不在本套测试的断言范围内。
+ha_helpers_selector = types.ModuleType("homeassistant.helpers.selector")
+ha_helpers_selector.SelectSelector = lambda config=None, **kwargs: ("SelectSelector", config)
+ha_helpers_selector.SelectSelectorConfig = lambda **kwargs: kwargs
+ha_helpers_selector.SelectOptionDict = lambda **kwargs: dict(kwargs)
+ha_helpers_selector.SelectSelectorMode = types.SimpleNamespace(LIST="list", DROPDOWN="dropdown")
 
 ha_const = types.ModuleType("homeassistant.const")
 ha_const.Platform = MagicMock()
@@ -135,8 +158,32 @@ ha_const.UnitOfEnergy = types.SimpleNamespace(
 ha_const.CONF_NAME = "name"
 
 _vol = types.ModuleType("voluptuous")
+
+
+class _VolMarker(str):
+    """schema 的键标记：仍然是 str（既有用例把它当 key 用），但能区分必填/选填。
+
+    真实 voluptuous 里 Required/Optional 是 Marker 对象；替身原先直接返回裸 key，
+    于是"这个字段是不是必填"在测试里无法断言——而 `name` 够不够"可选"正是
+    options flow 里"清空 = 交回自动同步"能不能走通的关键。
+    """
+
+    required = True
+
+    def __new__(cls, key, **kwargs):
+        obj = super().__new__(cls, key)
+        obj.default = kwargs.get("default")
+        return obj
+
+
+class _VolOptional(_VolMarker):
+    required = False
+
+
 _vol.Schema = lambda s: s
-_vol.Optional = lambda key, **kwargs: key
+_vol.Optional = _VolOptional
+_vol.Required = _VolMarker
+_vol.In = lambda values: values
 sys.modules['voluptuous'] = _vol
 
 ha = types.ModuleType("homeassistant")
@@ -153,6 +200,8 @@ sys.modules['homeassistant.helpers.entity_platform'] = ha_helpers.entity_platfor
 sys.modules['homeassistant.helpers.event'] = ha_helpers.event
 sys.modules['homeassistant.helpers.entity'] = ha_helpers.entity
 sys.modules['homeassistant.helpers.storage'] = ha_helpers.storage
+sys.modules['homeassistant.helpers.selector'] = ha_helpers_selector
+ha_helpers.selector = ha_helpers_selector
 sys.modules['homeassistant.components'] = ha_components
 sys.modules['homeassistant.components.mqtt'] = ha_components.mqtt
 sys.modules['homeassistant.components.sensor'] = ha_components.sensor

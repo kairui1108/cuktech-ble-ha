@@ -46,7 +46,6 @@
 
         // ── Index page ──
         index: {
-            settingsOpen: 'Options',
             connectionStatus: 'Connection Status',
             bleControl: 'BLE Control',
             powerChart: 'Power Chart',
@@ -255,7 +254,6 @@
         // ── Config page ──
         config: {
             title: 'System Config',
-            bleDevice: 'BLE Device',
             xiaomiAuto: 'Get from Xiaomi Cloud',
             mac: 'MAC Address',
             macHint: 'Charger BLE MAC address',
@@ -277,8 +275,28 @@
             privateKey: 'Private Key',
             privateKeyHint: 'Your Bemfa Cloud private key',
             placeholderUid: 'Bemfa Cloud private key',
-            portName: '{{port}} Port Name',
-            portNameHint: 'Device display name on Bemfa',
+            // ── Bemfa voice switches (one row = name + device + port) ──
+            bemfaSwitchSection: 'Voice switches',
+            bemfaSwitchHint: 'One row per switch: display name + device + port',
+            bemfaAutoFill: 'Fill by device',
+            bemfaAdd: '+ Add',
+            bemfaNamePlaceholder: 'Bemfa display name',
+            bemfaEmpty: 'No voice switches yet — tap "+ Add", or "Fill by device" to create them all',
+            bemfaAutoFillConfirm: 'Rebuild every switch from "device name + port"? Existing rows will be replaced.',
+            bemfaAutoFilled: '{{n}} voice switches created — rename or remove them as you like',
+            bemfaNeedName: 'A voice switch has no name',
+            bemfaDuplicate: '"{{name}}" is duplicated: one switch per device port',
+            bemfaDeviceGone: '"{{name}}" points at a device that no longer exists — rebind or delete the row',
+            bemfaAllUsed: 'Every device port already has a switch',
+            bemfaCount: '{{n}} switch(es)',
+            bemfaRemoveLastConfirm: 'This is the last voice switch ({{name}}). After saving, it will be removed from Bemfa Cloud and any voice assistant routine using it will stop working. Continue?',
+            bemfaMissingDevice: 'device deleted',
+            bemfaEntityDefault: '{{name}} {{port}}',
+            bemfaPortC1: 'Port C1',
+            bemfaPortC2: 'Port C2',
+            bemfaPortC3: 'Port C3',
+            bemfaPortA: 'USB-A',
+            bemfaPortBle: 'Bluetooth',
             bleStatusName: 'BLE Status Name',
             serverSection: 'Server',
             webPort: 'Web Port',
@@ -321,15 +339,67 @@
             scanned: "I've scanned the code",
             scanTimeout: 'Timed out waiting — please get a new QR code',
             noDevices: 'No devices found',
-            selectCharger: 'Select your charger:',
+            selectCharger: 'Select chargers (multiple allowed):',
             fetchingBleKey: 'Fetching BLE Key...',
             bleKeyFailed: 'Failed to get BLE Key: {{msg}}',
-            deviceInfoGot: 'Device info retrieved — please review and save',
+            xiaomiSelectAll: 'Select all',
+            xiaomiSelectNone: 'Clear',
+            xiaomiSyncNames: 'Sync names from Xiaomi Cloud',
+            xiaomiSyncNamesHint: 'Overwrite the names already on the device cards with the ones from the cloud',
+            xiaomiConfigured: 'Configured',
+            xiaomiImport: 'Import {{n}} selected',
+            xiaomiImportEmpty: 'Select at least one device',
+            xiaomiImporting: 'Importing...',
+            xiaomiImportDone: 'Filled into the device cards: {{added}} added, {{updated}} updated. Remember to hit "Save & Restart"',
+            xiaomiImportDoneWithFailed: 'Filled into the device cards: {{added}} added, {{updated}} updated, {{failed}} failed. Remember to hit "Save & Restart"',
+            xiaomiImportFailed: 'Import failed',
             placeholderC1: 'USB-C 1 switch',
             placeholderC2: 'USB-C 2 switch',
             placeholderC3: 'USB-C 3 switch',
             placeholderA: 'USB-A switch',
-            placeholderBle: 'BLE switch'
+            placeholderBle: 'BLE switch',
+
+            // ── Multi-device management (device card list) ──
+            devicesSection: 'Chargers',
+            // Multi-device is Beta until the two-charger hardware canary passes
+            multiDeviceBeta: 'Beta',
+            devicesHint: 'One host can drive several chargers at once; changes apply after a restart',
+            addDevice: 'Add charger',
+            editDevice: 'Edit',
+            removeDevice: 'Remove',
+            primaryTag: 'Primary',
+            primaryUndeletable: 'The primary charger comes from the ble: section of the config file and cannot be removed',
+            deviceName: 'Name',
+            deviceNameHint: 'Shown in the UI; leave empty to use the device ID',
+            deviceId: 'Device ID',
+            deviceIdHint: 'Used as the MQTT topic suffix; lowercase letters/digits/_- and must not start with a symbol',
+            topicAuto: 'auto',
+            topicAutoHint: 'Leave empty to use "server prefix/device id"',
+            confirmRemoveDevice: 'Remove charger "{{name}}"? It takes effect after saving and restarting.',
+            invalidDeviceId: '"{{name}}" has an invalid device ID: lowercase letters, digits, _ and - only, and it must start with a letter or digit',
+            needMacToken: '"{{name}}" is missing a MAC or token',
+            deviceAdded: 'Charger added — fill in the MAC / token, then save'
+        },
+
+        // ── Device switcher（多设备共用，index.html / phone.html）──
+        device: {
+            switcher: 'Switch device',
+            // ── multi-device bench (device-bench.js) ──
+            all: 'All',
+            unnamedDevice: 'Unnamed device',
+            primaryName: 'Main charger',
+            // 桌面牌堆上那张卡既可拖动翻牌，也可单击打开这台设备的设置。
+            cardHint: 'Open this device\'s settings',
+            allHint: 'Show all devices',
+            // 翻牌箭头的读屏文案（界面上不出现文字，只出现箭头）
+            prev: 'Previous device',
+            next: 'Next device',
+            onlineCount: '{{online}}/{{total}} online',
+            fleetTitle: 'All chargers',
+            fleetNow: 'Live',
+            fleetOnline: 'Online',
+            fleetToday: 'Today',
+            todayWh: '{{wh}} Wh today'
         },
 
         // ── Device info (HA iframe) ──

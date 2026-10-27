@@ -293,7 +293,9 @@
     // setting with no per-page switchers needed.
     function initFromServer() {
         if (typeof fetch === 'undefined' || typeof location === 'undefined') return;
-        fetch(location.origin + '/api/web-language')
+        // cache:'no-store' 与响应头的 Cache-Control 双保险：语言是即时偏好，
+        // 读到旧值会让整页停在上一门语言（中文设置下显示英文的经典成因）。
+        fetch(location.origin + '/api/web-language', { cache: 'no-store' })
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (data && data.ok && data.language) applyServerLanguage(data.language);

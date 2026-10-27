@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "healthy": true,
+  "components": {
+    "ble": false,
+    "mqtt": true,
+    "bemfa": false
+  },
+  "uptime_ms": "<UPTIME_MS>"
+}

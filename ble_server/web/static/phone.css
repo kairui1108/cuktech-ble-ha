@@ -56,10 +56,17 @@ body.light {
 .nav-back { width: 36px; height: 36px; padding: 6px; cursor: pointer; }
 .nav-back img { width: 100%; height: 100%; opacity: 0.7; }
 .nav-title { flex: 1; text-align: center; font-size: 16px; font-weight: 500;
-    color: var(--text); margin-right: 36px; }
+    color: var(--text); }
+/* 注意：这里**不能**给 margin-right。导航栏左边是 28px 的齿轮、右边是 28px 的主题
+   按钮，本来左右对称；多留 36px 会让标题整块左偏，两边的白边就不一样长了
+   （那 36px 是给早年的 .nav-more 让位的，那个按钮早就不在页面里）。 */
 .theme-btn { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 .nav-more { width: 28px; height: 28px; cursor: pointer; padding: 4px; display: none; }
 .nav-more img { width: 100%; height: 100%; opacity: 0.5; }
+
+/* 设备切换在手机上只剩两处：导航栏标题（点开下拉列表，见下）与"全部设备"页。
+   原来那条吸顶 pill 条 / 横滑仪表条都已撤掉 —— 它们各自要吃掉 42–58px 的顶部
+   留白，而这信息现在就在标题栏里。 */
 
 /* ── Top View (sticky) ── */
 .top-view {
@@ -724,3 +731,134 @@ body.light .charge-limit-fill { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.22);
     .charge-limit-deck .charge-limit-card { transition: none; }
     .charge-limit-dotnav::before { transition: none; }
 }
+
+
+/* ══════════ 设备切换：标题栏下拉列表（phone.js）══════════
+   手机上不再有"吸顶横条"：导航栏的标题本身就是入口（多台设备时标题显示当前
+   这一台，右侧带一个 ▾），点一下从导航下面展开一列小卡片——名字 + 端口微点 +
+   实时功率脊，点哪张整页就换成哪台。收起来的时候一个像素都不占。 */
+/* 标题栏本身就是切换入口（内容 = 当前设备名 + ▾）：它继承上面 .nav-title 的
+   居中与字号，这里只补"像一颗按钮"的那部分。 */
+/* 只对 <button class="nav-title"> 生效：config.html 的标题是 <div class="nav-title">，
+   它不是入口、不该继承 cursor:pointer，也不该被下面的 ::before 配平块顶偏。 */
+button.nav-title {
+    display: flex; align-items: center; justify-content: center; gap: 3px;
+    min-width: 0;                       /* 名字太长就省略号，别把导航撑破 */
+    background: none; border: 0; padding: 0 4px; font-family: inherit; font-size: inherit;
+    font-weight: inherit; color: var(--text);
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+button.nav-title:disabled { cursor: default; }
+button.nav-title #navTitleText {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+button.nav-title:not(:disabled):active #navTitleText { opacity: .7; }
+/* 设备名要**真正居中**：右边挂着 ▾，左边补一块等宽的空档，两边的白边才一样长
+   （只靠 flex 居中，文字会被 ▾ 挤得偏左）。没有 ▾（单设备）时不补。 */
+button.nav-title:not(:disabled)::before { content: ''; width: 14px; flex: none; }
+.nav-caret {
+    display: inline-block; width: 14px; flex: none;
+    font-size: 14px; line-height: 1; text-align: center;
+    color: var(--text-sub); opacity: .75;
+    transition: transform .2s ease, opacity .2s ease, color .2s ease;
+}
+button.nav-title:not(:disabled):hover .nav-caret { opacity: 1; color: var(--text); }
+button.nav-title:not(:disabled):active .nav-caret { opacity: .8; }
+button.nav-title[aria-expanded="true"] .nav-caret { transform: rotate(180deg); opacity: 1; color: var(--text); }
+.nav-caret[hidden] { display: none; }
+
+.dev-menu {
+    position: fixed; top: 48px; left: 0; right: 0; z-index: 120;
+    max-width: var(--page-width); margin: 0 auto;
+    padding: 8px 12px 12px; background: var(--bg);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 18px 36px rgba(0, 0, 0, 0.55);
+    animation: devMenuIn .16s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+body.light .dev-menu { border-bottom-color: rgba(0, 0, 0, 0.08); box-shadow: 0 18px 36px rgba(16, 24, 40, 0.16); }
+.dev-menu[hidden] { display: none; }
+@keyframes devMenuIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.dev-menu-list {
+    list-style: none; margin: 0; padding: 0;
+    display: flex; flex-direction: column; gap: 8px;
+    max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+}
+
+/* 列表里的小卡片：与桌面牌堆同一套内容（灯 / 名字 / 端口微点 / 瓦数 / 功率脊），
+   一眼就能看出"哪台在干活"，点一下切过去。 */
+.dev-item {
+    position: relative; display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px 13px; border-radius: 12px;
+    background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.08);
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+    transition: background .16s ease, border-color .16s ease;
+}
+body.light .dev-item { background: #fff; border-color: rgba(0, 0, 0, 0.08); box-shadow: 0 1px 3px rgba(16, 24, 40, 0.08); }
+.dev-item:active { background: rgba(255, 255, 255, 0.12); }
+body.light .dev-item:active { background: #f6f6f9; }
+.dev-item.is-current { border-color: rgba(255, 255, 255, 0.24); background: rgba(255, 255, 255, 0.11); }
+body.light .dev-item.is-current { border-color: rgba(0, 0, 0, 0.16); }
+/* 预览标记：?preview=multi 时那几台是伪造的，必须说清楚，否则一眼看过去
+   分不出"家里真有三台在充"还是"在看排版" */
+.dev-menu-tag {
+    align-self: flex-start; padding: 0 2px 1px;
+    font-size: 9px; font-weight: 700; letter-spacing: .12em;
+    color: var(--text-dim); opacity: .75;
+}
+.dev-item--all { border-style: dashed; }
+.dev-item--all .bench-name { color: var(--text-sub); }
+
+.bench-led { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-dim); opacity: .45; }
+.bench-led.is-on { background: #34C759; opacity: 1; }
+.bench-body { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; min-width: 0; flex: 1; }
+.bench-name { font-size: 13.5px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.bench-meta, .bench-ports { display: flex; align-items: center; gap: 3px; font-size: 10px; color: var(--text-dim); }
+.bench-port { width: 5px; height: 10px; border-radius: 2px; flex: none; background: var(--pc, currentColor); opacity: .3; }
+.bench-port.is-on { opacity: 1; }
+.bench-port.is-off-mode { outline: 1px dashed rgba(128,128,128,.45); }
+.bench-right { display: flex; align-items: baseline; margin-left: auto; flex: none; }
+.bench-w { display: flex; align-items: baseline; gap: 1px; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bench-w b { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; line-height: 1; }
+.bench-w em { font-style: normal; font-size: 9.5px; font-weight: 600; opacity: .55; }
+/* 功率脊：长度 = 该台功率 / 120W（"全部"那张 = n×120W），刻度与桌面版一致 */
+.bench-spine {
+    position: absolute; left: 10px; right: 10px; bottom: 5px; height: 2px; border-radius: 2px;
+    background: linear-gradient(to right,
+        var(--accent) calc(var(--share, 0) * 100%),
+        rgba(128,128,128,.28) calc(var(--share, 0) * 100%));
+    transition: background .24s ease;
+}
+
+/* ── 全部设备（汇总页）：单设备舞台整体让位 ── */
+.fleet-view { position: relative; z-index: 6; background: var(--bg); min-height: 100vh; }
+.fleet-view[hidden] { display: none; }
+.fleet-mode .top-view, .fleet-mode .bottom-view { display: none; }
+.fleet-wrap { padding: 6px 14px 40px; }
+.fleet-head { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.fleet-title { font-size: 17px; font-weight: 600; margin: 0; color: var(--text); }
+.fleet-totals {
+    margin: 0; display: flex; gap: 12px; flex-wrap: wrap;
+    font-size: 11.5px; color: var(--text-dim); font-variant-numeric: tabular-nums;
+}
+.fleet-totals b { font-size: 13px; color: var(--text); font-weight: 600; }
+.fleet-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.fleet-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px; border-radius: 14px;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+body.light .fleet-row { background: #fff; border-color: rgba(0,0,0,0.06); box-shadow: 0 1px 3px rgba(16,24,40,0.08); }
+.fleet-led { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--text-dim); opacity: .45; }
+.fleet-led.is-on { background: #34C759; opacity: 1; }
+.fleet-id { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.fleet-name { font-size: 14px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fleet-mac { font-size: 10px; color: var(--text-dim); }
+.fleet-dots { display: flex; gap: 4px; flex: none; }
+.fleet-port { width: 6px; height: 16px; border-radius: 3px; flex: none; background: var(--pc, currentColor); opacity: .25; }
+.fleet-port.is-on { opacity: 1; }
+.fleet-port.is-off-mode { outline: 1px dashed rgba(128,128,128,.45); }
+.fleet-nums { display: flex; align-items: baseline; gap: 2px; flex: none; font-variant-numeric: tabular-nums; }
+.fleet-w { font-size: 16px; font-weight: 600; color: var(--text); }
+.fleet-nums em { font-style: normal; font-size: 9.5px; color: var(--text-dim); }
+.fleet-today { font-size: 10px; color: var(--text-dim); margin-left: 6px; }

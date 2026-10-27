@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from bemfa_client import (
     BemfaDevice, BemfaClient, MSG_ON, MSG_OFF,
     TOPIC_PREFIX, TOPIC_PUBLISH, TOPIC_PING, MQTT_HOST, MQTT_PORT,
+    topic_for_entity, DELETE_TOPIC_URL,
 )
 
 
@@ -54,6 +55,16 @@ class TestBemfaDevice:
         pt1 = dev.pub_topic
         pt2 = dev.pub_topic
         assert pt1 == pt2
+
+    def test_module_helper_matches_device_topic(self):
+        """`topic_for_entity` 必须与 `BemfaDevice.topic` 是同一份规则。
+
+        删除云端残留的路径手里只有 entity_id（实体已经从配置里删掉了，连
+        BemfaDevice 都不会建）。两处各算一遍 md5，只要有一处不同，删掉的就是
+        另一条主题——残留一个不少，还顺手删掉别人的开关。
+        """
+        for entity_id in ("cuktech_c1", "desk_ble", "a", ""):
+            assert topic_for_entity(entity_id) == BemfaDevice(entity_id, "").topic
 
 
 class TestBemfaClient:
@@ -274,3 +285,36 @@ class TestBemfaClient:
             assert mock_client.on_disconnect == c._on_disconnect
             assert mock_client.on_message == c._on_message
             mock_client.connect.assert_called_once_with(MQTT_HOST, MQTT_PORT, 600)
+
+    @pytest.mark.asyncio
+    async def test_delete_topics_posts_each_entity(self):
+        """删残留主题：一条实体一次 deltopic，主题由 entity_id 派生。"""
+        c = BemfaClient("uid-1")
+        calls = []
+
+        class _Resp:
+            status = 200
+
+            async def text(self):
+                return "ok"
+
+        async def _post(*args, **kwargs):
+            # 补丁打在类上：实例调用时 args[0] 是 session，url 在 args[1]
+            calls.append((args[1], kwargs.get("data")))
+            return _Resp()
+
+        with patch("aiohttp.ClientSession.post", _post):
+            deleted = await c.delete_topics(["stale_c1", "stale_ble"])
+        assert deleted == 2
+        assert [u for u, _ in calls] == [DELETE_TOPIC_URL] * 2
+        assert [d["topic"] for _, d in calls] == [
+            topic_for_entity("stale_c1"), topic_for_entity("stale_ble")]
+        assert all(d["uid"] == "uid-1" and d["type"] == 1 for _, d in calls)
+
+    @pytest.mark.asyncio
+    async def test_delete_topics_empty_is_a_noop(self):
+        c = BemfaClient("uid-1")
+        with patch("aiohttp.ClientSession.post") as mock_post:
+            assert await c.delete_topics([]) == 0
+            assert await c.delete_topics(None) == 0
+        mock_post.assert_not_called()

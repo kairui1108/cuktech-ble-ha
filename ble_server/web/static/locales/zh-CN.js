@@ -46,7 +46,6 @@
 
         // ── Index page ──
         index: {
-            settingsOpen: '设置',
             connectionStatus: '连接状态',
             bleControl: 'BLE 控制',
             powerChart: '功率曲线',
@@ -255,7 +254,6 @@
         // ── Config page ──
         config: {
             title: '系统配置',
-            bleDevice: 'BLE 设备',
             xiaomiAuto: '小米云自动获取',
             mac: 'MAC 地址',
             macHint: '充电器蓝牙 MAC 地址',
@@ -277,8 +275,28 @@
             privateKey: '私钥',
             privateKeyHint: '巴法云用户 私钥',
             placeholderUid: '巴法云 私钥',
-            portName: '{{port}} 端口名称',
-            portNameHint: '巴法云设备显示名',
+            // ── 巴法云语音开关表（一行一个开关：名称 + 设备 + 端口）──
+            bemfaSwitchSection: '语音开关',
+            bemfaSwitchHint: '一行一个开关：显示名 + 哪台设备 + 哪个口',
+            bemfaAutoFill: '按设备生成',
+            bemfaAdd: '+ 添加',
+            bemfaNamePlaceholder: '巴法云显示名',
+            bemfaEmpty: '还没有语音开关：点「+ 添加」，或点「按设备生成」一次铺开',
+            bemfaAutoFillConfirm: '用「设备名 + 端口」重建全部语音开关？现有条目会被覆盖。',
+            bemfaAutoFilled: '已生成 {{n}} 个语音开关，可继续改名或删减',
+            bemfaNeedName: '有语音开关没填名称',
+            bemfaDuplicate: '「{{name}}」重复了：同一台设备的同一个口只能有一个开关',
+            bemfaDeviceGone: '「{{name}}」绑定的设备已不存在，请改绑或删除这一行',
+            bemfaAllUsed: '每台设备的每个口都已经有开关了',
+            bemfaCount: '共 {{n}} 个',
+            bemfaRemoveLastConfirm: '这是最后一个语音开关（{{name}}）。删掉并保存后，巴法云里的开关会被移除，小爱/小度里引用它的指令也会失效。确定继续？',
+            bemfaMissingDevice: '设备已删除',
+            bemfaEntityDefault: '{{name}} {{port}}',
+            bemfaPortC1: 'C口1',
+            bemfaPortC2: 'C口2',
+            bemfaPortC3: 'C口3',
+            bemfaPortA: 'USB-A',
+            bemfaPortBle: '蓝牙开关',
             bleStatusName: '蓝牙状态名称',
             serverSection: '服务器',
             webPort: 'Web 端口',
@@ -321,15 +339,70 @@
             scanned: '已完成扫码',
             scanTimeout: '等待超时，请重新获取二维码',
             noDevices: '未找到设备',
-            selectCharger: '选择充电器设备：',
+            selectCharger: '选择充电器设备（可多选）：',
             fetchingBleKey: '正在获取 BLE Key...',
             bleKeyFailed: '获取 BLE Key 失败: {{msg}}',
-            deviceInfoGot: '已获取设备信息，请检查后保存',
+            xiaomiSelectAll: '全选',
+            xiaomiSelectNone: '全不选',
+            xiaomiSyncNames: '同步小米云设备名称',
+            xiaomiSyncNamesHint: '勾选后用云上的名称覆盖设备卡片里已有的名字',
+            xiaomiConfigured: '已配置',
+            xiaomiImport: '导入选中（{{n}} 台）',
+            xiaomiImportEmpty: '请至少选择一台设备',
+            xiaomiImporting: '正在导入...',
+            xiaomiImportDone: '已填入设备卡片：新增 {{added}} 台、更新 {{updated}} 台。别忘了点「保存配置并重启」生效',
+            xiaomiImportDoneWithFailed: '已填入设备卡片：新增 {{added}} 台、更新 {{updated}} 台、失败 {{failed}} 台。别忘了点「保存配置并重启」生效',
+            xiaomiImportFailed: '导入失败',
             placeholderC1: 'C口1开关',
             placeholderC2: 'C口2开关',
             placeholderC3: 'C口3开关',
             placeholderA: 'USB-A开关',
-            placeholderBle: '蓝牙开关'
+            placeholderBle: '蓝牙开关',
+
+            // ── 多设备管理（设备卡片列表）──
+            devicesSection: '充电器',
+            // 多设备能力在真机 canary 通过前标 Beta：让用户在配置页就知道
+            // "多台真机同时跑"还没被硬件验证过，而不是出事后再解释。
+            multiDeviceBeta: 'Beta',
+            devicesHint: '一台主机可同时连接多台充电器；保存后需重启生效',
+            addDevice: '添加充电器',
+            editDevice: '编辑',
+            removeDevice: '删除',
+            primaryTag: '主设备',
+            primaryUndeletable: '主设备是配置文件 ble: 节里的那台，不能删除',
+            deviceName: '名称',
+            deviceNameHint: '页面上显示的设备名，留空则用设备 ID',
+            deviceId: '设备 ID',
+            deviceIdHint: '用作 MQTT 主题后缀，小写字母/数字/_- 且不能以符号开头',
+            topicAuto: '自动',
+            topicAutoHint: '留空则自动使用「服务器前缀/设备 ID」',
+            confirmRemoveDevice: '删除充电器「{{name}}」？保存并重启后生效。',
+            invalidDeviceId: '「{{name}}」的设备 ID 非法：只允许小写字母、数字、_ 和 -，且以字母或数字开头',
+            needMacToken: '「{{name}}」缺少 MAC 或 Token',
+            deviceAdded: '已添加一台充电器，填好 MAC / Token 后保存'
+        },
+
+        // ── Device switcher（多设备共用，index.html / phone.html）──
+        device: {
+            switcher: '设备切换',
+            // ── 多设备工作台（device-bench.js）──
+            // 全部设备的显示名用"充电器"而不是内部 id：primary 没有名字时绝不能把
+            // `default` 这种内部标识塞给用户（中文页面里出现英文字符串的常见来源）。
+            all: '全部',
+            unnamedDevice: '未命名设备',
+            primaryName: '默认充电器',
+            // 桌面牌堆上那张卡既可拖动翻牌，也可单击打开这台设备的设置。
+            cardHint: '单击打开这台设备的设置',
+            allHint: '单击查看全部设备',
+            // 翻牌箭头的读屏文案（界面上不出现文字，只出现箭头）
+            prev: '上一台',
+            next: '下一台',
+            onlineCount: '{{online}}/{{total}} 在线',
+            fleetTitle: '全部充电器',
+            fleetNow: '实时',
+            fleetOnline: '在线',
+            fleetToday: '今日',
+            todayWh: '今日 {{wh}} Wh'
         },
 
         // ── Device info (HA iframe) ──

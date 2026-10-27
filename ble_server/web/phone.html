@@ -5,12 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title data-i18n="pageTitle.phone">CUKTECH 10 Ultra 充电器</title>
 <link rel="icon" href="/static/favicon.ico">
-<script src="/static/locales/zh-CN.js?v=22"></script>
-<script src="/static/locales/en.js?v=22"></script>
-<script src="/static/i18n.js?v=3"></script>
+<script src="/static/locales/zh-CN.js?v=27"></script>
+<script src="/static/locales/en.js?v=27"></script>
+<script src="/static/i18n.js?v=6"></script>
+<!-- 多设备状态中枢：必须早于 phone.js（后者在顶层就用它的视图），
+     也必须早于 charge_history（经它发请求） -->
+<script src="/static/device-store.js?v=8"></script>
+<script src="/static/device-bench.js?v=18"></script>
 <script defer src="/static/chart.umd.min.js"></script>
-<script defer src="/static/charge_history.js?v=16"></script>
-<link rel="stylesheet" href="/static/phone.css?v=28">
+<script defer src="/static/charge_history.js?v=17"></script>
+<link rel="stylesheet" href="/static/phone.css?v=36">
 </head>
 <body>
 
@@ -38,9 +42,24 @@
     <!-- Top Navigation -->
     <div class="navbar">
         <a href="config.html" style="font-size:20px;color:var(--text-dim);text-decoration:none;width:28px;text-align:center;">&#9881;</a>
-        <div class="nav-title">CUKTECH 10 Ultra</div>
+        <!-- 标题栏就是设备切换入口：多台设备时标题显示"当前这台"，点一下从下面
+             展开一列小卡片（名字 + 端口 + 实时功率），点哪台整页换成哪台。
+             只有一台时标题保持产品名、也不可点——没有可切换的东西。
+             手机上不再有那条吸顶横条，省下来的 58px 全部还给页面。 -->
+        <button class="nav-title" id="deviceMenuBtn" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-controls="deviceMenu" disabled>
+            <span id="navTitleText">CUKTECH 10 Ultra</span>
+            <span class="nav-caret" id="deviceMenuCaret" aria-hidden="true">&#9662;</span>
+        </button>
         <div class="theme-btn" id="themeBtn" onclick="toggleTheme()" style="width:28px;height:28px;cursor:pointer;font-size:18px;line-height:28px;text-align:center;">☀️</div>
     </div>
+
+    <!-- 设备下拉列表：内容由 phone.js 按设备清单渲染（小卡片预览功率） -->
+    <div class="dev-menu" id="deviceMenu" hidden>
+        <ul class="dev-menu-list" id="deviceMenuList"></ul>
+    </div>
+    <!-- 全部设备（汇总页）：单设备时永不生成内容 -->
+    <div class="fleet-view" id="fleetView" hidden></div>
 
     <!-- Parallax Top View -->
     <div class="top-view">
@@ -308,8 +327,8 @@
     <!-- No sim controls - using real data -->
 </div>
 
-<script defer src="/static/charge_limit.js?v=24"></script>
-<script defer src="/static/phone.js?v=22"></script>
+<script defer src="/static/charge_limit.js?v=25"></script>
+<script defer src="/static/phone.js?v=29"></script>
 
 </body>
 </html>

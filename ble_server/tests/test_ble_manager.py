@@ -787,7 +787,11 @@ class TestAuthFailureRetry:
         等于退回"退出等外部管理器"，而本机没有管理器。
         """
         src = (Path(__file__).parent.parent / "ha_server.py").read_text(encoding="utf-8")
-        assert "s.ble.set_restart_handler(s._restart)" in src, "ha_server 必须注册重启处理器"
+        # P1 起每台设备注册**自己的**处理器（§3.3 红线 4：捕获 rt，不捕获 s.ble），
+        # 不再是 primary 的 s._restart —— 否则设备 2 认证卡死会把整场打下线。
+        assert "set_restart_handler(self.make_restart_handler(rt))" in src, \
+            "ha_server 必须按设备注册重启处理器"
+        assert "def make_restart_handler(self, rt" in src
         assert "async def _restart(self)" in src, "_restart 必须仍是异步方法（处理器按协程调用）"
 
 
@@ -1873,25 +1877,160 @@ class TestChargeLimitArming:
 
 
 class TestAuthBackoff:
-    """认证失败退避纯函数（Spec 审查补充：退避/熔断行为需可测）。"""
+    """认证失败退避与升级阶梯（真机实测校准过的时序）。"""
 
     def test_backoff_delay_ladder(self):
-        """阶梯延迟: ≥5次→600s, 3-4次→300s, 1-2次→min(120n,180)。"""
+        """两次快重试 30/60s，之后不再爬坡而是走预算耗尽的慢退避 600s。
+
+        旧阶梯（120/180/300/600）在真机上一事无成：2026-10-25 两次复现"链路硬断
+        → 设备重放旧 session"，进程内 120/180/300s 三次重试**全部失败**，而换新
+        进程 30 秒内必好。等更久修不好卡死，只会把"假离线"拖长。
+        """
         from ble_manager import BLEManager
-        assert BLEManager._auth_backoff_delay(1) == 120
-        assert BLEManager._auth_backoff_delay(2) == 180   # 240 被 180 封顶
-        assert BLEManager._auth_backoff_delay(3) == 300
-        assert BLEManager._auth_backoff_delay(4) == 300
-        assert BLEManager._auth_backoff_delay(5) == 600
-        assert BLEManager._auth_backoff_delay(14) == 600
-        assert BLEManager._auth_backoff_delay(0) == 0      # 首次失败立即重试
+        assert BLEManager._auth_backoff_delay(1) == 30
+        assert BLEManager._auth_backoff_delay(2) == 60
+        assert BLEManager._auth_backoff_delay(3) == BLEManager.AUTH_STUCK_SLOW_DELAY_SEC
+        assert BLEManager._auth_backoff_delay(9) == 600
 
     def test_should_restart_process_threshold(self):
-        """达到 MAX_AUTH_FAILURES(15) 才重启进程。"""
+        """第 3 次连续失败就升级 L3（原值 15 要空转约 1 小时）。"""
         from ble_manager import BLEManager
-        assert BLEManager._should_restart_process(14) is False
-        assert BLEManager._should_restart_process(15) is True
+        assert BLEManager.MAX_AUTH_FAILURES == 3
+        assert BLEManager._should_restart_process(2) is False
+        assert BLEManager._should_restart_process(3) is True
         assert BLEManager._should_restart_process(100) is True
+
+    def test_escalation_happens_before_long_backoff(self):
+        """2 次快重试（30+60s）后就走 L3 —— 自愈窗口从 ~1 小时压到 ~2 分钟。"""
+        from ble_manager import BLEManager
+        total = sum(BLEManager._auth_backoff_delay(n) for n in (1, 2))
+        assert total <= 120, "升级前的等待必须短：设备卡死时等没有意义"
+
+
+class TestAuthRestartBudget:
+    """L3 重启预算：防"设备真坏了/token 已换"时每两分钟重启一次的循环。"""
+
+    def _mgr(self, tmp_path):
+        mgr = make_manager()
+        mgr.config.server.history_db_path = str(tmp_path / "port_history.db")
+        return mgr
+
+    def test_ledger_lives_next_to_history_db(self, tmp_path):
+        mgr = self._mgr(tmp_path)
+        mgr._note_auth_restart()
+        assert (tmp_path / ".auth_restarts.json").exists()
+
+    def test_falls_back_to_tmpdir_without_db_path(self):
+        """配置里没有可用历史库路径时不能往 CWD 丢文件（会污染仓库）。"""
+        from pathlib import Path as _P
+        import tempfile as _t
+        mgr = make_manager()          # MagicMock 配置：history_db_path 是 mock
+        path = mgr._auth_restart_ledger_path()
+        assert path.parent == _P(_t.gettempdir())
+
+    def test_budget_blocks_after_max(self, tmp_path):
+        from ble_manager import BLEManager
+        mgr = self._mgr(tmp_path)
+        for _ in range(BLEManager.AUTH_L3_MAX_PER_HOUR):
+            assert mgr._allow_auth_restart() is True
+            mgr._note_auth_restart()
+        assert mgr._allow_auth_restart() is False, "预算用完就不再重启"
+
+    def test_budget_window_expires(self, tmp_path):
+        """窗口外的旧记录不算数：一小时后重新获得重启预算。"""
+        import json as _json, time as _time
+        from ble_manager import BLEManager
+        mgr = self._mgr(tmp_path)
+        old = _time.time() - BLEManager.AUTH_L3_WINDOW_SEC - 10
+        (tmp_path / ".auth_restarts.json").write_text(
+            _json.dumps({"restarts": [old] * (BLEManager.AUTH_L3_MAX_PER_HOUR + 1)}))
+        assert mgr._allow_auth_restart() is True
+
+    def test_corrupt_ledger_does_not_block_recovery(self, tmp_path):
+        mgr = self._mgr(tmp_path)
+        (tmp_path / ".auth_restarts.json").write_text("{not json")
+        assert mgr._recent_auth_restarts() == []
+        assert mgr._allow_auth_restart() is True
+
+
+class TestAuthEscalationLoop:
+    """接线：连续 3 次认证失败 → 第 3 次直接走 L3 重建（而不是空转退避）。"""
+
+    def _mgr(self, tmp_path):
+        mgr = make_manager()
+        mgr.config.server.history_db_path = str(tmp_path / "port_history.db")
+        mgr._force_disconnect_bluetooth = AsyncMock()
+        mgr._disconnect = AsyncMock()
+        mgr._publish_status = MagicMock()
+        return mgr
+
+    def _run_until_escalation(self, mgr, escalations, delays, stop_after=None):
+        """跑 start()，把每次退避延迟记下来；触发 L3 时打点并停循环。"""
+        from ble_manager import AuthConnectionError
+
+        async def fake_connect_and_run():
+            raise AuthConnectionError("Auth failed")
+
+        async def fake_recover():
+            escalations.append(mgr._auth_fail_count)
+            mgr._stop_event.set()      # L3 后不再重连（真实实现是重建/重启）
+
+        async def fake_wait_for(coro, timeout):
+            delays.append(timeout)
+            if stop_after and len(delays) >= stop_after:
+                mgr._stop_event.set()
+            raise asyncio.TimeoutError()
+
+        mgr._connect_and_run = fake_connect_and_run
+        mgr._recover_from_auth_stuck = fake_recover
+
+        async def go():
+            from unittest.mock import patch as _patch
+            with _patch("asyncio.wait_for", side_effect=fake_wait_for):
+                await mgr.start()
+        return go()
+
+    @pytest.mark.asyncio
+    async def test_third_failure_escalates_to_l3(self, tmp_path):
+        mgr = self._mgr(tmp_path)
+        escalations, delays = [], []
+        await self._run_until_escalation(mgr, escalations, delays)
+        assert escalations == [3], "第 3 次连续失败必须升级 L3"
+        assert delays[:2] == [30, 60], "升级前只做两次快重试"
+
+    @pytest.mark.asyncio
+    async def test_exhausted_budget_stops_restarting(self, tmp_path):
+        """预算用完 → 不再重启，改为慢退避 + 明确的 device_session_stuck 状态。"""
+        from ble_manager import BLEManager
+        import json as _json, time as _time
+        mgr = self._mgr(tmp_path)
+        now = _time.time()
+        (tmp_path / ".auth_restarts.json").write_text(
+            _json.dumps({"restarts": [now, now, now][:BLEManager.AUTH_L3_MAX_PER_HOUR]}))
+        escalations, delays = [], []
+        await self._run_until_escalation(mgr, escalations, delays, stop_after=4)
+
+        assert escalations == [], "预算耗尽后不许再重启进程"
+        assert mgr._stop_event.is_set()
+        assert any(call.args and call.args[0].get("error") == "device_session_stuck"
+                   for call in mgr._publish_status.call_args_list), \
+            "预算耗尽必须发布 device_session_stuck（让 HA/UI 能看到真因）"
+        assert delays and delays[-1] == BLEManager.AUTH_STUCK_SLOW_DELAY_SEC
+
+    @pytest.mark.asyncio
+    async def test_successful_auth_clears_counter(self, tmp_path):
+        """认证成功后计数清零：偶发失败不会累积成一次重启。"""
+        mgr = self._mgr(tmp_path)
+        mgr._auth_fail_count = 2
+        calls = []
+
+        async def fake_connect_and_run():
+            calls.append(1)
+            mgr._stop_event.set()      # 模拟"连上并正常跑起来"，随后被 stop
+
+        mgr._connect_and_run = fake_connect_and_run
+        await mgr.start()
+        assert mgr._auth_fail_count == 0
 
 
 class TestPermanentPortPoints:

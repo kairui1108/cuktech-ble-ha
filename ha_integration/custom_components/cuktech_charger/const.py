@@ -1,4 +1,5 @@
 """Constants for CUKTECH Charger integration."""
+from collections.abc import Mapping
 from datetime import timedelta
 
 DOMAIN = "cuktech_charger"
@@ -9,13 +10,62 @@ CONF_SERVER_URL = "server_url"
 CONF_HOST = "host"
 DEFAULT_SERVER_URL = "http://localhost:8199"
 
-# MQTT Topics
+# ── per-entry 命名空间（多设备）──
+# 一设备一 entry：entry 里存它绑定的设备 id 与本 entry 独有的 MQTT 前缀。
+# ESP32 / 旧 server 的 entry 没有这两个键（或为空）→ 运行时全部回退默认值，
+# 因此**不需要** async_migrate_entry，老 entry 的 unique_id 也不重算。
+CONF_DEVICE_ID = "device_id"
+CONF_TOPIC_PREFIX = "topic_prefix"
+
+# options flow 里用户主动改过的显示名：置位后运行时不再拿服务端的名字覆盖它
+# （"自动同步"不能变成"自动覆盖用户的选择"）。清空名称保存 = 取消置位，回到自动同步。
+CONF_NAME_PINNED = "name_pinned"
+
+# 自动同步**上次写进 title** 的名字（本子自己的账本）。用途只有一个：识别"用户用
+# HA 原生入口重命名了条目"——那条路径只改 title、不经过我们的 options flow，所以
+# 只能拿 title 与这里的记录比对；不一致就说明用户接管了，同步立刻停手。
+CONF_NAME_SYNCED = "name_synced"
+
+# 服务端 primary 的固定 id（`ble:` 节合成的那台，见 ble_server/config.py 的
+# PRIMARY_DEVICE_ID）。HA 侧只用在"服务端没给 device 配 name"时的显示名兜底。
+PRIMARY_DEVICE_ID = "default"
+
+# MQTT Topics —— 自 v1.2 起只剩"缺省值"这一层语义。
+# 前缀过去是模块级常量，所有 entry 共用同一组 topic：再加一个 entry 就会互相
+# 串台（A 的 status 喂进 B 的实体、A 的限额命令发给 B 的充电器）。现在前缀由
+# coordinator 按 entry 解析成实例属性（topic_port/topic_settings/... ），订阅、
+# 发布、命令一律走实例属性；本常量只服务"老 entry 没有 topic_prefix 键"的回退。
 TOPIC_PREFIX = "cuktech/charger"
-TOPIC_PORT = f"{TOPIC_PREFIX}/port"
-TOPIC_SETTINGS = f"{TOPIC_PREFIX}/settings"
-TOPIC_STATUS = f"{TOPIC_PREFIX}/status"
-TOPIC_SET = f"{TOPIC_PREFIX}/set"
-TOPIC_CHARGE_EVENT = f"{TOPIC_PREFIX}/charge_event"
+
+# 服务端设备发现端点（§4.2）。新 ble_server 返回 {ok, devices:[...]}；
+# ESP32 与旧 server 上是 404 —— 那正是"单设备流程"的回退信号。
+API_DEVICES = "/api/devices"
+
+
+def entry_string(entry, key: str) -> str | None:
+    """取 entry 里的一个非空字符串配置（options 优先于 data），取不到返回 None。
+
+    为什么不直接 entry.data.get(key)：
+      1. 老 entry 根本没有这些键，必须能返回 None 让调用方回退默认值；
+      2. options flow 改过的值写在 entry.options 里，也要生效；
+      3. 本仓库的测试用 MagicMock 当 entry，`entry.options.get(...)` 会返回一个
+         truthy 的 MagicMock，拿去拼 topic 会得到一堆乱码——只接受真正的 str。
+
+    容器类型必须判 `collections.abc.Mapping`，**不能**判 `dict`：真实 HA 的
+    `ConfigEntry.data` / `.options` 是 `MappingProxyType`（只读视图），它不是
+    `dict` 的子类——判 dict 在生产上恒为假，于是每个 entry 都取不到 device_id
+    与 topic_prefix：两个 entry 订阅同一组 topic（A 的读数进 B 的实体）、
+    `/api/device/...` 全部回落成 primary、options 表单永远显示默认值。测试里
+    entry 替身是普通 dict，所以这条路只有真机上才会塌。第 3 条的防护不依赖容器
+    类型（`isinstance(value, str)` 已经把 MagicMock 挡住），换成 Mapping 不丢它。
+    """
+    for source in (getattr(entry, "options", None), getattr(entry, "data", None)):
+        if not isinstance(source, Mapping):
+            continue
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 # Port mapping
 PORT_MAP = {"c1": 1, "c2": 2, "c3": 3, "a": 4}
@@ -129,6 +179,8 @@ COUNTDOWN_PIIDS = {
 PROTOCOL_OPTIONS = ["idle", "5V", "QC", "AFC", "FCP", "SCP", "PD", "PPS", "UFCS", "Unknown"]
 
 # Device info
+# name 只是回退值：多 entry 时设备名取 entry.title（§4.5），否则 Home Assistant 里
+# 会出现多个同名的"酷态科10号…充电器"，只靠自动加的 _2 后缀区分根本没法用。
 DEVICE_INFO = {
     "name": "酷态科10号超级电能充Ultra 充电器",
     "manufacturer": "CUKTECH",
@@ -171,6 +223,9 @@ CHARGE_LIMIT_ICON = "mdi:battery-charging-60"
 
 # ── 运行时常量 (coordinator 使用，避免魔法值散落) ──
 HEALTH_CHECK_INTERVAL = timedelta(seconds=30)   # HTTP 健康检查周期
+# 设备名对齐周期（§4.5）：服务端改名后不需要重启 HA 就能跟上。名字不会天天变，
+# 5 分钟一次的小 JSON 请求可以忽略；比"只在对 setup 时对齐"实用得多。
+NAME_SYNC_INTERVAL = timedelta(minutes=5)
 HTTP_TIMEOUT = 10                                # HTTP 请求超时 (秒)
 BLE_OPERATION_TIMEOUT = 30                       # BLE 开关操作超时 (秒)
 CHARGE_EVENT_BUFFER = 50                         # 充电事件缓冲上限 (条)

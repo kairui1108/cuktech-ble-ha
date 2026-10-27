@@ -1,0 +1,4727 @@
+{
+  "schema_version": 1,
+  "generated_by": "ble_server/tools/extract_btsnoop_frames.py",
+  "generated_at": "2026-10-25T04:29:33+00:00",
+  "provenance": {
+    "origin": "REAL device traffic -- HCI captures of a CUKTECH charger, recorded 2025-07-12 with the ESP32 BLE sniffer",
+    "synthetic": false,
+    "capture_files": [
+      "btsnoop_c2pd.log",
+      "btsnoop_c2pd2.log",
+      "btsnoop_c2pd_on.log",
+      "btsnoop_hci.log"
+    ],
+    "frame_definition": "ATT Handle Value Notification value bytes: the payload after the 3-byte ATT header, 4-byte CUKTECH frame header INCLUDED, no HCI/L2CAP framing. Exactly what ble_manager dispatches on data[2].",
+    "notify_characteristic": "0x001b (cmd_recv), ATT value handle 0x001c, Mi service 0000fe95-...",
+    "encrypted": true,
+    "plaintext_note": "hex is the raw ciphertext as sent over the air; plaintext_hex is the real MiOT frame recovered with the session keys from that capture's own login handshake. Session keys and the device token are deliberately NOT stored here.",
+    "replay_note": "Because frames are session-encrypted, replaying hex through the production decrypt path needs that session's keys. Tests should either stub ctrl.decrypt to return plaintext_hex (the pattern already used in tests/test_ble_manager.py), or feed plaintext_hex to _process_decrypted_frame.",
+    "timestamp_note": "captured_at is the sniffer's per-spec conversion of its clock, which has a broken epoch and is NOT wall-clock; captured_at_estimated anchors to the capture file mtime. Trust t_rel_ms / ts_us_raw for ordering."
+  },
+  "frames": [
+    {
+      "id": "hci-0001",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:17+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:06.951271+00:00",
+      "t_rel_ms": 0,
+      "record_index": 963,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "00000200010073c8627d65b3e04cf56a76e84a50947347dc6c",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2066000401020100045001030533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 1,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124286951272,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0002",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:17+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:07.130081+00:00",
+      "t_rel_ms": 178,
+      "record_index": 971,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000200fda83b1114f0bc2e17",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "05200200f0",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; short plaintext (5B): ble_manager._decrypt_payload requires >=8B, so it counts as a decrypt failure in production",
+      "device_it": 2,
+      "ts_us_raw": 63952124287130079,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0003",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:17+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:07.496063+00:00",
+      "t_rel_ms": 544,
+      "record_index": 989,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020003009632cc934a89499cdd56e20cc68e428ee0de223f89fc14ab2024db221b68b189ee5abd1afc21a48ca4cb42dd9e4f79fd8631dd206124c15b53e6ce7e9a355d3b88f09bdf7f112e91e2d73bf1d03bcc0732b4536b1c33559581eb4fd835dfb5d7c7e9ba668e88e86d73431bb6e74da5bab24f602a0062576dd7a07049a91b83720c85fafa89df64ba1182c6565f0457792bf27547d4dd79",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93200500030f02010000000450010305330202000000045001040fc902030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f0b000002130000000100010214000000010001021100000004502d070f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 3,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124287496063,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0004",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:18+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:07.941658+00:00",
+      "t_rel_ms": 990,
+      "record_index": 1008,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020004006e5ac646dffb5580018c6aaee1f33fc28dcbe007fe472b249f74db1ef2a35388fef7da156eb95bd691d4f8552024ec8479e2d478c4109965715e872b2efc0614eafe44e2fad0e550b09bfff94e7e57e53da671583f829b3fdd811e48acb1058df4f4b5b8709924f12fea135dd3c367aa3a06fc2495fe132722a58cf2952af37f71041c43763ace77d24e5f71c1b06308055b16210b8956",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93200800030f02010000000450010305330202000000045001040fc902030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f0b000002130000000100010214000000010001021100000004502d070f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 4,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124287941655,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0005",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:19+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:09.609550+00:00",
+      "t_rel_ms": 2658,
+      "record_index": 1031,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000500348cbfee622585a39d4d2987e62110b93684443fb8d5994b4fb1745b22ece871231835067c8e8e0755e19dd43401f1b891edcf77d2a0438cc4deddda0ef6ebfe5f4d702f8a0cc69d198d780ac43c895f3aca17c95680c8790c074128aa7324f9fa143835d2f5e31dbd7da007d27be2fcfc2bde86e52fab929c8a63804949ef98dcc44e3618fc560e4addace47c4e1f012fe62967b57240",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93200e00030f02010000000450010305330202000000045001040fc902030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f0b000002130000000100010214000000010001021100000004502d070f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 5,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124289609548,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0006",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:20+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:09.784424+00:00",
+      "t_rel_ms": 2833,
+      "record_index": 1035,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000600660ccbdd9803732d0645be910259958ca3d790",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f200f000401020100045001030633",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 6,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124289784423,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.6,
+        "power": 3.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0007",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:21+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:11.005432+00:00",
+      "t_rel_ms": 4054,
+      "record_index": 1045,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020007002625f01f911d277b0796b238540aff12826947",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2010000401020100045001030533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 7,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124291005431,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0008",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:23+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:13.610191+00:00",
+      "t_rel_ms": 6658,
+      "record_index": 1065,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000800a91d6af02d06e86795dbbe1cf297bd",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0b20100001010215000000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 8,
+      "decoded": {
+        "b4": "0x01",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952124293610195,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0009",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:24+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:13.878296+00:00",
+      "t_rel_ms": 6927,
+      "record_index": 1070,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000900f003efe7cc7580f97d1489f30c49f99871b99e",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2011000401020100045001030433",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 9,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124293878296,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.4,
+        "power": 2.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0010",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:24+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:13.969719+00:00",
+      "t_rel_ms": 7018,
+      "record_index": 1074,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000a00fa6ab38d8d2d031687bcac2221fbbe43260cb3",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201200040102150004500f0a0000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 10,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952124293969719,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0011",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:24+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:14.239906+00:00",
+      "t_rel_ms": 7288,
+      "record_index": 1078,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000b00bcd041c6d83b48de73b50074921f5bf69a6d71",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2013000401021100045000000f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 11,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952124294239901,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0012",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:24+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:14.692123+00:00",
+      "t_rel_ms": 7740,
+      "record_index": 1084,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000c004338e37c2752217ca651415429a898fb184d29",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2014000401020100045001030633",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 12,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124294692121,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.6,
+        "power": 3.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0013",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:25+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:14.779755+00:00",
+      "t_rel_ms": 7828,
+      "record_index": 1088,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000d003c735f962932926cfaec5b122ce52cb7009b24",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2015000401020200045000040000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 13,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124294779753,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": false,
+        "status_raw": 0,
+        "protocol": "idle",
+        "_raw_code": "0x04",
+        "_proto_num": null
+      }
+    },
+    {
+      "id": "hci-0014",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:15.909645+00:00",
+      "t_rel_ms": 8958,
+      "record_index": 1096,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000e00114fd71dbe09581d607bd67c887268f2b62dec",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2016000401020100045001070533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 14,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124295909649,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0015",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:15.994102+00:00",
+      "t_rel_ms": 9042,
+      "record_index": 1102,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000f00d501c2dd402028e76c58b4e33365f4f39f311a",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2017000401020200045001040000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 15,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124295994103,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x04",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0016",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:16.084145+00:00",
+      "t_rel_ms": 9132,
+      "record_index": 1106,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "00000200100036ec7179bc2f47f5561b4c403c4e149649d244",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2018000401020300045001800079",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 16,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 3
+      },
+      "ts_us_raw": 63952124296084140,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 12.1,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "QC",
+        "_raw_code": "0x80",
+        "_proto_num": 3
+      }
+    },
+    {
+      "id": "hci-0017",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:16.174599+00:00",
+      "t_rel_ms": 9223,
+      "record_index": 1110,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001100b49e26be064ae058a15e5cf4f41c7a4bb94b5f",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2019000401020400045000300000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 17,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 4
+      },
+      "ts_us_raw": 63952124296174597,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": false,
+        "status_raw": 0,
+        "protocol": "idle",
+        "_raw_code": "0x30",
+        "_proto_num": null
+      }
+    },
+    {
+      "id": "hci-0018",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:16.264534+00:00",
+      "t_rel_ms": 9313,
+      "record_index": 1114,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001200da2d5d91346ae80feb7832c2ae0cc49afc5da1",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201a00040102110004500f010f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 18,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952124296264534,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0019",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:16.715408+00:00",
+      "t_rel_ms": 9764,
+      "record_index": 1118,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "00000200130054bc4f71d89dcc57426f25680092f819f04feb",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201b000401020100045001030533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 19,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124296715406,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0020",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:27+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:16.803734+00:00",
+      "t_rel_ms": 9852,
+      "record_index": 1122,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020014009b0872d05c961ce3bf815b91f9b83990efb4b5",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201c00040102020004500104002d",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 20,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124296803735,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 4.5,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x04",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0021",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:27+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:16.896339+00:00",
+      "t_rel_ms": 9945,
+      "record_index": 1127,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001500a4522a58ac8f1e1bca7ff1af83f087c4ec682f",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201d000401020300045001600079",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 21,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 3
+      },
+      "ts_us_raw": 63952124296896340,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 12.1,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "QC",
+        "_raw_code": "0x60",
+        "_proto_num": 3
+      }
+    },
+    {
+      "id": "hci-0022",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:27+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:16.985237+00:00",
+      "t_rel_ms": 10033,
+      "record_index": 1133,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020016002d332f34e0ac133a5a2b6f3adf2dd00c2fe294",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201e000401020400045000600000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 22,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 4
+      },
+      "ts_us_raw": 63952124296985238,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": false,
+        "status_raw": 0,
+        "protocol": "idle",
+        "_raw_code": "0x60",
+        "_proto_num": null
+      }
+    },
+    {
+      "id": "hci-0023",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:27+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:17.167526+00:00",
+      "t_rel_ms": 10216,
+      "record_index": 1142,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001700bc425516db80efb575e5d5310c7ce9",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0b20110001010215000000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 23,
+      "decoded": {
+        "b4": "0x01",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952124297167527,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0024",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:27+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:17.253914+00:00",
+      "t_rel_ms": 10302,
+      "record_index": 1146,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020018007d01593ac5ba04ebf446317eada54f04d575ad",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201200040102150004500f0b0000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 24,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952124297253911,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0025",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:27+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:17.344635+00:00",
+      "t_rel_ms": 10393,
+      "record_index": 1150,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020019004bd4a605169ad4ed4c669fad366dcb94b2863e",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201300040102110004500f070f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 25,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952124297344632,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0026",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:27+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:17.570053+00:00",
+      "t_rel_ms": 10618,
+      "record_index": 1154,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001a00ef14ffffc4984a23c332fe56e150878595eaf4",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2014000401020200045001040034",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 26,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124297570058,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.2,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x04",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0027",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:28+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:17.975143+00:00",
+      "t_rel_ms": 11023,
+      "record_index": 1158,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001b00610e651011a8ab58fc74ab39485f4c2edc05e4",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2015000401020100045001070533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 27,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124297975145,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0028",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:28+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:18.108841+00:00",
+      "t_rel_ms": 11157,
+      "record_index": 1162,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001c00246c03666a31a77f2a89944e9868ebe8358a2e",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2016000401020200045000040034",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 28,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124298108837,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.2,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 0,
+        "protocol": "5V",
+        "_raw_code": "0x04",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0029",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:28+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:18.199135+00:00",
+      "t_rel_ms": 11247,
+      "record_index": 1166,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001d007b9973246c1a68f5c2a50ebf876173653237a8",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2017000401021100045000000f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 29,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952124298199132,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0030",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:29+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:18.875664+00:00",
+      "t_rel_ms": 11924,
+      "record_index": 1170,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001e00a0e0fa3c0531782f94b6906446e92d6d676439",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2018000401020200045001040000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 30,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124298875664,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x04",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0031",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:29+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:18.964073+00:00",
+      "t_rel_ms": 12012,
+      "record_index": 1174,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001f008cc01d5a847cc7731ea8959a04f810fcc95e22",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2019000401020300045001800079",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 31,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 3
+      },
+      "ts_us_raw": 63952124298964070,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 12.1,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "QC",
+        "_raw_code": "0x80",
+        "_proto_num": 3
+      }
+    },
+    {
+      "id": "hci-0032",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:29+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:19.054123+00:00",
+      "t_rel_ms": 12102,
+      "record_index": 1178,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020020001991f477acccbc0c249758793e59d4d9e6d3ec",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201a000401020400045000300000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 32,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 4
+      },
+      "ts_us_raw": 63952124299054122,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": false,
+        "status_raw": 0,
+        "protocol": "idle",
+        "_raw_code": "0x30",
+        "_proto_num": null
+      }
+    },
+    {
+      "id": "hci-0033",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:29+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:19.146217+00:00",
+      "t_rel_ms": 12194,
+      "record_index": 1183,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020021004846da053b9222133a3c0926c0488d4e2e0e1c",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201b00040102110004500f010f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 33,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952124299146217,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0034",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:29+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:19.640656+00:00",
+      "t_rel_ms": 12689,
+      "record_index": 1188,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020022002b2902e82f0fac8958678fc50050e5b0abddb8",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201c000401020100045001030433",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 34,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124299640655,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.4,
+        "power": 2.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0035",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:29+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:19.729584+00:00",
+      "t_rel_ms": 12778,
+      "record_index": 1192,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002002300efc18194ccc06d7c50e5f91babb4b42cd10997",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201d0004010202000450010400a7",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 35,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124299729586,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 16.7,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PPS",
+        "_raw_code": "0x04",
+        "_proto_num": 8
+      }
+    },
+    {
+      "id": "hci-0036",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:30+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:19.819344+00:00",
+      "t_rel_ms": 12868,
+      "record_index": 1196,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020024001669e66eb8b74ea396ad4aa1fcc67ea868b47e",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201e000401020300045001600079",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 36,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 3
+      },
+      "ts_us_raw": 63952124299819347,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 12.1,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "QC",
+        "_raw_code": "0x60",
+        "_proto_num": 3
+      }
+    },
+    {
+      "id": "hci-0037",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:30+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:19.909302+00:00",
+      "t_rel_ms": 12958,
+      "record_index": 1200,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "00000200250056ef957c7007b8f9c1795276f2bbbb5fcf23f2",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201f000401020400045000600000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 37,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 4
+      },
+      "ts_us_raw": 63952124299909305,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": false,
+        "status_raw": 0,
+        "protocol": "idle",
+        "_raw_code": "0x60",
+        "_proto_num": null
+      }
+    },
+    {
+      "id": "hci-0038",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:30+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:19.999374+00:00",
+      "t_rel_ms": 13048,
+      "record_index": 1204,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "00000200260086f956f92633f8c2fb751e5bc5fe991cd4157e",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f202000040102110004502d070f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 38,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952124299999372,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "hci-0039",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:31+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:20.857758+00:00",
+      "t_rel_ms": 13906,
+      "record_index": 1209,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "00000200270009ce105f638a379578a426f955d4cb97e8c3f6",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2021000401020100045001030533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 39,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124300857756,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0040",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:31+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:20.944389+00:00",
+      "t_rel_ms": 13993,
+      "record_index": 1213,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020028003b008ee93f5b766addfbf1190fcbcae87671d5",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f20220004010202000450010408c9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 40,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124300944391,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 0.8,
+        "power": 16.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "hci-0041",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:32+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:22.497734+00:00",
+      "t_rel_ms": 15546,
+      "record_index": 1218,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020029008038c9f0a9371297c207cf8ed0cbbb8b255a58",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f20230004010202000450010406c9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 41,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124302497735,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 0.6,
+        "power": 12.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "hci-0042",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:33+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:23.714066+00:00",
+      "t_rel_ms": 16762,
+      "record_index": 1223,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002002a00b4562ac18d067f1bcd0303261937f5262d9d7b",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2024000401020100045001030633",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 42,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124303714064,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.6,
+        "power": 3.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0043",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:34+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:23.824333+00:00",
+      "t_rel_ms": 16873,
+      "record_index": 1228,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002002b0056fb9512c85da61816d51a54322a67351cd41a",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2025000401020200045001040dc9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 43,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124303824333,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 1.3,
+        "power": 26.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "hci-0044",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:34+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:24.543411+00:00",
+      "t_rel_ms": 17592,
+      "record_index": 1233,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002002c004b722640fa17e3a98cb0cadf2f391690880e6d",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2026000401020100045001030733",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 44,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124304543407,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.7,
+        "power": 3.6,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0045",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:34+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:24.634201+00:00",
+      "t_rel_ms": 17682,
+      "record_index": 1237,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002002d005d56151df79f46a70e311d69f426809106addc",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2027000401020200045001040fc9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 45,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124304634203,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 1.5,
+        "power": 30.2,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "hci-0046",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:36+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:25.759453+00:00",
+      "t_rel_ms": 18808,
+      "record_index": 1241,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002002e0099fe2f83203174232617536a4be727fc9e7700",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2028000401020100045001030533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 46,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124305759456,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0047",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:38+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:27.761230+00:00",
+      "t_rel_ms": 20809,
+      "record_index": 1249,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002002f007a3530e5f0f332b91ebeb1651fbb1c78b17236",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2029000401020100045001030433",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 47,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124307761233,
+      "capture_file": "btsnoop_hci.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.4,
+        "power": 2.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "hci-0048",
+      "source": "docs/hci_log/btsnoop_hci.log",
+      "captured_at": "2026-07-12T14:59:38+08:00",
+      "sniffer_clock_iso": "3996-07-24T14:58:28.552383+00:00",
+      "t_rel_ms": 21601,
+      "record_index": 1266,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002003000413b2e1f88f11e720e137a58e83821c5c302b924bff5948cfbb6484dfa41b6893886423ab3deeb0a4fbea34ab3f47b8ae49f6effb5786cb6898e66c979b1d120a859c5cbfddc872e3e31edef653bd9699b1cc2b03ea565cb663faae5331d370f50145712fd0783aa218b8c1eaacf967e7e2c880e5e0b442bca33eec4b5ee2849b1b225cd20e5f58e39ec3b3b11ebc6bfebe39566d251b2",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93201200030f02010000000450010304330202000000045001040fc902030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f0b000002130000000100010214000000010001021100000004502d070f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 48,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124308552385,
+      "capture_file": "btsnoop_hci.log"
+    },
+    {
+      "id": "c2pd-0001",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:19+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:18.951027+00:00",
+      "t_rel_ms": 0,
+      "record_index": 815,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000100073feab7954005354e",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "05201300f0",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; short plaintext (5B): ble_manager._decrypt_payload requires >=8B, so it counts as a decrypt failure in production",
+      "device_it": 1,
+      "ts_us_raw": 63952124718951022,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0002",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:20+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:19.315697+00:00",
+      "t_rel_ms": 364,
+      "record_index": 832,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000200de1a7d4ac5dfab0fb7ddb4d34cea48cd7a726921b72c1589e108b23e12e5e9b338abad5d15d010d67418c89303f8fc9e447e0ef721e0657b68028b10fc6c927e3e56c21939373b37e8fc96b5c81aba2e30f2e61756bbf3d16068b86747ad5dd3223418ce38db9935859d9c27d882db7d5fec3057abe901e78ea7ffc4c420b2c83b6a98dac7a79900475f56318f0e9eb563280e48bff1f7",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93201400030f02010000000450010304330202000000045001040fc902030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f0b000002130000000100010214000000010001021100000004502d070f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 2,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124719315694,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0003",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:20+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:19.676636+00:00",
+      "t_rel_ms": 725,
+      "record_index": 853,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000300b1d89cc0ed5314eeaf3f8121eb1f3525dc5ab3d1ce4ff6041b8de0c38a0c8cf6fa5db739c685dbad108ef0181ca2c1d614e48da6cb797c19ca2f02e25400f3e1ca5c3ca34f5459397eb039e3ed2ad4554dd05b9f4d1431ee0bade2ad0aed1c18d64e081db5cd174734a4af87aed10660c038c50a49c20d5ce6c3a8ed7cd5ba74671fb817993dfff943c64da89980e31309953c8da25de0",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93201700030f02010000000450010304330202000000045001040fc902030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f0b000002130000000100010214000000010001021100000004502d070f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 3,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124719676632,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0004",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:21+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:21.023476+00:00",
+      "t_rel_ms": 2072,
+      "record_index": 875,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020004004a10d2e59b0930918a578a939df7fc312f95a20e4841b650c06a8b65d1e1690637b99d8079fcaa32db54eb5da840a9478f64ebb6c85814bacc5164fa463d488c08e9bede5cb2293a6d2753e8a82b07cf6f206a69b7434a462703b104f1284b61d541553def0e1ccb6383",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "66201d00030a0208000000011000020900000002300000020a00000002300000020b00000002300000020c0000000230000002010000000450010304330202000000045001040fc902030000000450016000790204000000045000600000021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 4,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 10,
+        "piid": 8
+      },
+      "ts_us_raw": 63952124721023475,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0005",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:22+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:21.475227+00:00",
+      "t_rel_ms": 2524,
+      "record_index": 892,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000500c82d20ee3f5ea46529516744ca9957abd15f07ff6f21900a13b1871cb848f76fa8bbe73a9677ea5d3452a867df5679d6d4daec5d6af16d25155d2e820145305cfb3c084718146f9cf57f0c332ddd62fb9382e251fd3095ce02f41d4c2779e2c64be569183d986a0a6de2097a6c8ca5983e01b1cd7bdecdc76a138a4e1a99ff174362aa74157a48fad7728a8390fa11694c1532659d4483",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93201e00030f02010000000450010304330202000000045001040fc902030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f0b000002130000000100010214000000010001021100000004502d070f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 5,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124721475223,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0006",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:22+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:21.878891+00:00",
+      "t_rel_ms": 2927,
+      "record_index": 900,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020006004e80af6afed3f88c034f4475f4410701976c26",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f201f000401020100045001030633",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 6,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124721878889,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.6,
+        "power": 3.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd-0007",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:23+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:22.687416+00:00",
+      "t_rel_ms": 3736,
+      "record_index": 907,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000700f92b530df0cd47a87b3afb3c8c4f52601047c1",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2020000401020100045001030533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 7,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124722687419,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd-0008",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:24+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:23.498222+00:00",
+      "t_rel_ms": 4547,
+      "record_index": 918,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000800f1bbb4f9aac38c98e8511fb1381157",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0b201f0001010215000000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 8,
+      "decoded": {
+        "b4": "0x01",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952124723498224,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0009",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:24+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:23.630775+00:00",
+      "t_rel_ms": 4679,
+      "record_index": 922,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020009005604008a2f0a00ebe8b95470fd4eacfc770561",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f202000040102150004500f0a0000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 9,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952124723630778,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0010",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:25+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:24.306824+00:00",
+      "t_rel_ms": 5355,
+      "record_index": 926,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000a008168e5df9b9145e2f8f189dd9a059e5e3c4c70",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2021000401021100045000000f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 10,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952124724306825,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0011",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:25+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:24.715134+00:00",
+      "t_rel_ms": 5764,
+      "record_index": 931,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000b00c04fec1a8bb0cd4429fc158de22a3bccf646c3",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2022000401020100045001030333",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 11,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124724715139,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.3,
+        "power": 1.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd-0012",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:25+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:24.802216+00:00",
+      "t_rel_ms": 5851,
+      "record_index": 935,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000c007596bc2b7310ee1220612669420e2095cc174c",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2023000401020200045000040000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 12,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124724802213,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": false,
+        "status_raw": 0,
+        "protocol": "idle",
+        "_raw_code": "0x04",
+        "_proto_num": null
+      }
+    },
+    {
+      "id": "c2pd-0013",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:25.296059+00:00",
+      "t_rel_ms": 6345,
+      "record_index": 967,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000d00f0c12878e82e2abc4fc830efc26a94",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0b20200001010215000000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 13,
+      "decoded": {
+        "b4": "0x01",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952124725296053,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0014",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:25.567291+00:00",
+      "t_rel_ms": 6616,
+      "record_index": 971,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000e003a6e017529743c73d9011a62ff380cb9f54193",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f202100040102150004500f0b0000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 14,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952124725567288,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0015",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:25.657600+00:00",
+      "t_rel_ms": 6706,
+      "record_index": 975,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000f004821615a4e41c91d8a5be9ee0ab70e4f6aa366",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f202200040102110004500f020f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 15,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952124725657599,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0016",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:25.974625+00:00",
+      "t_rel_ms": 7023,
+      "record_index": 1014,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001000c82c0ef0ebdc2245c9d997b0a1c56e568bb689",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2023000401020100045001030433",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 16,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124725974621,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.4,
+        "power": 2.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd-0017",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:26.062286+00:00",
+      "t_rel_ms": 7111,
+      "record_index": 1018,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001100b0edcae12c9f02fe25027aa2f558d51d55523c",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2024000401020200045001040000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 17,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124726062291,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x04",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd-0018",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:27+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:26.152512+00:00",
+      "t_rel_ms": 7201,
+      "record_index": 1023,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001200e5e3ac05c98e6c1966792e30f9b2f2c93c5e66",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f202500040102110004502d070f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 18,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952124726152513,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd-0019",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:27+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:26.783424+00:00",
+      "t_rel_ms": 7832,
+      "record_index": 1027,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020013001744526de8115cfac41d2a576408c2dfe3abd4",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2026000401020100045001030633",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 19,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124726783423,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.6,
+        "power": 3.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd-0020",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:27+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:26.872276+00:00",
+      "t_rel_ms": 7921,
+      "record_index": 1031,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001400b96c95a3380713c5e630bf2dca2da3424e277f",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2027000401020200045001040269",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 20,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124726872280,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 10.5,
+        "current": 0.2,
+        "power": 2.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PPS",
+        "_raw_code": "0x04",
+        "_proto_num": 8
+      }
+    },
+    {
+      "id": "c2pd-0021",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:28+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:27.997597+00:00",
+      "t_rel_ms": 9046,
+      "record_index": 1035,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020015003e7833c30c35bc176d5ec461f3d679f3c3b31c",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2028000401020100045001030433",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 21,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124727997603,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.4,
+        "power": 2.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd-0022",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:28+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:28.086960+00:00",
+      "t_rel_ms": 9135,
+      "record_index": 1039,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001600cfede039a23dc9a52717ab42c64a695d016c78",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2029000401020200045001040bc9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 22,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124728086961,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 1.1,
+        "power": 22.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd-0023",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:29+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:28.807495+00:00",
+      "t_rel_ms": 9856,
+      "record_index": 1043,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020017005adfa3fb6d784c5e1e07f225fb546bc3c9bb6f",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f202a0004010202000450010409c9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 23,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124728807497,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 0.9,
+        "power": 18.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd-0024",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:30+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:30.094170+00:00",
+      "t_rel_ms": 11143,
+      "record_index": 1048,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020018005f9f49c81e80daca8bd1bacfbbd2f84fb4dd4e",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f202b000401020200045001040ec9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 24,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124730094171,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 1.4,
+        "power": 28.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd-0025",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:31+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:30.832741+00:00",
+      "t_rel_ms": 11881,
+      "record_index": 1055,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001900842274ef06e24bc52f8434f0495165aa60fe48",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f202c000401020100045001030a33",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 25,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124730832741,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 1.0,
+        "power": 5.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd-0026",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:31+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:30.922440+00:00",
+      "t_rel_ms": 11971,
+      "record_index": 1059,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001a00831440aeaace76fc6e6648d7f1bdbc5f68123f",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f202d000401020200045001040fc9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 26,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952124730922440,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 1.5,
+        "power": 30.2,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd-0027",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:32+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:31.688232+00:00",
+      "t_rel_ms": 12737,
+      "record_index": 1063,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001b00c54aa73392a96e14b0fc11ef2f05b858278c6a",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f202e000401020100045001030633",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 27,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124731688235,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.6,
+        "power": 3.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd-0028",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:33+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:32.923615+00:00",
+      "t_rel_ms": 13972,
+      "record_index": 1068,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001c00fe09dcc3de0f9e766dca31d0ca975c2af99e21",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f202f000401020100045001030433",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 28,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124732923618,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.4,
+        "power": 2.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd-0029",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:34+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:33.712524+00:00",
+      "t_rel_ms": 14761,
+      "record_index": 1073,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001d0031c172a0ed89360840771f0272539c795b8319",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2030000401020100045001030533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 29,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952124733712531,
+      "capture_file": "btsnoop_c2pd.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd-0030",
+      "source": "docs/hci_log/btsnoop_c2pd.log",
+      "captured_at": "2026-07-12T15:05:35+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:05:34.386688+00:00",
+      "t_rel_ms": 15435,
+      "record_index": 1085,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001e008a675775cb0a225e9bbec0b631a9ad",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0b20210001010215000000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 30,
+      "decoded": {
+        "b4": "0x01",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952124734386687,
+      "capture_file": "btsnoop_c2pd.log"
+    },
+    {
+      "id": "c2pd2-0001",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:14:53+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:46.533005+00:00",
+      "t_rel_ms": 0,
+      "record_index": 678,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000100c78896fdab5707bcbf",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "05202400f0",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; short plaintext (5B): ble_manager._decrypt_payload requires >=8B, so it counts as a decrypt failure in production",
+      "device_it": 1,
+      "ts_us_raw": 63952125286533004,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0002",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:14:53+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:46.669579+00:00",
+      "t_rel_ms": 136,
+      "record_index": 684,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000200d1cc4d7be9a92d7c25eedaabb17fcb5695615d",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2025000401020100045001070333",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 2,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125286669574,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.3,
+        "power": 1.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0003",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:14:53+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:46.942993+00:00",
+      "t_rel_ms": 409,
+      "record_index": 699,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000300331329954f82e38f43a67d5f34c17c097576e2a4fcc22bc87d1b9f462dd959278f54a5c91f2a4c9e460e041087b4b87f40826f4a31b31d545a952c092cdc567344878053840d1e007c18baae4490be8be0f6458238e01d06eb1fffcf4b714fb668da65b305adcb339f7f2094a7e2a8f3c6121883aaacf370fb21c3abf75435b43ac1440d1a97a45c552dc714cfd21bad8c4389786d662f",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93202500030f02010000000450010703330202000000045001010f3402030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f00000002130000000100010214000000010001021100000004500f010f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 3,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125286942991,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0004",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:14:54+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:47.302177+00:00",
+      "t_rel_ms": 769,
+      "record_index": 719,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020004005f557a3de93fa26a5eaf5f0e0396a641320b9dd75c3420e4fba74471fd49e56cde435f2197fac62bc0d02e4c94f2ad60cdce781cd4214a578f98733b95abbba7e07a618c322190c2af106a3e4282e92d65de02a5ad9c36a82994034120f5c911f67e25cfc82cd0f11531dff2cc65f56a56cf27ae283c2edcc3ac69d8ceaedf7368f10201ae6a2fe44c5b4deae0d269d0dca98328addf5c",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93202a00030f02010000000450010703330202000000045001010f3402030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f00000002130000000100010214000000010001021100000004500f010f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 4,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125287302178,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0005",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:14:56+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:49.055084+00:00",
+      "t_rel_ms": 2522,
+      "record_index": 744,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020005009fcb0a60264bd83a43a92057b68eadcd7e82a45780d4c5e43e7c3c57b23e01c0f486ffadbf7b19d189e12fc93054eae38329fca79eeab71a48797b08a3f30063d72dd2d26fc93506637dd0ce5c26c9cbddffc0be5ac86da776ee9a39a2c619decce58751190c73ad0a1060f22094d51e5805fa72ef5e636a7afc64d4ce8f0683c46e78a3c07be36140831f97321338af022a771fac60f3",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93203000030f02010000000450010703330202000000045001010f3402030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f00000002130000000100010214000000010001021100000004500f010f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 5,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125289055084,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0006",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:14:56+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:49.416367+00:00",
+      "t_rel_ms": 2883,
+      "record_index": 761,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020006008adaea1669a95769022f3fb2963da94159c24d04d2db47dbe5e9d33d4b437d4456e939045ddced8a39dbc3a4118f7ff26a09745bdfbfb404a9964a4a85b8edc0a7bed04efbf955ec27b0f9bf0480b02ffc7d7c95f25e209ace448bccf17f7db3d879a0d30483d4e5ae65",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "66203100030a0208000000011000020900000002300000020a00000002300000020b00000002300000020c0000000230000002010000000450010703330202000000045001010f3402030000000450016000790204000000045000600000021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 6,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 10,
+        "piid": 8
+      },
+      "ts_us_raw": 63952125289416365,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0007",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:14:57+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:50.718391+00:00",
+      "t_rel_ms": 4185,
+      "record_index": 775,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000700480bca3d66479bf2fbb9def829391346dc7ea8",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2032000401020100045001070533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 7,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125290718389,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0008",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:14:58+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:51.895073+00:00",
+      "t_rel_ms": 5362,
+      "record_index": 780,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "00000200080087af29456d62985a8eef0e09a1807324ef3353",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2033000401020100045001070333",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 8,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125291895072,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.3,
+        "power": 1.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0009",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:14:59+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:52.751045+00:00",
+      "t_rel_ms": 6218,
+      "record_index": 787,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000900af096ab05dc01b92fe7dd5bd94f799ade2b3a4",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2034000401020100045001070433",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 9,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125292751050,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.4,
+        "power": 2.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0010",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:00+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:53.330002+00:00",
+      "t_rel_ms": 6796,
+      "record_index": 801,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000a0035ffb72ee28964649908df9502bf31",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0b20320001010215000000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 10,
+      "decoded": {
+        "b4": "0x01",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952125293329997,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0011",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:00+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:53.512772+00:00",
+      "t_rel_ms": 6979,
+      "record_index": 806,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000b00f232003ca2f0c8b0c64c21239b249ca8ceba96",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f203300040102150004500f090000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 11,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952125293512769,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0012",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:00+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:53.598557+00:00",
+      "t_rel_ms": 7065,
+      "record_index": 812,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000c000413df18fc505ec3459c6d94c010b1f1c4a908",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f203400040102110004500f070f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 12,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952125293598564,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0013",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:00+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:53.914719+00:00",
+      "t_rel_ms": 7381,
+      "record_index": 816,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000d00ecc1480bad5fc7764f92f5fd06fcb289a86243",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2035000401020100045001070333",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 13,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125293914720,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.3,
+        "power": 1.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0014",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:00+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:54.004517+00:00",
+      "t_rel_ms": 7471,
+      "record_index": 820,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000e0051b31d779894e3aa0761a5206cfc4aa71a974b",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2036000401020200045000010f34",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 14,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125294004518,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.2,
+        "current": 1.5,
+        "power": 7.8,
+        "active": true,
+        "status_raw": 0,
+        "protocol": "5V",
+        "_raw_code": "0x01",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0015",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:01+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:54.093712+00:00",
+      "t_rel_ms": 7560,
+      "record_index": 824,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000f00258f84f6621e3b552c97c23cd6752a1eb12417",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2037000401021100045000000f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 15,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952125294093708,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0016",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:01+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:54.775436+00:00",
+      "t_rel_ms": 8242,
+      "record_index": 830,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001000b23c85c2bfdf88644022f6a7f65fc0e05aaf6d",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2038000401020100045001070533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 16,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125294775437,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0017",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:01+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:54.858704+00:00",
+      "t_rel_ms": 8325,
+      "record_index": 836,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001100557191f7ae9c5594d566247e3334795e246013",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2039000401020200045000010000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 17,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125294858705,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": false,
+        "status_raw": 0,
+        "protocol": "idle",
+        "_raw_code": "0x01",
+        "_proto_num": null
+      }
+    },
+    {
+      "id": "c2pd2-0018",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:02+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:55.174812+00:00",
+      "t_rel_ms": 8641,
+      "record_index": 840,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020012004b3c1236541840202871412235cb1b114cfa4f",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f203a00040102110004500f010f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 18,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952125295174814,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0019",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:02+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:55.585472+00:00",
+      "t_rel_ms": 9052,
+      "record_index": 845,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020013002b15bf0d134210f74711fd9c77c2f8e3f23558",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f203b000401020100045001070333",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 19,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125295585476,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.3,
+        "power": 1.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0020",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:02+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:55.669083+00:00",
+      "t_rel_ms": 9136,
+      "record_index": 851,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001400165104d274082f52015ddcd345a789222ce140",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f203c00040102020004500101002c",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 20,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125295669083,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 4.4,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x01",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0021",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:02+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:55.758423+00:00",
+      "t_rel_ms": 9225,
+      "record_index": 855,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001500c11bdc0858a5b6eb05fabaafb618b5b801770e",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f203d000401021100045014070f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 21,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952125295758426,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0022",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:03+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:56.844597+00:00",
+      "t_rel_ms": 10311,
+      "record_index": 860,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "00000200160005288131cd39e581ae378f46b8b56f366cc4aa",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f203e000401020200045001010c79",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 22,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125296844597,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 12.1,
+        "current": 1.2,
+        "power": 14.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x01",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd2-0023",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:04+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:57.607506+00:00",
+      "t_rel_ms": 11074,
+      "record_index": 867,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001700469d196d25fb8125770a616cf35dca5d3e9284",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f203f000401020100045001030333",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 23,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125297607506,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.3,
+        "power": 1.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0024",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:04+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:57.696945+00:00",
+      "t_rel_ms": 11163,
+      "record_index": 873,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001800d1a75b4e7addc193968835dd50c2630051a3cc",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2040000401020200045001040c79",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 24,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125297696942,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 12.1,
+        "current": 1.2,
+        "power": 14.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd2-0025",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:04+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:57.783920+00:00",
+      "t_rel_ms": 11250,
+      "record_index": 877,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020019003712a8201137ef72dee6c5b1baf3d87eb1a93f",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f204100040102110004502d070f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 25,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952125297783919,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd2-0026",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:05+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:58.824875+00:00",
+      "t_rel_ms": 12291,
+      "record_index": 882,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001a003ec3f9a8511db78c76e14dda7f10e347b80fc0",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f20420004010202000450010403c2",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 26,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125298824875,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 19.4,
+        "current": 0.3,
+        "power": 5.8,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PPS",
+        "_raw_code": "0x04",
+        "_proto_num": 8
+      }
+    },
+    {
+      "id": "c2pd2-0027",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:06+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:59.628304+00:00",
+      "t_rel_ms": 13095,
+      "record_index": 944,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001b008e56c921aea4144003d025d4b06409f23ad97e",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2043000401020100045001030433",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 27,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125299628307,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.4,
+        "power": 2.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0028",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:06+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:14:59.718323+00:00",
+      "t_rel_ms": 13185,
+      "record_index": 948,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001c0007136b2d05f34a8a615077a70b1aff30de68bd",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f20440004010202000450010407c9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 28,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125299718318,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 0.7,
+        "power": 14.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd2-0029",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:07+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:15:00.848572+00:00",
+      "t_rel_ms": 14315,
+      "record_index": 953,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001d00ad7cabcdecfb0e69beb39ac06bcb8650153a72",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f20450004010202000450010408c8",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 29,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125300848567,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 20.0,
+        "current": 0.8,
+        "power": 16.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd2-0030",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:08+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:15:01.699387+00:00",
+      "t_rel_ms": 15166,
+      "record_index": 959,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001e005dd8399478b1744f2a2f02956ebefdaed325a9",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2046000401020100045001030533",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 30,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125301699384,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.5,
+        "power": 2.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0031",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:08+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:15:01.789223+00:00",
+      "t_rel_ms": 15256,
+      "record_index": 963,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001f006439454157c33960cd3367ade991c13160fe9b",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f20470004010202000450010410c9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 31,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125301789221,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 1.6,
+        "power": 32.2,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd2-0032",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:09+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:15:02.914177+00:00",
+      "t_rel_ms": 16381,
+      "record_index": 967,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020020002a198ee00bccc16f5b34f1afc7467de23b6435",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2048000401020100045001030333",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 32,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125302914180,
+      "capture_file": "btsnoop_c2pd2.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.3,
+        "power": 1.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd2-0033",
+      "source": "docs/hci_log/btsnoop_c2pd2.log",
+      "captured_at": "2026-07-12T15:15:12+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:15:05.481979+00:00",
+      "t_rel_ms": 18948,
+      "record_index": 986,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002002100ffa15e193c426253372a8d3baf4229737808489dbe1e50af71d9560be13e06eeaa18ff077ecf424ccb94a51bde9f38350a2d92a545fbc77137d70c6fefcb038dd89cbb52323436c0808bab7cc3114ca9758f6773024c6a97ba9456b62420ade0cc4f3b27f4ec9d04cf012752fa7ba68ace074a4c902c8c51c2656c1b22dadbfe6ebf9195dfc5356c32afbf49339aaada7f47c7f2a80149",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93203300030f020100000004500103033302020000000450010410c902030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f09000002130000000100010214000000010001021100000004502d070f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 33,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125305481976,
+      "capture_file": "btsnoop_c2pd2.log"
+    },
+    {
+      "id": "c2pd_on-0001",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:25+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:14.517975+00:00",
+      "t_rel_ms": 0,
+      "record_index": 614,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020001005ec285f4587fe8fd1b",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "05203400f0",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; short plaintext (5B): ble_manager._decrypt_payload requires >=8B, so it counts as a decrypt failure in production",
+      "device_it": 1,
+      "ts_us_raw": 63952125914517975,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0002",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:25+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:14.922890+00:00",
+      "t_rel_ms": 404,
+      "record_index": 630,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000200870db44a6c423a6be7da0e739ba0898b36d535facef59db7ba5f89cec8e9c690a5c1f5f10e643b9da022f9eaac24e6dc84743f32b13c114b564a7106aeb4387c1dc98f33a018853d5050618b002e7c2ea37e6bdefc85dcd677ae97086c451423a1dd2c0f70ac6efa49f87cd764170a69be4d9408ed066ec7febad51091d4d43f9630c873f727546434cf42a53b23335e06305464b56e07",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93203500030f02010000000450010701330202000000045001010f3402030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f00000002130000000100010214000000010001021100000004500f010f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 2,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125914922891,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0003",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:15.329407+00:00",
+      "t_rel_ms": 811,
+      "record_index": 649,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000300fb4fce19b154dc8ba059ede1d679a6bf7029500cf34a5785e2cc30e0b794cd695df14a58c04da6bcbefc28616407e51f4644f6676b9bdad2245cb1dbcf8a00126f8d0ceb90f97098e5169fdf82b793a84124ff47283873306ae5aea4593ef145e8c2bc75f47702b28142deaf56eb5e409aa74b6478b36d7c75a0497a14f740659bbfc3dfd5e0058a0e88c27a76134a42c44c73e4835f68",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93203800030f02010000000450010701330202000000045001010f3402030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f00000002130000000100010214000000010001021100000004500f010f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 3,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125915329407,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0004",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:26+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:16.092461+00:00",
+      "t_rel_ms": 1574,
+      "record_index": 658,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000400e7d3590f9ab1bf5885bda261d571345936238b",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2039000401020100045001070233",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 4,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125916092468,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.2,
+        "power": 1.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd_on-0005",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:27+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:17.038971+00:00",
+      "t_rel_ms": 2520,
+      "record_index": 677,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000500fda719d618f25157bae9a33f96aa2c211c9359a460fc3f981a51505ca35328800f3a5b3ccdd76d10670f71345912af1e69c5ee286b265a008480ba0d61cb8b70205dadfbc18495b1ef85a469247603e38b5f8e7b3b9be38c5d92d12146214f55df01fc33e33ab1750bbc10b0c3daf312a370bc5281d0f61ff0d64a487b5aa6935a552d4188834d138ec0c99ef0c6edadd166d6a00d0396",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93203e00030f02010000000450010702330202000000045001010f3402030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f00000002130000000100010214000000010001021100000004500f010f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 5,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125917038967,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0006",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:28+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:17.399071+00:00",
+      "t_rel_ms": 2881,
+      "record_index": 686,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020006002bd73f3823f5b102ee8b0c31ba2ceb12c1537c",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f203f000401020100045001070133",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 6,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125917399069,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.1,
+        "power": 0.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd_on-0007",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:28+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:17.987007+00:00",
+      "t_rel_ms": 3469,
+      "record_index": 702,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020007000d8aca7176d2748b2a63d4f01d68787107fea1de18cf27a0ac23db98128ad8ade9f1a63ba46fedc30cd0a5d32b8d0f1fa8924220dd160a81946b208655548663f7e8544da55a865bed2944ac8d29c14dfb1b4e91c28166088e7c75be230f6dab6a657b611df82401a70b",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "66203f00030a0208000000011000020900000002300000020a00000002300000020b00000002300000020c0000000230000002010000000450010701330202000000045001010f3402030000000450016000790204000000045000600000021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 7,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 10,
+        "piid": 8
+      },
+      "ts_us_raw": 63952125917987010,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0008",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:29+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:18.207626+00:00",
+      "t_rel_ms": 3689,
+      "record_index": 706,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "00000200080099faf76ef4602743f6d15440902b686af7d373",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2040000401020100045001070233",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 8,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125918207622,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.2,
+        "power": 1.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd_on-0009",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:30+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:19.449379+00:00",
+      "t_rel_ms": 4931,
+      "record_index": 711,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000900ae6a851769ddf682eb5f0d0822a683eefb8b44",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2041000401020100045001070133",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 9,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125919449373,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.1,
+        "power": 0.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd_on-0010",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:31+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:20.238350+00:00",
+      "t_rel_ms": 5720,
+      "record_index": 721,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000a00df4092fe389346c562ebed60265820f3c74dcf",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2042000401020100045001070233",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 10,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125920238355,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.2,
+        "power": 1.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd_on-0011",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:31+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:20.458237+00:00",
+      "t_rel_ms": 5940,
+      "record_index": 732,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000b0058589be5afdf50d675033cfd0bc580",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0b20400001010215000000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 11,
+      "decoded": {
+        "b4": "0x01",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952125920458244,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0012",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:31+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:20.639305+00:00",
+      "t_rel_ms": 6121,
+      "record_index": 737,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000c00180a681ed5a6ec408d446b37c9e537ed294038",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f204100040102150004500f090000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 12,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 21
+      },
+      "ts_us_raw": 63952125920639304,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0013",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:31+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:20.727074+00:00",
+      "t_rel_ms": 6209,
+      "record_index": 741,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000d00e2a837a899cea92add18a7c453878708d8c0bc",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f204200040102110004500f070f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 13,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952125920727072,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0014",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:31+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:21.090996+00:00",
+      "t_rel_ms": 6573,
+      "record_index": 746,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000e008d64a3523ccd5dc683f4d6bbfed9956849a25a",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2043000401021100045000000f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 14,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952125921090991,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0015",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:32+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:21.497261+00:00",
+      "t_rel_ms": 6979,
+      "record_index": 752,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002000f0021e4bbea25e54f4d07ddc6eb4fe786be44a90d",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2044000401020100045001070133",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 15,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125921497261,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.1,
+        "power": 0.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x07",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd_on-0016",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:32+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:21.582085+00:00",
+      "t_rel_ms": 7064,
+      "record_index": 758,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001000a00a2ee63020238ff978247d42346303bfcdd6",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2045000401020200045000010000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 16,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125921582086,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": false,
+        "status_raw": 0,
+        "protocol": "idle",
+        "_raw_code": "0x01",
+        "_proto_num": null
+      }
+    },
+    {
+      "id": "c2pd_on-0017",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:33+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:22.353539+00:00",
+      "t_rel_ms": 7835,
+      "record_index": 763,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020011005a66f37b0c4a02dd8b53ded5f1756ae9a41b1f",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2046000401020200045000040000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 17,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125922353540,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": false,
+        "status_raw": 0,
+        "protocol": "idle",
+        "_raw_code": "0x04",
+        "_proto_num": null
+      }
+    },
+    {
+      "id": "c2pd_on-0018",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:33+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:22.437225+00:00",
+      "t_rel_ms": 7919,
+      "record_index": 769,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020012007a88b68417114d10b27bfe45ece41e84278f3f",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2047000401020300045001800079",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 18,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 3
+      },
+      "ts_us_raw": 63952125922437225,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 12.1,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "QC",
+        "_raw_code": "0x80",
+        "_proto_num": 3
+      }
+    },
+    {
+      "id": "c2pd_on-0019",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:33+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:22.527931+00:00",
+      "t_rel_ms": 8009,
+      "record_index": 773,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001300b9da1df4bcb547a0d8853d889f5f6c5a33c8d0",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2048000401020400045000300000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 19,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 4
+      },
+      "ts_us_raw": 63952125922527926,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": false,
+        "status_raw": 0,
+        "protocol": "idle",
+        "_raw_code": "0x30",
+        "_proto_num": null
+      }
+    },
+    {
+      "id": "c2pd_on-0020",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:33+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:22.709343+00:00",
+      "t_rel_ms": 8191,
+      "record_index": 778,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020014003453cd8593b0b2b596f37105b27e93cf8ef4ce",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f204900040102110004500f010f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 20,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952125922709344,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0021",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:33+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:23.115547+00:00",
+      "t_rel_ms": 8597,
+      "record_index": 784,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020015009490de6920e8a006f0c65027c3ca2edb7b0d29",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f204a00040102110004502d070f09",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 21,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 17
+      },
+      "ts_us_raw": 63952125923115547,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0022",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:34+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:23.567642+00:00",
+      "t_rel_ms": 9049,
+      "record_index": 790,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001600a1765ee5a90f410f6ad1855de0e7bbc82e07f6",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f204b000401020100045001030133",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 22,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125923567639,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.1,
+        "power": 0.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd_on-0023",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:34+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:23.652306+00:00",
+      "t_rel_ms": 9134,
+      "record_index": 796,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "00000200170034753e3684bd02dc3b224aa91d9a6cf4acbd82",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f204c000401020200045001040078",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 23,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125923652301,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 12.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd_on-0024",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:34+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:23.742561+00:00",
+      "t_rel_ms": 9224,
+      "record_index": 800,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001800ff91d82abee5857dcdf30e4e9091d5a227f3f2",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f204d000401020300045001600079",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 24,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 3
+      },
+      "ts_us_raw": 63952125923742564,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 12.1,
+        "current": 0.0,
+        "power": 0.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "QC",
+        "_raw_code": "0x60",
+        "_proto_num": 3
+      }
+    },
+    {
+      "id": "c2pd_on-0025",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:34+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:23.832191+00:00",
+      "t_rel_ms": 9314,
+      "record_index": 804,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "0000020019008c78016ec3afc9c58efa209c4a3a1a1b93347d",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f204e000401020400045000600000",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 25,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 4
+      },
+      "ts_us_raw": 63952125923832196,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 0.0,
+        "current": 0.0,
+        "power": 0.0,
+        "active": false,
+        "status_raw": 0,
+        "protocol": "idle",
+        "_raw_code": "0x60",
+        "_proto_num": null
+      }
+    },
+    {
+      "id": "c2pd_on-0026",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:35+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:24.378151+00:00",
+      "t_rel_ms": 9860,
+      "record_index": 809,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001a002f703558b06860fa50dfcac51079701a422c14",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f204f000401020100045001030233",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 26,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125924378155,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.2,
+        "power": 1.0,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd_on-0027",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:35+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:24.462173+00:00",
+      "t_rel_ms": 9944,
+      "record_index": 815,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001b0088f4e0c4237e90b522aabe6cb04905fd11fce7",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f20500004010202000450010405c9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 27,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125924462173,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 0.5,
+        "power": 10.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd_on-0028",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:36+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:25.593941+00:00",
+      "t_rel_ms": 11075,
+      "record_index": 822,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001c0000311ad7297839ca5831bcb1e44a7775809ac0",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2051000401020100045001030133",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 28,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125925593942,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 5.1,
+        "current": 0.1,
+        "power": 0.5,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "5V",
+        "_raw_code": "0x03",
+        "_proto_num": 1
+      }
+    },
+    {
+      "id": "c2pd_on-0029",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:36+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:25.723274+00:00",
+      "t_rel_ms": 11205,
+      "record_index": 832,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001d008cde0c1dc0bbbfa4bbf30756978780c31a5c2a",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f20520004010202000450010407c9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 29,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125925723275,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 0.7,
+        "power": 14.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    },
+    {
+      "id": "c2pd_on-0030",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:36+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:25.906113+00:00",
+      "t_rel_ms": 11388,
+      "record_index": 843,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001e003c299aa9f091f4195787da71cffe06651244b992b61a8944b1bd115c6d138d36ef85c3613a0c1eb65bf3d9746e644d496fdb851be0641fd134b5e46cc1680c55d1a1961ca53e0ea73e417ea658fd5c613b82dd09d0cc90c0dc6c23b0a0a9e89798f96ca73ab2bb3837227e444fe6ad9789f4dc27b3c7e80631429afe37064044ed00c7e32da596bd8c154b417676666758e71c70db0651",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "93204100030f020100000004500103013302020000000450010407c902030000000450016000790204000000045000600000020500000001100102060000000110040207000000011007020f000000010000020d000000011001021500000004500f09000002130000000100010214000000010001021100000004502d070f090212000000045000001203021000000001100f",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table",
+      "device_it": 30,
+      "decoded": {
+        "b4": "0x03",
+        "siid": 15,
+        "piid": 1
+      },
+      "ts_us_raw": 63952125925906113,
+      "capture_file": "btsnoop_c2pd_on.log"
+    },
+    {
+      "id": "c2pd_on-0031",
+      "source": "docs/hci_log/btsnoop_c2pd_on.log",
+      "captured_at": "2026-07-12T15:25:37+08:00",
+      "sniffer_clock_iso": "3996-07-24T15:25:26.445465+00:00",
+      "t_rel_ms": 11927,
+      "record_index": 852,
+      "att_handle": "0x001c",
+      "kind": "inline",
+      "hex": "000002001f00c8afd8c771a2894cffe01d97e9950887f211b3",
+      "frame_header": {
+        "ctr": "0000",
+        "format": "0x02",
+        "msg_type": "0x00"
+      },
+      "plaintext_hex": "0f2042000401020200045001040ec9",
+      "encrypted": true,
+      "notes": "handle discovered from captured GATT table; port push, decodes via state_protocol_v2.decode_port",
+      "device_it": 31,
+      "decoded": {
+        "b4": "0x04",
+        "siid": 1,
+        "piid": 2
+      },
+      "ts_us_raw": 63952125926445463,
+      "capture_file": "btsnoop_c2pd_on.log",
+      "decoded_port": {
+        "voltage": 20.1,
+        "current": 1.4,
+        "power": 28.1,
+        "active": true,
+        "status_raw": 1,
+        "protocol": "PD",
+        "_raw_code": "0x04",
+        "_proto_num": 7
+      }
+    }
+  ]
+}

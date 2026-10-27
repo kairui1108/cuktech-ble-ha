@@ -5,12 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title data-i18n="pageTitle.config">CUKTECH 配置</title>
 <link rel="icon" href="/static/favicon.ico">
-<script src="/static/locales/zh-CN.js?v=14"></script>
-<script src="/static/locales/en.js?v=14"></script>
-<script src="/static/i18n.js?v=3"></script>
-<link rel="stylesheet" href="static/phone.css?v=14">
+<script src="/static/locales/zh-CN.js?v=27"></script>
+<script src="/static/locales/en.js?v=27"></script>
+<script src="/static/i18n.js?v=6"></script>
+<link rel="stylesheet" href="static/phone.css?v=36">
 <style>
 /* Config page overrides */
+/* 本页只引 phone.css，而 --accent 是 index.css 的令牌：这里补一份。
+   不补的话 .btn-save/链接/复选框上的 var(--accent) 全部在计算值阶段失效
+   （结果是"保存"按钮背景变透明），本页看起来就像少了主按钮。 */
+:root { --accent: #46B4FF; }
+body.light { --accent: #0f7fd1; }
 .config-section { margin-top: 12px; }
 .config-section-title {
     font-size: 12px; font-weight: 600; color: var(--text-dim);
@@ -41,7 +46,9 @@ body.light .config-input {
 .config-select:hover, .config-select:focus { color: var(--text); }
 .btn-save {
     width: 100%; padding: 14px; border: none; border-radius: 12px;
-    background: var(--accent); color: var(--text); font-size: 15px; font-weight: 600;
+    /* 实底 --accent 上的文字必须是白色：浅色主题的 --text 是近黑色，压在蓝底上
+       只有 1.3:1，等于看不见 */
+    background: var(--accent); color: #fff; font-size: 15px; font-weight: 600;
     cursor: pointer; transition: all 0.2s; margin-top: 12px;
     -webkit-tap-highlight-color: transparent; touch-action: manipulation;
     display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -55,6 +62,155 @@ body.light .config-input {
 .status-dot-sm { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
 .status-dot-sm.ok { background: #34C759; }
 .status-dot-sm.err { background: #FF3B30; }
+
+/* ── 设备卡片列表（多设备，§3.12）──
+   卡片头永远只显示"连接灯 + 名字 + MAC"，编辑时在下面展开凭据表单：
+   一眼能看到配了几台，又不至于把五组输入框全铺开。 */
+.device-list-hint { padding: 0 4px 8px; }
+.device-card {
+    border: 1px solid rgba(255,255,255,0.10); border-radius: 12px;
+    margin-bottom: 8px; overflow: hidden;
+}
+body.light .device-card { border-color: rgba(0,0,0,0.10); }
+/* 展开态高亮用端口蓝 --c1（与卡片上的端口色一致；--accent 在本页是上面补的
+   主按钮蓝，两者刻意分开：卡片选中态属于"端口蓝"，不是"可点主色"） */
+.device-card.is-editing { border-color: var(--c1); }
+.device-card-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.device-led {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: var(--text-dim); opacity: 0.5;
+}
+.device-led.on { background: #34C759; opacity: 1; }
+.device-card-main { flex: 1; min-width: 0; }
+.device-card-name {
+    font-size: 15px; color: var(--text);
+    display: flex; align-items: center; gap: 6px; min-width: 0;
+}
+.device-card-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-card-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.device-tag {
+    font-size: 10px; padding: 1px 6px; border-radius: 6px; flex: none;
+    background: rgba(255,255,255,0.10); color: var(--text-dim);
+}
+body.light .device-tag { background: rgba(0,0,0,0.06); }
+.device-card-btn {
+    flex: none; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+    font-size: 12px; background: rgba(255,255,255,0.08); color: var(--text);
+    border: 1px solid rgba(255,255,255,0.10);
+    -webkit-tap-highlight-color: transparent;
+}
+body.light .device-card-btn { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.10); }
+.device-card-btn.danger { color: var(--limit-danger); }
+.device-card-body { padding: 0 12px 4px; }
+.device-card-body[hidden] { display: none; }
+.device-card-body .config-row:last-child { border-bottom: none; }
+/* 折叠时整块不渲染：display:none 由 [hidden] 负责，避免和 flex/grid 样式打架 */
+.device-add-btn {
+    width: 100%; margin-top: 4px; padding: 10px;
+    border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px;
+    background: transparent; color: var(--text-dim); font-size: 13px;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+body.light .device-add-btn { border-color: rgba(0,0,0,0.16); }
+.device-add-btn:active { opacity: 0.7; }
+
+/* ── 巴法云语音开关（实体表）──
+   一行 = 一个语音开关 = (名字, 设备, 端口)。放成卡片而不是 config-row 表格：
+   430px 宽度里塞不下"名称输入 + 两个下拉 + 删除"一行，删掉任何一列都会让用户
+   猜不出来剩下的是什么。 */
+/* 折叠头：整行可点（触控目标 ≥44px），右侧 ▾ 展开时翻转。 */
+.bemfa-toggle {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; padding: 12px 0 10px; min-height: 44px;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+.bemfa-toggle:active { opacity: 0.65; }
+.bemfa-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+.bemfa-head-text { min-width: 0; }
+.bemfa-count { font-size: 11px; font-weight: 400; color: var(--text-dim); margin-left: 6px; }
+.bemfa-chevron {
+    flex: none; font-size: 11px; color: var(--text-dim); line-height: 1;
+    transition: transform 0.18s ease;
+}
+.bemfa-toggle[aria-expanded="true"] .bemfa-chevron { transform: rotate(180deg); }
+.bemfa-body { padding-top: 2px; }
+.bemfa-actions { display: flex; gap: 6px; flex: none; margin-bottom: 8px; }
+.mini-btn {
+    padding: 6px 10px; border-radius: 8px; font-size: 12px; cursor: pointer;
+    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
+    color: var(--text); white-space: nowrap;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+}
+body.light .mini-btn { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.10); }
+.mini-btn:active { opacity: 0.65; }
+.mini-btn.accent { color: var(--accent); border-color: rgba(70,180,255,0.45); }
+.bemfa-row {
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 10px; margin-bottom: 8px;
+    border: 1px solid rgba(255,255,255,0.10); border-radius: 12px;
+}
+body.light .bemfa-row { border-color: rgba(0,0,0,0.10); }
+.bemfa-row-line { display: flex; align-items: center; gap: 8px; }
+.bemfa-row-line .config-input { flex: 1; width: auto; min-width: 0; text-align: left; }
+.bemfa-row-line .config-select { flex: 1; min-width: 0; font-size: 13px; }
+.bemfa-port {
+    flex: none; font-size: 11px; color: var(--text-dim);
+    min-width: 18px; text-align: center;
+}
+.bemfa-del {
+    flex: none; width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
+    background: transparent; border: 1px solid rgba(255,255,255,0.12);
+    color: var(--limit-danger); font-size: 16px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+}
+body.light .bemfa-del { border-color: rgba(0,0,0,0.12); }
+.bemfa-del:active { opacity: 0.6; }
+.bemfa-empty {
+    text-align: center; color: var(--text-dim); font-size: 12px;
+    padding: 14px 8px; border: 1px dashed rgba(255,255,255,0.14); border-radius: 12px;
+}
+body.light .bemfa-empty { border-color: rgba(0,0,0,0.12); }
+
+/* ── 小米云弹窗：设备清单 + 选项条 ──
+   清单限高滚动、选项条贴在底部操作区上方：清单再长，勾选"同步名称"和「导入」
+   按钮也不会被挤出屏幕（弹窗本身 max-height:80vh）。 */
+.xm-list {
+    max-height: 38vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    padding-right: 2px; margin-bottom: 10px;
+}
+.xm-item {
+    display: flex; align-items: center; gap: 10px; cursor: pointer;
+    padding: 10px; margin-bottom: 6px;
+    border: 1px solid rgba(255,255,255,0.10); border-radius: 10px;
+}
+body.light .xm-item { border-color: rgba(0,0,0,0.10); }
+.xm-item.is-on { border-color: var(--accent); }
+.xm-item input[type="checkbox"] {
+    width: 18px; height: 18px; flex: none; accent-color: var(--accent); margin: 0;
+}
+.xm-item-main { min-width: 0; flex: 1; }
+.xm-item-name {
+    font-size: 14px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.xm-item-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.xm-options {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; margin-bottom: 10px;
+    border: 1px solid var(--card-border); border-radius: 12px;
+    background: rgba(255,255,255,0.03);
+}
+body.light .xm-options { background: rgba(0,0,0,0.02); }
+.xm-options-text { flex: 1; min-width: 0; }
+.xm-options .config-label { font-size: 14px; }
+.xm-options .config-hint { margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -72,24 +228,25 @@ body.light .config-input {
 
     <div class="bottom-view" style="padding-top:12px;">
 
-        <!-- BLE Config -->
+        <!-- 充电器（设备列表，§3.12）：
+             原来是一组固定凭据表单；多设备后一台充电器一张卡片。
+             第一张恒为 primary（由配置文件 ble: 节提供，不可删除），
+             其余写进 devices: 节。 -->
         <div class="card config-section">
             <div class="config-section-title" style="display:flex;align-items:center;justify-content:space-between;">
-                <span data-i18n="config.bleDevice">BLE 设备</span>
+                <span>
+                    <span data-i18n="config.devicesSection">充电器</span>
+                    <!-- 多设备能力在 P5 真机 canary 通过前标 Beta（README 同口径） -->
+                    <span class="beta-badge" data-i18n="config.multiDeviceBeta" title="">Beta</span>
+                </span>
                 <span onclick="openXiaomiModal()" style="font-size:10px;color:var(--accent);cursor:pointer;" data-i18n="config.xiaomiAuto">小米云自动获取 &#8599;</span>
             </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.mac">MAC 地址</div><div class="config-hint" data-i18n="config.macHint">充电器蓝牙 MAC 地址</div></div>
-                <input class="config-input" id="ble_mac" placeholder="AA:BB:CC:DD:EE:FF">
-            </div>
-            <div class="config-row">
-                <div><div class="config-label">Token</div><div class="config-hint" data-i18n="config.tokenHint">设备认证 Token (十六进制)</div></div>
-                <input class="config-input" id="ble_token" placeholder="Token">
-            </div>
-            <div class="config-row">
-                <div><div class="config-label">BLE Key</div><div class="config-hint" data-i18n="config.bleKeyHint">加密密钥 (十六进制)</div></div>
-                <input class="config-input" id="ble_key" placeholder="BLE Key">
-            </div>
+            <div class="config-hint device-list-hint" data-i18n="config.devicesHint">一台主机可同时连接多台充电器；保存后需重启生效</div>
+            <div id="deviceList"></div>
+            <button type="button" class="device-add-btn" onclick="addDevice()">
+                <span aria-hidden="true">+</span>
+                <span data-i18n="config.addDevice">添加充电器</span>
+            </button>
         </div>
 
         <!-- MQTT Config -->
@@ -132,25 +289,30 @@ body.light .config-input {
                 <div><div class="config-label" data-i18n="config.privateKey">私钥</div><div class="config-hint" data-i18n="config.privateKeyHint">巴法云用户 私钥</div></div>
                 <input class="config-input" id="bemfa_uid" data-i18n-placeholder="config.placeholderUid" placeholder="巴法云 私钥">
             </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.portName" data-i18n-params='{"port":"C1"}'>C1 端口名称</div><div class="config-hint" data-i18n="config.portNameHint">巴法云设备显示名</div></div>
-                <input class="config-input" id="bemfa_name_c1" data-i18n-placeholder="config.placeholderC1" placeholder="C口1开关">
-            </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.portName" data-i18n-params='{"port":"C2"}'>C2 端口名称</div><div class="config-hint" data-i18n="config.portNameHint">巴法云设备显示名</div></div>
-                <input class="config-input" id="bemfa_name_c2" data-i18n-placeholder="config.placeholderC2" placeholder="C口2开关">
-            </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.portName" data-i18n-params='{"port":"C3"}'>C3 端口名称</div><div class="config-hint" data-i18n="config.portNameHint">巴法云设备显示名</div></div>
-                <input class="config-input" id="bemfa_name_c3" data-i18n-placeholder="config.placeholderC3" placeholder="C口3开关">
-            </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.portName" data-i18n-params='{"port":"USB-A"}'>USB-A 端口名称</div><div class="config-hint" data-i18n="config.portNameHint">巴法云设备显示名</div></div>
-                <input class="config-input" id="bemfa_name_a" data-i18n-placeholder="config.placeholderA" placeholder="USB-A开关">
-            </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.bleStatusName">蓝牙状态名称</div><div class="config-hint" data-i18n="config.portNameHint">巴法云设备显示名</div></div>
-                <input class="config-input" id="bemfa_name_ble" data-i18n-placeholder="config.placeholderBle" placeholder="蓝牙开关">
+            <!-- 语音开关表：一行一个开关，(名字, 哪台设备, 哪个口) 三件套。
+                 **默认折叠**：5 个开关就要 400+ 像素，而绝大多数人打开本页不是来改
+                 语音开关的——常驻展开会把 MQTT/服务器这些更常改的配置推到看不见的
+                 地方。头是整行可点的按钮，右侧显示"共 N 个"，展开才画行。 -->
+            <div class="bemfa-block">
+                <div class="bemfa-toggle" id="bemfaToggle" role="button" tabindex="0"
+                     aria-expanded="false" aria-controls="bemfaBody" onclick="toggleBemfaSection()"
+                     onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleBemfaSection();}">
+                    <div class="bemfa-head-text">
+                        <div class="config-label">
+                            <span data-i18n="config.bemfaSwitchSection">语音开关</span>
+                            <span class="bemfa-count" id="bemfaCount"></span>
+                        </div>
+                        <div class="config-hint" data-i18n="config.bemfaSwitchHint">一行一个开关：显示名 + 哪台设备 + 哪个口</div>
+                    </div>
+                    <span class="bemfa-chevron" id="bemfaChevron" aria-hidden="true">&#9662;</span>
+                </div>
+                <div class="bemfa-body" id="bemfaBody" hidden>
+                    <div class="bemfa-actions">
+                        <button type="button" class="mini-btn accent" onclick="autoFillBemfaEntities()" data-i18n="config.bemfaAutoFill">按设备生成</button>
+                        <button type="button" class="mini-btn" onclick="addBemfaEntity()" data-i18n="config.bemfaAdd">+ 添加</button>
+                    </div>
+                    <div id="bemfaEntityList"></div>
+                </div>
             </div>
         </div>
 
@@ -215,6 +377,447 @@ let _configStatus = 'loading';   // 'loading' | 'loaded' | 'error'
 let _configStatusMsg = '';
 let _saving = false;
 
+// ── 设备列表（多设备，§3.12）──
+// 一台充电器一条记录；DOM 里的输入框是它的编辑视图，两边的同步方向只有
+// "输入 → _devices"（每个输入框都挂了 updateDeviceField），所以重绘卡片不会丢输入。
+//   is_primary 的那台由配置文件 `ble:` 节提供（不可删除），其余写进 `devices:` 节。
+let _devices = [];
+let _editing = -1;        // 展开编辑的卡片下标；-1 = 全部收起
+const DEVICE_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;   // 与服务端 validate_device_specs 同一套规则
+
+function emptyDevice(isPrimary) {
+    return {
+        id: isPrimary ? 'default' : '',
+        name: '', mac: '', token: '', ble_key: '',
+        topic_prefix: '', bemfa_ble: '',
+        is_primary: !!isPrimary, connected: false
+    };
+}
+
+/** 设备 id 的规范形式（trim）。
+ *
+ * 输入框里可能还留着用户正在敲的尾空格，但 id 的"身份"只有 trim 后那一种：
+ * 落盘写的是 `d.id.trim()`，服务端校验也按它；巴法云实体的 `device` 若拿原始
+ * 输入去比对，就会出现"实体指向 'desk '、设备却叫 desk"——本地看全都对，保存时
+ * 服务端以「实体指向的设备不存在」拒收整份配置。
+ */
+function canonicalDeviceId(device) {
+    return String((device && device.id) || '').trim();
+}
+
+function findDeviceIndex(pred) {
+    for (let i = 0; i < _devices.length; i++) if (pred(_devices[i], i)) return i;
+    return -1;
+}
+
+function updateDeviceField(index, field, value) {
+    const d = _devices[index];
+    if (!d) return;
+    const prev = d[field];
+    d[field] = value;
+    // 设备 ID 是巴法云实体绑定的锚：改名时实体跟着改，否则保存才报"设备不存在"。
+    // 必须用 **trim 后**的值重绑：saveConfig 落盘写的是 d.id.trim()、validateDevices
+    // 也按 trim 后的值校验，这里若拿原始输入（'desk ' 带尾空格）去重绑，本地校验会
+    // 通过、设备 id 存成 desk、实体却指向 'desk ' —— 服务端以"实体指向的设备不存在"
+    // 拒收整份配置，正好是"保存成功但启动失败"。
+    if (field === 'id') {
+        const nextId = String(value === undefined || value === null ? '' : value).trim();
+        const prevId = String(prev === undefined || prev === null ? '' : prev).trim();
+        if (prevId !== nextId) remapBemfaDevice(prevId, nextId);
+    }
+    // 名字/MAC 直接投影到卡片头，避免"改了输入框、上面那行还是旧的"
+    if (field === 'name' || field === 'mac' || field === 'id') {
+        const head = document.getElementById(`device-name-${index}`);
+        const sub = document.getElementById(`device-sub-${index}`);
+        if (head) head.textContent = deviceLabel(d);
+        if (sub) sub.textContent = d.mac || I18N.t('config.mac');
+    }
+}
+
+function deviceLabel(d) {
+    // 服务端在"没配名字"时会把内部 id 回填进 name（`describe()` 的 `name or id`），
+    // 所以 name === id 等价于没名字——否则中文页面上会冒出 `default` 这种英文标识。
+    if (d.name && d.name !== d.id) return d.name;
+    // primary 的名字可以为空（服务端只有 ble: 节，没有名字字段）：此时绝不能把
+    // 内部 id `default` 顶上去——中文页面上冒出一串英文字符，用户根本不知道那是谁。
+    if (d.is_primary) return I18N.t('device.primaryName');
+    return d.id || I18N.t('device.unnamedDevice');
+}
+
+// 卡片列表：编辑态与在线状态都只是"改写已有节点"，整块 innerHTML 只在
+// 设备增删或展开项变化时重建（用户正在输入时不能重建）。
+function renderDeviceList() {
+    const host = document.getElementById('deviceList');
+    if (!host) return;
+    host.innerHTML = _devices.map((d, i) => {
+        const open = i === _editing;
+        const macText = d.mac || I18N.t('config.mac');
+        return `
+        <div class="device-card${open ? ' is-editing' : ''}" id="device-card-${i}">
+            <div class="device-card-head" onclick="toggleDeviceEditor(${i})">
+                <span class="device-led${d.connected ? ' on' : ''}" aria-hidden="true"></span>
+                <div class="device-card-main">
+                    <div class="device-card-name">
+                        <span id="device-name-${i}">${escText(deviceLabel(d))}</span>
+                        ${d.is_primary ? `<span class="device-tag">${escText(I18N.t('config.primaryTag'))}</span>` : ''}
+                    </div>
+                    <div class="device-card-sub" id="device-sub-${i}">${escText(macText)}</div>
+                </div>
+                <button type="button" class="device-card-btn" onclick="event.stopPropagation();toggleDeviceEditor(${i})">${escText(I18N.t('config.editDevice'))}</button>
+                ${d.is_primary ? '' : `<button type="button" class="device-card-btn danger" onclick="event.stopPropagation();removeDevice(${i})">${escText(I18N.t('config.removeDevice'))}</button>`}
+            </div>
+            <div class="device-card-body" id="device-body-${i}"${open ? '' : ' hidden'}>
+                ${open ? deviceEditorHtml(d, i) : ''}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// 展开的编辑区：字段与顺序按 §3.12 的清单（name / mac / token / ble_key /
+// topic_prefix / bemfa 实体名）。
+// 文案在这里就用 I18N.t() 取好（而不是写 data-i18n 交给 applyTranslations）：
+// 这段 HTML 是在 JS 里拼出来的，静态扫描（verify_i18n.py）看不到 <script> 里的
+// 标签，只有 t('...') 这种字面量调用能被扫到；切语言时整块卡片由
+// I18N.onChange 重画一次，所以也不需要事后翻译。
+function deviceEditorHtml(d, i) {
+    // 每个输入框都挂了 oninput：DOM 是编辑视图，_devices 才是保存时的数据源
+    const attrs = (key) => `id="device-${i}-${key}" value="${escText(d[key] || '')}" `
+        + `oninput="updateDeviceField(${i}, '${key}', this.value)"`;
+    const row = (label, hint, inputHtml) => `
+        <div class="config-row">
+            <div><div class="config-label">${escText(label)}</div>`
+            + (hint ? `<div class="config-hint">${escText(hint)}</div>` : '')
+            + `</div>${inputHtml}
+        </div>`;
+    let html = row(I18N.t('config.deviceName'), I18N.t('config.deviceNameHint'),
+        `<input class="config-input" ${attrs('name')}>`);
+    // primary 的 id 固定为 default（history/meta/legacy topic 都锚在它上面，§3.10）
+    if (!d.is_primary) {
+        html += row(I18N.t('config.deviceId'), I18N.t('config.deviceIdHint'),
+            `<input class="config-input" ${attrs('id')} placeholder="desk" autocapitalize="off" autocorrect="off" spellcheck="false">`);
+    }
+    html += row(I18N.t('config.mac'), I18N.t('config.macHint'),
+        `<input class="config-input" ${attrs('mac')} placeholder="AA:BB:CC:DD:EE:FF">`);
+    html += row(I18N.t('config.tokenHint'), '',
+        `<input class="config-input" ${attrs('token')} placeholder="Token">`);
+    html += row(I18N.t('config.bleKeyHint'), '',
+        `<input class="config-input" ${attrs('ble_key')} placeholder="BLE Key">`);
+    if (!d.is_primary) {
+        html += row(I18N.t('config.topicPrefix'), I18N.t('config.topicAutoHint'),
+            `<input class="config-input" ${attrs('topic_prefix')} placeholder="${escText(I18N.t('config.topicAuto'))}">`);
+        html += row(I18N.t('config.bleStatusName'), '',
+            `<input class="config-input" ${attrs('bemfa_ble')}>`);
+    }
+    return html;
+}
+
+function toggleDeviceEditor(index) {
+    _editing = (_editing === index) ? -1 : index;
+    renderDeviceList();
+}
+
+function addDevice(prefill) {
+    const d = emptyDevice(false);
+    if (prefill) Object.assign(d, prefill);
+    _devices.push(d);
+    _editing = _devices.length - 1;
+    renderDeviceList();
+    if (!prefill) showToast(I18N.t('config.deviceAdded'));
+}
+
+function removeDevice(index) {
+    const d = _devices[index];
+    if (!d) return;
+    // 前端提示（服务端也会校验，§3.10）：primary 来自 ble: 节，删掉它等于没有主设备
+    if (d.is_primary) { showToast(I18N.t('config.primaryUndeletable')); return; }
+    if (!confirm(I18N.t('config.confirmRemoveDevice', { name: deviceLabel(d) }))) return;
+    // 绑定在这台设备上的语音实体一起删：留着的话保存会被服务端拦下（指向的设备
+    // 不存在），而用户根本不知道那个报错来自自己刚删的这台
+    dropBemfaEntitiesOf(canonicalDeviceId(d) || 'default');
+    _devices.splice(index, 1);
+    _editing = -1;
+    renderDeviceList();
+}
+
+// ── 巴法云语音开关（实体表，§3.11）──
+// 一行 = 一个语音开关 = (显示名, 哪台设备, 哪个口)。服务端的实体 id 仍按设备派生
+// （primary 保持 cuktech_c1…、其他设备 {id}_c1），所以这里改的是"叫什么名字、
+// 绑哪台设备的哪个口"，不会破坏已经配好的语音指令。
+const BEMFA_PORTS = ['c1', 'c2', 'c3', 'a', 'ble'];
+let _bemfaEntities = [];   // [{name, device, port}]
+
+function bemfaPortLabel(port) {
+    // 逐条字面量 I18N.t()：verify_i18n.py 只认字面量 key，拼出来的 key 既查不到
+    // 也漏掉拼错的保护
+    if (port === 'c1') return I18N.t('config.bemfaPortC1');
+    if (port === 'c2') return I18N.t('config.bemfaPortC2');
+    if (port === 'c3') return I18N.t('config.bemfaPortC3');
+    if (port === 'a') return I18N.t('config.bemfaPortA');
+    return I18N.t('config.bemfaPortBle');
+}
+
+// 默认显示名：primary 沿用配置里的老名字（升级后语音指令一个都不变），
+// 其他设备用"设备名 + 端口"——否则 N 台设备的开关在巴法云 App 里全都叫"C口1开关"。
+function defaultBemfaName(deviceId, port) {
+    const d = _devices.find(x => canonicalDeviceId(x) === deviceId);
+    const isPrimary = !!d && d.is_primary;
+    if (isPrimary) {
+        if (port === 'c1') return I18N.t('config.placeholderC1');
+        if (port === 'c2') return I18N.t('config.placeholderC2');
+        if (port === 'c3') return I18N.t('config.placeholderC3');
+        if (port === 'a') return I18N.t('config.placeholderA');
+        return I18N.t('config.placeholderBle');
+    }
+    const label = d ? deviceLabel(d) : (deviceId || I18N.t('device.unnamedDevice'));
+    return I18N.t('config.bemfaEntityDefault', { name: label, port: bemfaPortLabel(port) });
+}
+
+function renderBemfaEntities() {
+    updateBemfaCount();
+    const host = document.getElementById('bemfaEntityList');
+    if (!host) return;
+    if (!_bemfaEntities.length) {
+        host.innerHTML = `<div class="bemfa-empty">${escText(I18N.t('config.bemfaEmpty'))}</div>`;
+        return;
+    }
+    host.innerHTML = _bemfaEntities.map((e, i) => {
+        const knownIds = _devices.map(canonicalDeviceId);
+        // 设备下拉：配置里引用的设备不存在（手改 YAML、或设备卡片被删）时补一个
+        // 占位项——否则 select 会静默显示第一台设备，保存时把开关挪到别人家的口上
+        const missingOpt = knownIds.indexOf(e.device) < 0
+            ? `<option value="${escText(e.device)}" selected>${escText(e.device)}（${escText(I18N.t('config.bemfaMissingDevice'))}）</option>`
+            : '';
+        const devOpts = _devices.map(d => {
+            const id = canonicalDeviceId(d);
+            return `<option value="${escText(id)}"${id === e.device ? ' selected' : ''}>${escText(deviceLabel(d))}</option>`;
+        }).join('');
+        const portOpts = BEMFA_PORTS.map(p =>
+            `<option value="${p}"${p === e.port ? ' selected' : ''}>${escText(bemfaPortLabel(p))}</option>`).join('');
+        return `
+        <div class="bemfa-row">
+            <div class="bemfa-row-line">
+                <input class="config-input" value="${escText(e.name)}"
+                       placeholder="${escText(I18N.t('config.bemfaNamePlaceholder'))}"
+                       oninput="updateBemfaEntity(${i}, 'name', this.value)">
+                <button type="button" class="bemfa-del" onclick="removeBemfaEntity(${i})"
+                        aria-label="${escText(I18N.t('config.removeDevice'))}">&times;</button>
+            </div>
+            <div class="bemfa-row-line">
+                <select class="config-select" onchange="updateBemfaEntity(${i}, 'device', this.value)">${missingOpt}${devOpts}</select>
+                <span class="bemfa-port" aria-hidden="true">&rarr;</span>
+                <select class="config-select" onchange="updateBemfaEntity(${i}, 'port', this.value)">${portOpts}</select>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// 折叠头上的摘要：收起时也能看出"我配了几个开关"（否则只能点开才知道）
+function updateBemfaCount() {
+    const badge = document.getElementById('bemfaCount');
+    if (!badge) return;
+    const n = _bemfaEntities.length;
+    badge.textContent = n ? I18N.t('config.bemfaCount', { n: n }) : '';
+}
+
+function updateBemfaEntity(index, field, value) {
+    const e = _bemfaEntities[index];
+    if (!e) return;
+    // 名字还是"默认值"（用户没自己起过名）→ 跟着设备/端口改，省得手动改两遍；
+    // 用户改过的名字一个字都不动（那才是"我给它起的名字"）
+    const followsDefault = !String(e.name || '').trim()
+        || e.name === defaultBemfaName(e.device, e.port);
+    e[field] = value;
+    if (field !== 'name' && followsDefault) {
+        e.name = defaultBemfaName(e.device, e.port);
+        renderBemfaEntities();
+    }
+}
+
+function addBemfaEntity() {
+    // 落点选"第一个还没被占用的 (设备, 端口)"：连续点「添加」不会一直堆同一行，
+    // 也不会一上手就造出一个保存必被拦下的重复项
+    for (let i = 0; i < _devices.length; i++) {
+        const id = (_devices[i].id || '').trim();
+        if (!id) continue;   // 还没填设备 ID 的卡片绑不上（保存时服务端也会拒）
+        const free = BEMFA_PORTS.find(p => !_bemfaEntities.some(e => e.device === id && e.port === p));
+        if (free) {
+            _bemfaEntities.push({ name: defaultBemfaName(id, free), device: id, port: free });
+            setBemfaOpen(true);
+            renderBemfaEntities();
+            return;
+        }
+    }
+    showToast(I18N.t('config.bemfaAllUsed'), 4000);
+}
+
+function removeBemfaEntity(index) {
+    // 删到空表 = 明确"一个语音开关都不要"：保存后服务端会把已注册的实体从巴法云
+    // 真的删掉（registered 差集），小爱/小度里引用它们的指令随即失效。逐行删本来
+    // 就是手动动作，但"删最后一条"这一步必须停下来问一次。
+    if (_bemfaEntities.length === 1
+            && !confirm(I18N.t('config.bemfaRemoveLastConfirm', {
+                name: _bemfaEntities[index].name || '' }))) return;
+    _bemfaEntities.splice(index, 1);
+    renderBemfaEntities();
+}
+
+// primary 的某个口的显示名（老字段 name_c* 就是它）：表里找不到就用默认值
+function primaryBemfaName(port, fallback) {
+    const primaryId = _devices.length ? (canonicalDeviceId(_devices[0]) || 'default') : 'default';
+    const hit = _bemfaEntities.find(e => e.device === primaryId && e.port === port);
+    const name = hit ? String(hit.name || '').trim() : '';
+    return name || fallback;
+}
+
+// 一键按设备铺开：每台设备 × 5 个开关（4 个口 + 蓝牙）。多设备时这是最省事的
+// 起手式——用户随后改名/删行即可，而不是从零手填 N×5 行。
+function autoFillBemfaEntities() {
+    if (_bemfaEntities.length && !confirm(I18N.t('config.bemfaAutoFillConfirm'))) return;
+    const rows = [];
+    _devices.forEach(d => {
+        const id = (d.id || '').trim();
+        if (!id) return;   // 还没填设备 ID 的卡片先跳过（生成的实体绑不上）
+        BEMFA_PORTS.forEach(port => {
+            rows.push({ name: defaultBemfaName(id, port), device: id, port });
+        });
+    });
+    _bemfaEntities = rows;
+    setBemfaOpen(true);          // 铺开的结果必须立刻可见
+    renderBemfaEntities();
+    showToast(I18N.t('config.bemfaAutoFilled', { n: rows.length }));
+}
+
+// 设备被删掉时，绑在它身上的语音实体必须一起走：留着它们，保存会被服务端的
+// validate_bemfa_entities 拦下（"指向的设备不存在"），用户却不知道是自己刚删的那台。
+function dropBemfaEntitiesOf(deviceId) {
+    const before = _bemfaEntities.length;
+    _bemfaEntities = _bemfaEntities.filter(e => e.device !== deviceId);
+    if (_bemfaEntities.length !== before) renderBemfaEntities();
+}
+
+// 设备 ID 改名：绑定的实体跟着改，否则保存时才报"设备不存在"
+function remapBemfaDevice(oldId, newId) {
+    if (!oldId || oldId === newId) return;
+    let hit = 0;
+    _bemfaEntities.forEach(e => { if (e.device === oldId) { e.device = newId; hit++; } });
+    if (hit) renderBemfaEntities();
+}
+
+function validateBemfaEntities() {
+    setBemfaOpen(true);       // 报错必须看得见（收起状态下用户只会看到一个 toast）
+    const seen = {};
+    for (let i = 0; i < _bemfaEntities.length; i++) {
+        const e = _bemfaEntities[i];
+        const name = String(e.name || '').trim();
+        if (!name) { showToast(I18N.t('config.bemfaNeedName'), 5000); return false; }
+        const key = `${e.device}\u0000${e.port}`;
+        if (seen[key]) { showToast(I18N.t('config.bemfaDuplicate', { name: name }), 5000); return false; }
+        seen[key] = true;
+        if (!_devices.some(d => canonicalDeviceId(d) === e.device)) {
+            showToast(I18N.t('config.bemfaDeviceGone', { name: name }), 5000);
+            return false;
+        }
+    }
+    return true;
+}
+
+// ── 折叠状态（默认收起）──
+// 折叠只影响"画不画行"，数据始终在 _bemfaEntities 里：保存、校验、删设备连带清理
+// 都不依赖展开状态（否则"没展开就保存"会静默丢开关——比占地方严重得多）。
+let _bemfaOpen = false;
+
+function setBemfaOpen(open) {
+    _bemfaOpen = !!open;
+    const body = document.getElementById('bemfaBody');
+    const toggle = document.getElementById('bemfaToggle');
+    if (body) body.hidden = !_bemfaOpen;
+    if (toggle) toggle.setAttribute('aria-expanded', _bemfaOpen ? 'true' : 'false');
+}
+
+function toggleBemfaSection() {
+    setBemfaOpen(!_bemfaOpen);
+}
+
+// 新增/铺开/校验失败时自动展开：用户做了动作却看不到结果是最差的一种交互
+// （展开点用 setBemfaOpen(true)，见 addBemfaEntity / autoFillBemfaEntities）。
+// 老配置（没写过 entities 键）→ 用**服务端给的派生清单**铺回去；
+// 新配置 → 直接用表（空表就是用户真的不要开关）。
+//
+// 为什么老配置不能"只铺 primary 的 5 行"（这里曾经是那样）：派生规则是
+// `allowed_devices × 5`，配了 `allowed_devices: ["*"]` 的用户有两台设备就是 10 个
+// 开关。页面只铺 5 行 → 保存即把表落盘（entities 键从此存在）→ 服务端重启后按新表
+// 建模，并把另外 5 个从巴法云**真的删掉**（`registered` 差集）。用户只是改了 MQTT
+// 地址，语音开关却没了。派生结果与名字一律由 `/api/config.derivedEntities` 提供，
+// 前端不重复实现一遍规则（那才会漂移）。
+function seedBemfaEntities(b) {
+    b = b || {};
+    const primaryId = _devices.length ? (canonicalDeviceId(_devices[0]) || 'default') : 'default';
+    if (b.entitiesDefined) {
+        _bemfaEntities = (b.entities || []).map(e => ({
+            name: e.name || '',
+            device: e.device || primaryId,
+            port: BEMFA_PORTS.indexOf(e.port) >= 0 ? e.port : 'c1',
+        }));
+    } else if (Array.isArray(b.derivedEntities) && b.derivedEntities.length) {
+        _bemfaEntities = b.derivedEntities.map(e => ({
+            name: e.name || '',
+            device: e.device || primaryId,
+            port: BEMFA_PORTS.indexOf(e.port) >= 0 ? e.port : 'c1',
+        }));
+    } else {
+        // 兜底（旧服务端没有 derivedEntities）：至少把 primary 的 5 个名字铺出来
+        _bemfaEntities = BEMFA_PORTS.map(port => ({
+            name: b['name_' + port] || defaultBemfaName(primaryId, port),
+            device: primaryId,
+            port,
+        }));
+    }
+    renderBemfaEntities();
+}
+
+function escText(v) {
+    return String(v === undefined || v === null ? '' : v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/**
+ * 设备清单来源是 GET /api/devices（§3.7）：它是**运行时真值**，primary 恒在首位、
+ * 带 id/name/mac/connected。凭据（token/ble_key）不在它里面，只有 primary 的能从
+ * GET /api/config 的 ble 节拿到（而且是掩码形式：掩码值再提交回去会被服务端忽略）。
+ * 非 primary 设备的 token/ble_key 因此显示为空 —— 用户不重填就当"保持不变"，
+ * 由服务端 YAML 合并保住原值（见保存时的 payload 说明）。
+ */
+async function loadDeviceList(bleCfg) {
+    let list = [];
+    try {
+        const res = await fetch(`${API}/api/devices`);
+        const data = await res.json();
+        if (data && data.ok && Array.isArray(data.devices)) list = data.devices;
+    } catch (e) {
+        // 旧服务端没有 /api/devices：退回"只有一台 primary"的老形态
+    }
+    if (!list.length) list = [{ id: 'default', name: '', mac: bleCfg.mac || '', is_primary: true }];
+
+    _devices = list.map((d, idx) => {
+        const isPrimary = idx === 0 || !!d.is_primary;
+        const dev = emptyDevice(isPrimary);
+        dev.id = isPrimary ? 'default' : (d.id || '');
+        // 名字等于 id 说明"没单独起名"（服务端回退成 id），留空才对得上
+        dev.name = (d.name && d.name !== dev.id) ? d.name : '';
+        dev.mac = d.mac || '';
+        dev.topic_prefix = d.topic_prefix || '';
+        dev.connected = !!d.connected;
+        if (isPrimary) {
+            dev.token = (bleCfg && bleCfg.token) || '';
+            dev.ble_key = (bleCfg && bleCfg.ble_key) || '';
+        }
+        return dev;
+    });
+    _editing = -1;
+    renderDeviceList();
+}
+
 // Theme (shared with phone.html)
 function toggleTheme() {
     isDark = !isDark;
@@ -248,9 +851,8 @@ async function loadConfig() {
         if (!data.ok) throw new Error(data.error);
         const c = data.config;
 
-        document.getElementById('ble_mac').value = c.ble.mac || '';
-        document.getElementById('ble_token').value = c.ble.token || '';
-        document.getElementById('ble_key').value = c.ble.ble_key || '';
+        // 传 ble: 节（不是整份 config）：primary 的凭据就从这里来
+        await loadDeviceList(c.ble);
 
         document.getElementById('mqtt_enabled').checked = c.mqtt.enabled;
         document.getElementById('mqtt_host').value = c.mqtt.host || '';
@@ -261,11 +863,8 @@ async function loadConfig() {
 
         document.getElementById('bemfa_enabled').checked = c.bemfa.enabled;
         document.getElementById('bemfa_uid').value = c.bemfa.uid || '';
-        document.getElementById('bemfa_name_c1').value = c.bemfa.name_c1 || '';
-        document.getElementById('bemfa_name_c2').value = c.bemfa.name_c2 || '';
-        document.getElementById('bemfa_name_c3').value = c.bemfa.name_c3 || '';
-        document.getElementById('bemfa_name_a').value = c.bemfa.name_a || '';
-        document.getElementById('bemfa_name_ble').value = c.bemfa.name_ble || '';
+        // 语音开关表：设备清单已经加载完（下拉要用设备名），这里才铺开
+        seedBemfaEntities(c.bemfa);
 
         document.getElementById('server_port').value = c.server.port || 8199;
         document.getElementById('server_retention').value = c.server.history_retention_days || 2;
@@ -301,19 +900,70 @@ async function loadConfig() {
     }
 }
 
+// 保存前的本地校验：服务端也会校验（validate_device_specs），但那是在重启之后——
+// 配置错了会直接起不来。能在前端拦下的就别留给重启后的日志。
+function validateDevices() {
+    if (!_devices.length) { addDevice(); return false; }
+    const primary = _devices[0];
+    const seen = { default: true };
+    for (let i = 1; i < _devices.length; i++) {
+        const d = _devices[i];
+        const label = deviceLabel(d);
+        if (!DEVICE_ID_RE.test(d.id.trim()) || seen[d.id.trim()]) {
+            showToast(I18N.t('config.invalidDeviceId', { name: label }), 5000);
+            toggleDeviceEditor(i);
+            return false;
+        }
+        seen[d.id.trim()] = true;
+        if (!d.mac.trim() || !d.token.trim()) {
+            showToast(I18N.t('config.needMacToken', { name: label }), 5000);
+            toggleDeviceEditor(i);
+            return false;
+        }
+    }
+    // 有附加设备时 primary 必须配齐：它是 legacy topic/history 的锚点（§3.10）
+    if (_devices.length > 1 && (!primary.mac.trim() || !primary.token.trim())) {
+        showToast(I18N.t('config.needMacToken', { name: deviceLabel(primary) }), 5000);
+        if (_editing !== 0) toggleDeviceEditor(0);
+        return false;
+    }
+    return true;
+}
+
 async function saveConfig() {
+    if (!validateDevices()) return;
+    if (!validateBemfaEntities()) return;
     const btn = document.getElementById('btnSave');
     btn.disabled = true;
     _saving = true;
     document.getElementById('btnSaveIcon').textContent = '⏳';
     document.getElementById('btnSaveText').textContent = I18N.t('common.saving');
 
+    // 第一台（primary）展开回 `ble:` 节：那是老版本工具/脚本唯一认识的形状，
+    // 也是 primary 的 id 恒为 default、legacy topic 不变的锚点（§3.10）。
+    // 其余设备写 `devices:` 节，字段名与 config.py 的 from_mapping 完全一致。
+    const primary = _devices[0] || emptyDevice(true);
+    const extras = _devices.slice(1).map(d => {
+        const item = {
+            id: d.id.trim(),
+            name: d.name.trim(),
+            mac: d.mac.trim(),
+            token: d.token.trim(),
+            ble_key: d.ble_key.trim(),
+            topic_prefix: d.topic_prefix.trim(),
+        };
+        // 空的可选覆盖项不要写进 YAML：bemfa 实体名留空 = 用默认派生名
+        if (d.bemfa_ble.trim()) item.bemfa_ble = d.bemfa_ble.trim();
+        return item;
+    });
+
     const config = {
         ble: {
-            mac: document.getElementById('ble_mac').value.trim(),
-            token: document.getElementById('ble_token').value.trim(),
-            ble_key: document.getElementById('ble_key').value.trim(),
+            mac: primary.mac.trim(),
+            token: primary.token.trim(),
+            ble_key: primary.ble_key.trim(),
         },
+        devices: extras,
         mqtt: {
             enabled: document.getElementById('mqtt_enabled').checked,
             host: document.getElementById('mqtt_host').value.trim(),
@@ -325,17 +975,28 @@ async function saveConfig() {
         bemfa: {
             enabled: document.getElementById('bemfa_enabled').checked,
             uid: document.getElementById('bemfa_uid').value.trim(),
-            name_c1: document.getElementById('bemfa_name_c1').value.trim() || I18N.t('config.placeholderC1'),
-            name_c2: document.getElementById('bemfa_name_c2').value.trim() || I18N.t('config.placeholderC2'),
-            name_c3: document.getElementById('bemfa_name_c3').value.trim() || I18N.t('config.placeholderC3'),
-            name_a: document.getElementById('bemfa_name_a').value.trim() || I18N.t('config.placeholderA'),
-            name_ble: document.getElementById('bemfa_name_ble').value.trim() || I18N.t('config.placeholderBle'),
+            // 实体表是唯一真源：一行一个开关，(名字, 设备, 端口) 一起走
+            entities: _bemfaEntities.map(e => ({
+                name: String(e.name || '').trim() || defaultBemfaName(e.device, e.port),
+                device: e.device,
+                port: e.port,
+            })),
+            // 老字段照旧写一份（primary 那一列）：旧版本工具/脚本读 name_c*，
+            // 不写就等于把它们眼里的名字清空了
+            name_c1: primaryBemfaName('c1', I18N.t('config.placeholderC1')),
+            name_c2: primaryBemfaName('c2', I18N.t('config.placeholderC2')),
+            name_c3: primaryBemfaName('c3', I18N.t('config.placeholderC3')),
+            name_a: primaryBemfaName('a', I18N.t('config.placeholderA')),
+            name_ble: primaryBemfaName('ble', I18N.t('config.placeholderBle')),
         },
         server: {
             port: parseInt(document.getElementById('server_port').value) || 8199,
             history_retention_days: parseInt(document.getElementById('server_retention').value) || 2,
         },
     };
+    // 主设备名只在用户真的起了名时才写回：GET /api/config 不返回 ble.name，
+    // 空字符串会因为"说不清是没设置还是被清空"而误删已有名字。
+    if (primary.name.trim()) config.ble.name = primary.name.trim();
 
     try {
         const res = await fetch(`${API}/api/config`, {
@@ -441,10 +1102,17 @@ let _xiaomiServer = '', _xiaomiSessionId = '', _xiaomiQRActive = false;
 
 function openXiaomiModal() {
     document.getElementById('xiaomiModal').style.display = 'flex';
-    document.getElementById('xiaomiLoginForm').style.display = _xiaomiQRActive ? 'none' : 'block';
-    document.getElementById('xiaomiQRForm').style.display = _xiaomiQRActive ? 'block' : 'none';
-    document.getElementById('xiaomiDeviceList').style.display = 'none';
     document.getElementById('xiaomiLoginStatus').textContent = '';
+    // 扫码结果还在（服务端会话 + 本地缓存）就直接回到设备清单：想再同步一台
+    // 设备的名称/凭据时不必重扫二维码，这正是"同步名称"最常用的入口。
+    const hasDevices = _xiaomiDevices.length > 0 && !!_xiaomiSessionId;
+    document.getElementById('xiaomiLoginForm').style.display =
+        (hasDevices || _xiaomiQRActive) ? 'none' : 'block';
+    document.getElementById('xiaomiQRForm').style.display =
+        (!hasDevices && _xiaomiQRActive) ? 'block' : 'none';
+    document.getElementById('xiaomiDeviceList').style.display =
+        hasDevices ? 'block' : 'none';
+    if (hasDevices) renderXiaomiDeviceList();
 }
 
 function closeXiaomiModal() {
@@ -477,6 +1145,8 @@ async function xiaomiStartQR() {
         _xiaomiServer = server;
         _xiaomiSessionId = data.session_id;
         _xiaomiQRActive = true;
+        _xiaomiDevices = [];        // 新会话：上一次的清单与勾选作废
+        _xiaomiSelected = new Set();
 
         // Show QR code
         document.getElementById('xiaomiLoginForm').style.display = 'none';
@@ -544,49 +1214,199 @@ async function xiaomiCompleteQR() {
     _xiaomiQRActive = false;
 }
 
+// ── 扫码拿到的设备清单（多设备导入）──
+// 清单与勾选状态存在前端，**凭据（token/ble_key）不落地**：导入时前端只发 did，
+// 服务端按 did 现取 BLE Key 再回一份完整结果（/api/xiaomi/import）。
+let _xiaomiDevices = [];          // [{did, name, mac, model}]
+let _xiaomiSelected = new Set();  // 勾选中的 did
+
+// MAC 比较统一口径：小米云给的是小写无分隔（`a4c138...`），用户手填的可能是
+// `A4:C1:38:...`。去分隔 + 小写，避免"同一台设备被当成两台"（那会生成重复设备卡，
+// 服务端 MAC 唯一性校验随后就会拦下整个保存）。
+function normMac(v) {
+    return String(v || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+}
+
+function xiaomiMacOf(d) { return normMac(d.mac); }
+
+// 已配置判定：MAC 已在设备卡片里出现过（primary 也算）
+function xiaomiConfiguredIndex(mac) {
+    const m = normMac(mac);
+    if (!m) return -1;
+    return findDeviceIndex(d => xiaomiMacOf(d) === m);
+}
+
+// 与服务端 `config._RESERVED_DEVICE_IDS` 同一套保留字：这些 id 的派生主题会与
+// 端口/状态/命令主题撞车（`{prefix}/set` 等），服务端 validate_device_specs 会拒绝
+// 启动。导入时先避开，否则用户会在"保存"那一步收到一个 400 还得自己改名。
+const RESERVED_DEVICE_IDS = ['all', 'set', 'port', 'status', 'settings', 'ble',
+                             'charge_event', 'default'];
+
+// 给新导入的设备起一个合法 id（`^[a-z0-9][a-z0-9_-]*$`，与服务端同规则）：
+// 优先用云上的英文名做 slug，中文名 slug 为空就退到 MAC 尾号（稳定、可读、不撞车）。
+function suggestDeviceId(dev) {
+    const used = new Set(_devices.map(d => (d.id || '').toLowerCase()));
+    const slug = String(dev.name || '').toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    let base = (slug && /^[a-z0-9]/.test(slug)) ? slug
+        : 'charger' + normMac(dev.mac).slice(-4);
+    // 撞上保留字就加后缀（`set` → `set-2`），而不是交给服务端报错
+    if (RESERVED_DEVICE_IDS.indexOf(base) >= 0) base = base + '-2';
+    let id = base, n = 2;
+    while (used.has(id) || RESERVED_DEVICE_IDS.indexOf(id) >= 0) { id = base + '-' + n; n++; }
+    return id;
+}
+
 function showDeviceList(data) {
     document.getElementById('xiaomiLoginForm').style.display = 'none';
     document.getElementById('xiaomiQRForm').style.display = 'none';
     document.getElementById('xiaomiDeviceList').style.display = 'block';
 
-    const list = document.getElementById('xiaomiDevices');
-    const devices = data.cuktech && data.cuktech.length > 0 ? data.cuktech : data.devices;
-    if (devices.length === 0) {
-        list.innerHTML = `<div style="text-align:center;color:var(--text-dim);padding:16px;">${I18N.t('config.noDevices')}</div>`;
-    } else {
-        list.innerHTML = devices.map(d =>
-            `<div class="config-row" style="cursor:pointer;border:1px solid var(--card-border);border-radius:8px;padding:10px;margin-bottom:6px;" onclick="selectDevice('${d.did}','${d.mac}','${d.token}')">
-                <div><div class="config-label">${d.name || d.model}</div><div class="config-hint">${d.model} | ${d.mac}</div></div>
-            </div>`
-        ).join('');
-    }
+    // 优先展示 CUKTECH 设备；一台都没有时退回全部（用户可能用的是别家型号）
+    const devices = (data.cuktech && data.cuktech.length > 0) ? data.cuktech : data.devices;
+    _xiaomiDevices = (devices || []).map(d => ({
+        did: d.did, name: d.name || '', mac: d.mac || '', model: d.model || '',
+    }));
+    // 默认勾上**还没配置过**的那些：一次点击就能把新设备都加进来，而已配置的
+    // 设备不会被误当成新设备重复添加（想同步名称/凭据再手动勾上即可）。
+    _xiaomiSelected = new Set(_xiaomiDevices
+        .filter(d => xiaomiConfiguredIndex(d.mac) < 0)
+        .map(d => d.did));
+    renderXiaomiDeviceList();
 }
 
-async function selectDevice(did, mac, token) {
-    const status = document.getElementById('xiaomiLoginStatus');
+function renderXiaomiDeviceList() {
+    const list = document.getElementById('xiaomiDevices');
+    if (!list) return;
+    if (!_xiaomiDevices.length) {
+        list.innerHTML = `<div style="text-align:center;color:var(--text-dim);padding:16px;">${escText(I18N.t('config.noDevices'))}</div>`;
+        updateXiaomiImportBtn();
+        return;
+    }
+    list.innerHTML = _xiaomiDevices.map(d => {
+        const idx = xiaomiConfiguredIndex(d.mac);
+        const configured = idx >= 0;
+        const checked = _xiaomiSelected.has(d.did);
+        const tag = configured
+            ? `<span class="device-tag">${escText(I18N.t('config.xiaomiConfigured'))}</span>` : '';
+        const sub = [d.model, d.mac].filter(Boolean).join(' · ');
+        return `
+        <label class="xm-item${checked ? ' is-on' : ''}">
+            <input type="checkbox" ${checked ? 'checked' : ''}
+                   onchange="toggleXiaomiDevice('${escText(d.did)}', this.checked, this)">
+            <div class="xm-item-main">
+                <div class="xm-item-name">${escText(d.name || d.model || d.mac)}</div>
+                <div class="xm-item-sub">${escText(sub)}</div>
+            </div>
+            ${tag}
+        </label>`;
+    }).join('');
+    updateXiaomiImportBtn();
+}
+
+function toggleXiaomiDevice(did, on, el) {
+    if (on) _xiaomiSelected.add(did); else _xiaomiSelected.delete(did);
+    // 选中态只改这一行的描边，不整块重绘：重绘会让正在滚动/点击的清单跳回顶部
+    if (el && el.closest) {
+        const row = el.closest('.xm-item');
+        if (row && row.classList) row.classList.toggle('is-on', !!on);
+    }
+    updateXiaomiImportBtn();
+}
+
+function xiaomiSelectAll(on) {
+    _xiaomiSelected = on ? new Set(_xiaomiDevices.map(d => d.did)) : new Set();
+    renderXiaomiDeviceList();
+}
+
+function updateXiaomiImportBtn() {
+    const btn = document.getElementById('xiaomiImportBtn');
+    if (!btn) return;
+    const n = _xiaomiSelected.size;
+    btn.textContent = n
+        ? I18N.t('config.xiaomiImport', { n: n })
+        : I18N.t('config.xiaomiImportEmpty');
+    btn.disabled = n === 0;
+}
+
+// 把云上的结果落到设备卡片：**按 MAC 匹配**（不是"写进某张选中卡片"）。
+// 这条规则是整个改动的核心——多设备后"先选目标卡片再点设备"一定会有人用错，
+// 而用错就是把这台的 token 覆盖到另一台上；按 MAC 匹配不存在这个可能。
+function applyXiaomiImport(results, syncNames) {
+    let added = 0, updated = 0, failed = 0;
+    results.forEach(r => {
+        if (r.error || !r.mac || !r.token) { failed++; return; }
+        const idx = xiaomiConfiguredIndex(r.mac);
+        if (idx >= 0) {
+            const d = _devices[idx];
+            d.mac = r.mac;
+            d.token = r.token;
+            if (r.ble_key) d.ble_key = r.ble_key;
+            if (syncNames && r.name && r.name !== d.name) d.name = r.name;
+            updated++;
+        } else {
+            const d = emptyDevice(false);
+            d.id = suggestDeviceId(r);
+            d.name = r.name || '';
+            d.mac = r.mac;
+            d.token = r.token;
+            d.ble_key = r.ble_key || '';
+            _devices.push(d);
+            added++;
+        }
+    });
+    _editing = -1;
+    renderDeviceList();
+    return { added, updated, failed };
+}
+
+async function importXiaomiSelected() {
+    const btn = document.getElementById('xiaomiImportBtn');
+    const status = document.getElementById('xiaomiImportStatus');
+    if (!_xiaomiSelected.size) {
+        status.textContent = I18N.t('config.xiaomiImportEmpty');
+        status.style.color = 'var(--danger)';
+        return;
+    }
+    const syncNames = !!(document.getElementById('xiaomiSyncNames') || {}).checked;
+    btn.disabled = true;
+    btn.textContent = I18N.t('config.xiaomiImporting');
     status.textContent = I18N.t('config.fetchingBleKey');
     status.style.color = 'var(--text-dim)';
-    document.getElementById('xiaomiDeviceList').style.display = 'none';
-    document.getElementById('xiaomiQRForm').style.display = 'block';
 
     try {
-        const res = await fetch(`${API}/api/xiaomi/beaconkey`, {
+        const res = await fetch(`${API}/api/xiaomi/import`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: _xiaomiSessionId, did })
+            body: JSON.stringify({
+                session_id: _xiaomiSessionId,
+                dids: Array.from(_xiaomiSelected),
+            })
         });
         const data = await res.json();
-        const bleKey = data.ok ? data.ble_key : '';
-
-        document.getElementById('ble_mac').value = mac;
-        document.getElementById('ble_token').value = token;
-        document.getElementById('ble_key').value = bleKey;
-
-        status.textContent = I18N.t('config.deviceInfoGot');
-        status.style.color = 'var(--success)';
-        setTimeout(closeXiaomiModal, 1500);
+        if (!data.ok) {
+            status.textContent = data.error || I18N.t('config.xiaomiImportFailed');
+            status.style.color = 'var(--danger)';
+            updateXiaomiImportBtn();
+            return;
+        }
+        const sum = applyXiaomiImport(data.devices || [], syncNames);
+        // 两种文案都写死成字面量 t('...')：verify_i18n.py 靠字面量扫 key，
+        // 拼出来的 key（三元里再传参）会被当成"未使用"，也漏掉拼错的保护。
+        const params = { added: sum.added, updated: sum.updated, failed: sum.failed };
+        status.textContent = sum.failed
+            ? I18N.t('config.xiaomiImportDoneWithFailed', params)
+            : I18N.t('config.xiaomiImportDone', params);
+        status.style.color = sum.failed ? 'var(--danger)' : 'var(--success)';
+        // 已配置的设备刷新一下标签（导入后它们不再是"未配置"）
+        renderXiaomiDeviceList();
+        _xiaomiSelected = new Set();
+        updateXiaomiImportBtn();
+        // **不自动关窗**：导入只是"把凭据填进设备卡片"，还没落盘。自动关掉会让用户
+        // 以为已经保存好了，关掉页面就白干。文案里已经明说要点保存。
     } catch (e) {
         status.textContent = I18N.t('config.bleKeyFailed', { msg: e.message });
         status.style.color = 'var(--danger)';
+        updateXiaomiImportBtn();
     }
 }
 
@@ -603,6 +1423,12 @@ if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
         }
         const btnT = document.getElementById('btnSaveText');
         if (btnT) btnT.textContent = _saving ? I18N.t('common.saving') : I18N.t('config.saveRestart');
+        // 设备卡片里的文案（主设备标签、编辑/删除按钮、展开的编辑器）全是 JS 拼的，
+        // 不进 applyTranslations 的静态扫描范围，切语言后必须重画一次。
+        // 输入框的值早已通过 updateDeviceField 同步进 _devices，重画不会丢输入。
+        if (_devices.length) renderDeviceList();
+        // 语音开关表同理：设备下拉里的名字、端口标签都是 JS 拼的
+        renderBemfaEntities();
     });
 }
 </script>
@@ -647,12 +1473,29 @@ if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
             <div id="xiaomiQRStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);text-align:center;min-height:18px;"></div>
         </div>
 
-        <!-- Device List -->
+        <!-- Device List：勾选后**一次导入多台**（§3.10 多设备） -->
         <div id="xiaomiDeviceList" style="display:none;">
-            <div style="font-size:13px;color:var(--text-dim);margin-bottom:10px;" data-i18n="config.selectCharger">选择充电器设备：</div>
-            <div id="xiaomiDevices"></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
+                <span style="font-size:13px;color:var(--text-dim);" data-i18n="config.selectCharger">选择充电器设备：</span>
+                <span style="display:flex;gap:6px;flex:none;">
+                    <button type="button" class="mini-btn" onclick="xiaomiSelectAll(true)" data-i18n="config.xiaomiSelectAll">全选</button>
+                    <button type="button" class="mini-btn" onclick="xiaomiSelectAll(false)" data-i18n="config.xiaomiSelectNone">全不选</button>
+                </span>
+            </div>
+            <div id="xiaomiDevices" class="xm-list"></div>
+            <!-- 名称同步：设备卡片里的名字是用户可改的，所以是否覆盖要显式勾选。
+                 放在清单下方、操作按钮上方，并且和"导入"按钮同屏可见（清单自己滚动） -->
+            <div class="xm-options">
+                <div class="xm-options-text">
+                    <div class="config-label" data-i18n="config.xiaomiSyncNames">同步小米云设备名称</div>
+                    <div class="config-hint" data-i18n="config.xiaomiSyncNamesHint">勾选后用云上的名称覆盖设备卡片里已有的名字</div>
+                </div>
+                <label class="toggle"><input type="checkbox" id="xiaomiSyncNames" checked><span class="toggle-slider"></span></label>
+            </div>
+            <div id="xiaomiImportStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);text-align:center;min-height:18px;"></div>
             <div style="margin-top:12px;display:flex;gap:8px;">
-                <button class="btn-save" onclick="closeXiaomiModal()" data-i18n="common.cancel" style="margin-top:0;flex:1;background:rgba(255,255,255,0.06);color:var(--text);">取消</button>
+                <button class="btn-save" onclick="closeXiaomiModal()" data-i18n="common.cancel" style="margin-top:0;flex:1;background:rgba(255,255,255,0.06);border:1px solid var(--card-border);color:var(--text);">取消</button>
+                <button class="btn-save" id="xiaomiImportBtn" onclick="importXiaomiSelected()" style="margin-top:0;flex:2;"></button>
             </div>
         </div>
     </div>

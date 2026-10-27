@@ -80,7 +80,10 @@ fi
 # ==========================================
 echo ""
 echo "[Python Dependencies]"
-for pkg in bleak cryptography aiohttp paho.mqtt.client yaml; do
+# 导入名 ≠ 包名（paho-mqtt / pyyaml / pycryptodomex），这里逐个列出真正的导入名。
+# 清单必须覆盖 pyproject 的全部依赖：漏检查 = 装漏了也不报警，而症状是
+# "扫描登录点了没反应"这种跟环境毫无关联的样子（tests/test_packaging.py 守着）。
+for pkg in bleak cryptography aiohttp paho.mqtt.client yaml requests Cryptodome; do
     if "$PYTHON" -c "import $pkg" 2>/dev/null; then
         check_pass "$pkg"
     else

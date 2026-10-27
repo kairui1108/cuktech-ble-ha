@@ -1,5 +1,11 @@
+# 运行依赖的**副本**：真值在 pyproject.toml 的 [project].dependencies
+# （项目自己用 `pip install -e .` 装；这份文件只服务"照文件装一遍"的场景）。
+# 两处必须同包名——漏包的表现不是启动失败，而是首次用小米扫码登录才 ImportError。
+# tests/test_packaging.py 会核对这两份清单，漂移直接红。
 aiohttp>=3.9
 paho-mqtt>=2.0
 bleak>=0.21
 cryptography>=41
 pyyaml>=6.0
+requests>=2.31
+pycryptodomex>=3.20

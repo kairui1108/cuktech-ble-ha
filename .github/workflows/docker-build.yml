@@ -11,6 +11,17 @@ on:
       - main
   workflow_dispatch:
 
+# 两个测试 job 只需要读代码；只有构建 job 需要 packages: write（见该 job）。
+permissions:
+  contents: read
+
+# 连续 push 到同一分支时，旧运行已经没有意义。但 **tag 构建不许取消**：它正在往
+# GHCR/Docker Hub 推多架构镜像（manifest list 最后才写），取消会留下"某架构已推、
+# manifest 缺失"的状态，而且结果是 cancelled 而不是红色——最容易被当成"没跑过"。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
 env:
   GHCR_REGISTRY: ghcr.io
   GHCR_IMAGE: kairui1108/cuktech-ble-server
@@ -21,6 +32,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       matrix:
         python-version: ["3.11"]
@@ -33,13 +45,38 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          # 每次全量从 PyPI 拉 bleak/cryptography/aiohttp/paho-mqtt：不缓存时这一步
+          # 偶发慢/5xx 就会吃满上面的超时上限，而报错长得像"跟代码无关的 flaky"。
+          cache: pip
+          cache-dependency-path: |
+            ble_server/pyproject.toml
+            ha_integration/pyproject.toml
 
       - name: Install Python dependencies
         working-directory: ./ble_server
         run: |
           pip install --upgrade pip
-          pip install aiohttp>=3.9 paho-mqtt>=2.0 bleak>=0.21 cryptography>=41 pyyaml>=6.0
-          pip install pytest pytest-asyncio
+          # 从 pyproject 装（含 requests / pycryptodomex）：手抄一份包清单迟早和声明漂移，
+          # 而漂移的表现是"本地全绿、CI 报 ModuleNotFoundError"。
+          pip install -e ".[dev]"
+          # 引号必加：`../ha_integration[dev]` 不加引号会被 bash 当路径通配展开。
+          pip install -e "../ha_integration[dev]"
+
+      # 镜像不是 pip 装的，是按 Dockerfile 的 COPY 清单拼出来的（`COPY *.py ./`）。
+      # 缺文件/多余文件这一步在源码树上永远看不出来：多设备改造漏掉
+      # adapter_coordinator.py 时，测试全绿而镜像一启动就 ModuleNotFoundError。
+      # 这里把那份文件集合原样拼到临时目录，真跑一次 import（不需要 docker）。
+      - name: Smoke-test the image file set
+        working-directory: ./ble_server
+        run: |
+          set -e
+          rm -rf /tmp/imgfs && mkdir -p /tmp/imgfs
+          cp -r src /tmp/imgfs/
+          cp -r web /tmp/imgfs/
+          cp pyproject.toml /tmp/imgfs/
+          cp *.py /tmp/imgfs/                     # 与 Dockerfile 的 COPY *.py 同源
+          cp config.yaml.example /tmp/imgfs/config.yaml
+          cd /tmp/imgfs && python -c "import ha_server; print('image file set imports ok')"
 
       - name: Run unit tests
         working-directory: ./ble_server
@@ -49,11 +86,101 @@ jobs:
         working-directory: ./ha_integration
         run: python -m pytest tests/ -v --tb=short
 
+  js:
+    name: JS contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Python (i18n 校验脚本用)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run JS suites
+        working-directory: ./ble_server
+        run: |
+          # web/*.js 与 config.html 的内联脚本没有构建步骤，唯一的安全网就是这批
+          # node 契约测试（800+ 断言）。不跑它们 = 前端改动在 PR 里无人验证。
+          set -e
+          # 少跑几个套件和"全绿"在日志里长得一模一样，所以逐个点名核对：
+          # 改名 / 挪目录 / 漏提交都会直接指出是哪一个文件不见了。
+          for required in charge_limit_test.js charge_limit_contrast_test.js \
+              charge_limit_deck_test.js config_devices_test.js device_bench_test.js \
+              device_store_test.js i18n_runtime_test.js index_light_contrast_test.js \
+              port_modes_test.js smoke_test.js syntax_test.js; do
+            [ -f "tests/js/$required" ] || { echo "缺少套件 tests/js/$required"; exit 1; }
+          done
+          for f in tests/js/*_test.js; do
+            echo "== $f"
+            node "$f"
+          done
+
+      - name: Verify i18n packs
+        working-directory: ./ble_server
+        run: python tests/js/verify_i18n.py
+
+  # 构建成功 ≠ 能跑：Dockerfile 的 COPY 清单曾漏掉模块，`docker build` 照样绿，
+  # 而镜像一启动就 ModuleNotFoundError（测试跑的是源码树，看不见）。这一步真的
+  # build 一次、再真的起一次、再真的敲一下 HTTP 才收工。
+  docker:
+    name: Docker image smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Build the image
+        working-directory: ./ble_server
+        run: docker build -f docker/Dockerfile -t cuktech-ble-server:ci .
+
+      - name: The image can import and serve
+        run: |
+          set -e
+          # ① 文件集合与依赖是否齐（最快的失败点）
+          docker run --rm cuktech-ble-server:ci python -c "import ha_server; print('image imports ok')"
+
+          # ② 真起一次：容器里没有蓝牙适配器，BLE 会一直重连（预期），
+          #    但 HTTP 必须应答——这正是"能 build 不能 run"的判别点。
+          docker run -d --name ci-smoke cuktech-ble-server:ci
+          ok=0
+          for i in $(seq 1 30); do
+            if docker exec ci-smoke python -c \
+              'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8199/api/health", timeout=3)' 2>/dev/null; then
+              echo "HTTP /api/health answered after ${i}s"
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          echo "---- container logs ----"
+          docker logs ci-smoke || true
+          test "$ok" = "1" || { echo "容器起来了但 HTTP 不应答（看上面的日志）"; exit 1; }
+
+      - name: Container logs and cleanup
+        if: always()
+        run: |
+          docker logs ci-smoke 2>&1 | tail -40 || true
+          docker rm -f ci-smoke || true
+
   build-and-push:
     name: Build and Push Docker Image
-    needs: test
+    # js 必须进来：镜像里带着 web/，前端回归全红却照样发布 = 让用户去发现白屏。
+    # docker 必须进来：它才是"这个镜像真的起得来"的唯一证据。
+    needs: [test, js, docker]
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -91,7 +218,10 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            # :latest 只由"正式版 tag"更新。以前是 raw 无条件写，于是从任意
+            # 分支手动 dispatch 一次（或推一个 v2.0.0-Beta 预发布 tag）就会把
+            # :latest 覆盖成那个构建——拉 :latest 的人拿到的是未验证的版本。
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v7

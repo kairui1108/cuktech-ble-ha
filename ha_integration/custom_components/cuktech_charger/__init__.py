@@ -9,7 +9,7 @@ from typing import Any
 
 import homeassistant.components.mqtt as mqtt
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_NAME, Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -20,16 +20,17 @@ from .const import (
     DOMAIN,
     CONF_SERVER_URL,
     CONF_HOST,
+    CONF_DEVICE_ID,
+    CONF_NAME_PINNED,
+    CONF_NAME_SYNCED,
+    CONF_TOPIC_PREFIX,
     DEFAULT_SERVER_URL,
     DEVICE_INFO,
-    TOPIC_PORT,
     TOPIC_PREFIX,
-    TOPIC_SETTINGS,
-    TOPIC_STATUS,
-    TOPIC_SET,
-    TOPIC_CHARGE_EVENT,
     PORT_MAP,
     HEALTH_CHECK_INTERVAL,
+    NAME_SYNC_INTERVAL,
+    PRIMARY_DEVICE_ID,
     HTTP_TIMEOUT,
     BLE_OPERATION_TIMEOUT,
     CHARGE_EVENT_BUFFER,
@@ -40,6 +41,7 @@ from .const import (
     LIMIT_POLL_INTERVAL,
     LIMIT_MODES,
     PIID_TO_PORT,
+    entry_string,
 )
 from .energy_engine import (
     ChargeLimitTracker,
@@ -98,6 +100,20 @@ class CuktechMQTTCoordinator:
             or entry.data.get(CONF_HOST)
             or DEFAULT_SERVER_URL
         )
+        # ── 本 entry 的命名空间（§4.1）──
+        # 前缀与 device_id 都存在 entry 里：一设备一 entry，各吃各的 topic。
+        # 老 entry 没有这两个键 → 回落到模块常量 / 无设备维度，行为与改造前一致
+        # （与上面 server_url 的三级回退同一套风格，因此不需要 entry 迁移）。
+        self.device_id = entry_string(entry, CONF_DEVICE_ID)
+        self.topic_prefix = entry_string(entry, CONF_TOPIC_PREFIX) or TOPIC_PREFIX
+        # 叶子形状（/status、/settings、/port/{c1..a}、/set、/charge_event、/ble）
+        # 与单设备时代逐字一致，只有前缀随 entry 变——这是 ESP32 固件零改动的前提。
+        self.topic_port = f"{self.topic_prefix}/port"
+        self.topic_settings = f"{self.topic_prefix}/settings"
+        self.topic_status = f"{self.topic_prefix}/status"
+        self.topic_set = f"{self.topic_prefix}/set"
+        self.topic_charge_event = f"{self.topic_prefix}/charge_event"
+        self.topic_ble = f"{self.topic_prefix}/ble"
         self._port_data: dict[str, dict[str, Any]] = {}
         self._settings: dict[str, Any] = {}
         self._callbacks: list = []
@@ -109,9 +125,14 @@ class CuktechMQTTCoordinator:
         # BLE 设备 connected 标记」，而非 MQTT 客户端是否连接。
         self._mqtt_connected = False
         self._health_check_unsub = None
+        self._name_sync_unsub = None
         self._last_status_time: float = -999
         self._health_check_task = None
         self._health_failures = 0
+        # 服务端同步来的设备名（会话内有效；每次 setup 会重新对齐）。
+        # 与 entry.title 分开存：title 是"集成条目/中枢"的标签，用户可以固定它，
+        # 而设备名应该永远跟着服务端走——两件事不该互相绑死。
+        self._device_name: str | None = None
         self._device_model: str = DEVICE_INFO["model"]
         self._firmware_version: str = ""
         self._ble_connected: bool = False
@@ -245,6 +266,16 @@ class CuktechMQTTCoordinator:
         return decode_protocol_switches(self._settings.get("21", 0))
 
     @property
+    def display_name(self) -> str:
+        """服务端同步来的设备名；没同步到时返回空串，由调用方回落。
+
+        回落链只有一处（`base_entity.device_info`：display_name → entry.title →
+        DEVICE_INFO["name"]）。这里再抄一遍的话，两个地方迟早会对"空串算不算没名字"
+        给出不同答案。
+        """
+        return self._device_name or ""
+
+    @property
     def device_info(self) -> dict[str, Any]:
         """Return device info with dynamic firmware version."""
         return {
@@ -255,29 +286,174 @@ class CuktechMQTTCoordinator:
 
     # --- Lifecycle ---
 
+    async def _async_sync_device_name(self) -> None:
+        """设备名自动同步（§4.5）：**设备名**跟服务端走，**集成条目名**可选跟随。
+
+        两个名字，两个用途，不要绑死：
+          * 设备名（设备卡片、实体所属设备）= 服务端 `devices[].name`，永远自动同步；
+          * 集成条目名（也就是"中枢"那层的标签）= entry.title，**只在用户没固定时**
+            跟随设备名（多设备时它是区分两张卡最省事的办法），用户在选项里起过名
+            就固定不动（`name_pinned`），但设备名那条照旧同步。
+
+        为什么需要它：两个名字以前只在"添加集成那一刻"对得上。之后在 Web 里把设备
+        改叫"书桌充电器"，HA 这边还是老名字；两台同型号充电器只能靠 `_2` 后缀区分。
+        每次 setup（含 reload、HA 重启）对齐一次 + 5 分钟周期兜底。
+
+        三条边界，让"自动同步"不等于"自动覆盖"：
+          * 绑定了 device_id → 只认**这台**设备报的名字，多设备的列表里不会拿错；
+          * 老的单设备 entry（无 device_id）→ 只有服务端刚好只报一台时才同步，
+            报多台时无从判断它对应哪台，保持原样（不猜）；
+          * 服务端没配 name（上报的就是 id 本身）→ 视为"没意见"，不动任何名字。
+        失败只是"这次没有新名字"，绝不阻塞 setup（ESP32/旧 server 本来就没这端点）。
+        """
+        try:
+            # 局部导入：只有 setup 需要，且避免运行期模块与 flow 模块的导入顺序耦合
+            from .config_flow import async_discover_devices
+
+            devices = await async_discover_devices(self.hass, self.server_url)
+        except Exception as err:                  # noqa: BLE001 - 同步失败不是故障
+            _LOGGER.debug("Device name sync skipped (%s)", err)
+            return
+        if not devices:
+            return
+
+        if self.device_id:
+            target = next((d for d in devices if d["id"] == self.device_id), None)
+        elif len(devices) == 1:
+            # 老 entry（无 device_id）：只有服务端刚好报一台时才同步。这台必然就是
+            # primary，但**按 id 取而不是取 devices[0]**——服务端某台条目格式异常被
+            # `_normalise_device` 丢掉时，列表也可能只剩一条，那时 devices[0] 未必是
+            # primary，认错了就会把这个 entry 的标签改成别人家的名字。
+            target = next((d for d in devices if d["id"] == PRIMARY_DEVICE_ID), None)
+        else:
+            target = None
+        if target is None:
+            return
+
+        name = (target.get("name") or "").strip()
+        # 服务端没配名字时上报的是 id 本身：那是"没意见"，不覆盖任何东西
+        if not name or name == target["id"]:
+            return
+
+        # ① 设备名（设备卡片 / 实体所属设备）：永远跟着服务端走
+        if name != self._device_name:
+            self._device_name = name
+            self._async_rename_registered_device(name)
+
+        # ② 集成条目名（也就是"中枢"那层的标签）：只在它还归自动同步掌管时跟随。
+        #    多设备时它是最省事的区分方式；用户一旦动过，就停手——但上面那条
+        #    设备名同步照常。
+        if not self._entry_title_is_auto():
+            return
+        old = getattr(self.entry, "title", None)
+        if name == old:
+            # 名字已经一致：只补记"这个值是同步写进来的"，不碰 title。
+            # 少了这一步，升级上来的老 entry 永远没有 `name_synced`，之后用户用
+            # HA 原生入口改名就检测不出来（下一次同步会把他的名字顶掉）。
+            if (getattr(self.entry, "data", None) or {}).get(CONF_NAME_SYNCED) != name:
+                self._async_write_entry_name(name, title=None)
+            return
+        try:
+            self._async_write_entry_name(name, title=name)
+        except Exception as err:                  # noqa: BLE001 - 改名失败不该让集成起不来
+            _LOGGER.debug("Entry title sync failed (%s)", err)
+            return
+        _LOGGER.debug("Entry title synced from server: %r -> %r", old, name)
+
+    def _entry_title_is_auto(self) -> bool:
+        """这个 entry 的标签是否仍归自动同步掌管（= 用户没动过）。
+
+        三种"用户动过"的形态都要认出来，否则就是静默覆盖用户的选择：
+
+          1. 选项里改过名 → 有 `name_pinned`（旧策略，行为不变）；
+          2. **HA 原生"重命名条目"**（设置 → 集成 → 条目 → 重命名）：它只写 title、
+             不经过我们的 options flow，所以只能靠"title 与本子上次同步写入的值
+             不一样"来发现；
+          3. **升级上来的老 entry**：那时候还没有本特性，用户在旧 options flow 里
+             起的名字只有一个 title、没有任何标记。老 entry 的创建名一直留在
+             `data[CONF_NAME]` 里（同步只改 title、不动 data），所以
+             `title != data[CONF_NAME]` 恰好就是"用户后来改过名"的可靠信号。
+        """
+        data = getattr(self.entry, "data", None) or {}
+        if data.get(CONF_NAME_PINNED):
+            return False
+        title = getattr(self.entry, "title", None)
+        synced = data.get(CONF_NAME_SYNCED)
+        if synced is not None:
+            return title == synced
+        created = data.get(CONF_NAME)
+        return not created or title == created
+
+    def _async_write_entry_name(self, name: str, *, title: str | None) -> None:
+        """写 entry 的名字，并把"这是自动同步写的"记进 data（`name_synced`）。
+
+        data 变更在 HA 里会触发 entry 重载——只有名字真的变了才会走到这里（一次），
+        重载后同步看到 title == name_synced 就停手，所以不会来回抖。
+        """
+        data = {**dict(getattr(self.entry, "data", None) or {}), CONF_NAME_SYNCED: name}
+        kwargs: dict[str, Any] = {"data": data}
+        if title is not None:
+            kwargs["title"] = title
+        self.hass.config_entries.async_update_entry(self.entry, **kwargs)
+
+    def _async_rename_registered_device(self, name: str) -> None:
+        """把新名字同步到设备注册表（用户看得见的那个名字）。
+
+        entry title 只管**之后**注册的实体（`device_info.name` 在那时被读走）；
+        设备一旦建好，注册表里的 name 不会因为 title 变了就自己更新——而"改了名字
+        但设备卡片还是旧的"正是这个特性要解决的观感问题。
+
+        跳过 `name_by_user`：用户在设备页手动改过的名字是他的选择，优先级高于自动同步
+        （与 entry 头部的 `name_pinned` 是同一个原则，只是作用在不同的层）。
+        """
+        try:
+            from homeassistant.helpers import device_registry as dr
+
+            registry = dr.async_get(self.hass)
+            device = registry.async_get_device(
+                identifiers={(DOMAIN, self.entry.entry_id)}
+            )
+            if device is None or getattr(device, "name_by_user", None):
+                return
+            registry.async_update_device(device.id, name=name)
+        except Exception as err:                  # noqa: BLE001 - 注册表不可用不影响同步
+            _LOGGER.debug("Device registry rename skipped (%s)", err)
+
+    async def _async_periodic_name_sync(self, _now) -> None:
+        """周期对齐设备名：服务端改名后最多等一个周期，不用重启 HA（§4.5）。"""
+        await self._async_sync_device_name()
+
     async def async_setup(self) -> None:
         """Set up MQTT subscriptions."""
-        await self._async_wait_mqtt_ready()
+        # 设备名同步必须发生在**转发平台之前**（设备名在那一刻被读走），但它和
+        # "等 MQTT 就绪"互不依赖：串行会让"服务端暂时不可达"额外压上一次 HTTP
+        # 超时。两者并发，谁先谁后都不影响结果（同步失败只是这次没有新名字）。
+        await asyncio.gather(
+            self._async_sync_device_name(),
+            self._async_wait_mqtt_ready(),
+        )
 
-        # 端口名统一取自 PORT_MAP (const.py 单一数据源)，避免此处硬编码漂移
+        # 端口名统一取自 PORT_MAP (const.py 单一数据源)，避免此处硬编码漂移。
+        # 主题一律取自**实例属性**：两个 entry 指向同一台 server 的不同设备时，
+        # 各自订阅自己的前缀，硬件相同也不会互相串台。
         for port_name in PORT_MAP:
             unsub = await mqtt.async_subscribe(
-                self.hass, f"{TOPIC_PORT}/{port_name}", self._on_port_message
+                self.hass, f"{self.topic_port}/{port_name}", self._on_port_message
             )
             self._unsub.append(unsub)
 
         unsub = await mqtt.async_subscribe(
-            self.hass, TOPIC_SETTINGS, self._on_settings_message
+            self.hass, self.topic_settings, self._on_settings_message
         )
         self._unsub.append(unsub)
 
         unsub = await mqtt.async_subscribe(
-            self.hass, TOPIC_STATUS, self._on_status_message
+            self.hass, self.topic_status, self._on_status_message
         )
         self._unsub.append(unsub)
 
         unsub = await mqtt.async_subscribe(
-            self.hass, TOPIC_CHARGE_EVENT, self._on_charge_event
+            self.hass, self.topic_charge_event, self._on_charge_event
         )
         self._unsub.append(unsub)
 
@@ -299,6 +475,12 @@ class CuktechMQTTCoordinator:
             self._ble_enabled = True
             _LOGGER.info("Initial BLE state synced: connected")
 
+        # 兜住"服务端改名了，但 HA 既没重启也没重载这个 entry"的情况：
+        # 每 NAME_SYNC_INTERVAL 对齐一次显示名（同步本身失败是静默的）。
+        self._name_sync_unsub = async_track_time_interval(
+            self.hass, self._async_periodic_name_sync, NAME_SYNC_INTERVAL
+        )
+
         _LOGGER.info("CUKTECH Charger MQTT coordinator set up successfully")
 
     async def async_unload(self) -> None:
@@ -314,6 +496,9 @@ class CuktechMQTTCoordinator:
         if self._health_check_unsub:
             self._health_check_unsub()
         self._health_check_unsub = None
+        if self._name_sync_unsub:
+            self._name_sync_unsub()
+        self._name_sync_unsub = None
         # HA 停止不是用户意图终止充电：结束会话但保留 once 限额
         # （否则一次 HA 重启就静默解除用户刚设的限制，见 END_REASONS_PRESERVING_LIMIT）
         self._charge_limits.end_session_all(
@@ -635,19 +820,14 @@ class CuktechMQTTCoordinator:
         except Exception as err:
             _LOGGER.warning("Failed to save charge limits: %s", err)
 
-    async def _async_limit_request(self, body: dict | None = None) -> tuple[dict | None, str]:
-        """GET (or POST when `body` is given) /api/charge-limits.
+    async def _async_limit_call(
+        self, url: str, body: dict | None
+    ) -> tuple[dict | None, str, int]:
+        """打一次 charge-limits 端点，返回 `(limits, reason, HTTP 状态码)`。
 
-        Returns `(limits, reason)`: `limits` is the server's `limits` mapping, or
-        None on every failure mode — transport error, non-200, unparsable body,
-        missing/non-dict `limits`. `reason` is a short human-readable why, which
-        the startup probe surfaces (it is the difference between "ESP32, no such
-        API" and "server is down", and that is otherwise invisible).
-
-        The startup probe, the keep-sync poll and the write path differ only in
-        what they do with the answer, so they share this one implementation.
+        状态码单独返回，因为探测链要区分"对端没有这条路径"(404，值得降级)
+        与"对端有这条路径但这次失败"(超时/500，换 URL 也不会好)。
         """
-        url = f"{self.server_url}/api/charge-limits"
         session = async_get_clientsession(self.hass)
         try:
             if body is None:
@@ -655,21 +835,72 @@ class CuktechMQTTCoordinator:
             else:
                 request = session.post(url, json=body, timeout=HTTP_TIMEOUT)
             async with request as resp:
-                if resp.status != 200:
+                status = resp.status
+                if status != 200:
                     await resp.read()
-                    return None, f"HTTP {resp.status}"
+                    return None, f"HTTP {status}", status
                 try:
                     data = await resp.json()
                 except Exception as err:
                     await resp.read()
-                    return None, f"unparsable response ({err})"
+                    return None, f"unparsable response ({err})", status
         except Exception as err:
-            return None, str(err)
+            return None, str(err), 0
 
-        limits = (data or {}).get("limits")
+        if not isinstance(data, dict):
+            return None, "response is not an object", status
+        limits = data.get("limits")
         if not isinstance(limits, dict):
-            return None, "response has no 'limits' object"
-        return limits, "ok"
+            return None, "response has no 'limits' object", status
+        return limits, "ok", status
+
+    def _limit_urls(self) -> list[str]:
+        """限额端点的探测顺序（§4.4）：设备维度 → 老端点 → local。
+
+        ESP32 / 旧 server 的 entry 没有 device_id，列表里只有老端点一条，
+        请求序列与改造前完全一致（不额外打一发必然 404 的请求）。
+        """
+        urls: list[str] = []
+        if self.device_id:
+            # 新 server 的多设备路径；对端不认这条路径时回 404（§3.7）
+            urls.append(f"{self.server_url}/api/device/{self.device_id}/charge-limits")
+        urls.append(f"{self.server_url}/api/charge-limits")
+        return urls
+
+    async def _async_limit_request(
+        self, body: dict | None = None
+    ) -> tuple[dict | None, str]:
+        """GET (或 POST when `body` is given) charge-limits，按设备维度分级回退。
+
+        Returns `(limits, reason)`: `limits` is the server's `limits` mapping, or
+        None on every failure mode — transport error, non-200, unparsable body,
+        missing/non-dict `limits`. `reason` is a short human-readable why, which
+        the startup probe surfaces (it is the difference between "ESP32, no such
+        API" and "server is down", and that is otherwise invisible).
+
+        **只有 404 才降级到下一级 URL**：404 是"对端没有这条路径"的唯一信号，
+        即 §4.4 的"新 server 多设备路径 → 老端点 → local"阶梯。超时、500、
+        响应不可解析换个 URL 也一样失败，继续尝试只会拖慢启动探测。
+
+        The startup probe, the keep-sync poll and the write path differ only in
+        what they do with the answer, so they share this one implementation.
+        """
+        urls = self._limit_urls()
+        if body is not None and self.device_id:
+            # **写**请求不许跨设备降级：设备维度 URL 回 404 说明这个 device_id
+            # 在服务端已不存在（设备被删/改名，而 entry 里还留着旧 id）。这时
+            # 退回老端点会把限额写进 primary 那台充电器，而且同样是 200——
+            # 用户以为改的是书房那台，实际改的是客厅那台，没有任何报错。
+            # 读路径保留阶梯：读错设备最多数值不对，不会污染对方的状态。
+            urls = urls[:1]
+        reason = "no URL attempted"
+        for index, url in enumerate(urls):
+            limits, reason, status = await self._async_limit_call(url, body)
+            if limits is not None:
+                return limits, "ok"
+            if status != 404 or index == len(urls) - 1:
+                return None, reason
+        return None, reason
 
     async def _async_probe_limit_backend(self) -> None:
         """Detect whether the HTTP backend can own charge limits (route B).
@@ -817,6 +1048,17 @@ class CuktechMQTTCoordinator:
 
     # --- Availability ---
 
+    def _device_api_url(self, path: str) -> str:
+        """老端点的 URL，按本 entry 是否绑定具体设备决定要不要设备维度。
+
+        没有 device_id（ESP32 / 旧 server 的 entry）→ 与改造前逐字相同的 URL，
+        一个字节都不变。绑定了设备才走 §3.7 的路径形式，否则两个 entry 指向同一
+        台 server 时，状态/设备信息都会读到 primary 那台充电器上去。
+        """
+        if self.device_id:
+            return f"{self.server_url}/api/device/{self.device_id}{path}"
+        return f"{self.server_url}/api{path}"
+
     def _update_availability(self) -> None:
         """Update availability based on MQTT status and HTTP health."""
         http_recent = (self.hass.loop.time() - self._last_status_time) < STATUS_STALE_SECONDS
@@ -827,7 +1069,7 @@ class CuktechMQTTCoordinator:
         session = async_get_clientsession(self.hass)
         was_available = self._available
         try:
-            url = f"{self.server_url}/api/status"
+            url = self._device_api_url("/status")
             async with session.get(url, timeout=HTTP_TIMEOUT) as resp:
                 # body 必须在 async with 块内读取，连接退出上下文后即关闭，
                 # 之后调用 resp.json()/resp.read() 会抛异常。
@@ -955,10 +1197,11 @@ class CuktechMQTTCoordinator:
             self._ble_timeout_task = self.hass.async_create_task(_clear_pending_after_delay())
 
             success = False
-            # MQTT (primary channel - ESP32)
+            # MQTT (primary channel - ESP32)：主题属于本 entry 的前缀，多设备下
+            # 只切自己的那台充电器（§4.3 约束 4：跨网关只依赖 {prefix}/ble）
             try:
                 await mqtt.async_publish(
-                    self.hass, f"{TOPIC_PREFIX}/ble",
+                    self.hass, self.topic_ble,
                     json.dumps({"enabled": enable})
                 )
                 _LOGGER.info("BLE %s published via MQTT", "enable" if enable else "disable")
@@ -966,11 +1209,12 @@ class CuktechMQTTCoordinator:
             except Exception as err:
                 _LOGGER.debug("MQTT BLE publish failed: %s", err)
 
-            # HTTP (fallback - ble_server)
+            # HTTP (fallback - ble_server)；绑定了设备就走设备维度路径，
+            # 否则会去切 primary 那台的连接（ESP32 没有这条路径，进不来这里）
             if not success:
                 try:
                     session = async_get_clientsession(self.hass)
-                    url = f"{self.server_url}/api/enable"
+                    url = self._device_api_url("/enable")
                     async with session.post(url, json={"enabled": enable}, timeout=BLE_OPERATION_TIMEOUT) as resp:
                         if resp.status == 200:
                             _LOGGER.info("BLE connection %s via HTTP (fallback)", "enabled" if enable else "disabled")
@@ -997,7 +1241,7 @@ class CuktechMQTTCoordinator:
         """Set a PIID value via MQTT."""
         try:
             await mqtt.async_publish(
-                self.hass, TOPIC_SET, json.dumps({"piid": piid, "value": value})
+                self.hass, self.topic_set, json.dumps({"piid": piid, "value": value})
             )
         except Exception as err:
             _LOGGER.error("Failed to publish MQTT command: %s", err)
@@ -1006,7 +1250,7 @@ class CuktechMQTTCoordinator:
         """Control a port (on/off) via MQTT."""
         try:
             await mqtt.async_publish(
-                self.hass, TOPIC_PORT, json.dumps({"port": port, "action": action})
+                self.hass, self.topic_port, json.dumps({"port": port, "action": action})
             )
         except Exception as err:
             _LOGGER.error("Failed to publish MQTT command: %s", err)

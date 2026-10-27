@@ -14,7 +14,8 @@
  *
  * 版式（桌面 ≠ 放大的手机）：≥1024px 起用「主列 + 控制侧列」两栏。
  *   主列：设备状态 → 端口监控（2×2）→ 功率曲线 → 充电量限额（2×2）
- *   侧列：倒计时（4 项纵排）→ 充电记录 → 设备设置
+ *   侧列：设备切换（多设备/单设备都有一张卡，单击弹该设备的设置）→ 当前总功率
+ *         → 场景 → 充电量限额 → 倒计时
  * 每张卡的内容宽度都按自身内容的自然宽度分配，避免出现大片空白。
  *
  * 少量 Apple HIG 的补充（brief 要求）：毛玻璃只用在"内容会从下面滚过去"的地方
@@ -611,6 +612,41 @@ a.tool-btn:hover { color: var(--text); }
     color: var(--text);
 }
 
+/* ── 设备切换器（多设备，§3.12）──
+   位置：吸顶栏下方一条 pill tabs。视觉直接沿用上面 .segmented/.time-btn 那套令牌
+   （--seg-track / --seg-border / --seg-thumb），所以米家暗/浅双主题都自动跟着走，
+   不需要在这里再写一遍两套颜色。
+   单设备时整条 display:none（由 device-store.js 置 hidden）：布局上不占位，
+   与改造前的视觉完全一致。 */
+.device-switcher { position: relative; background: var(--bg); }
+.device-switcher[hidden] { display: none; }
+.device-switcher .wrap {
+    display: flex; align-items: center;
+    padding-top: 2px; padding-bottom: 10px;
+}
+.device-tabs {
+    display: inline-flex; align-items: center; gap: 2px;
+    padding: 3px; border-radius: var(--r-ctl);
+    background: var(--seg-track); border: 1px solid var(--seg-border);
+    max-width: 100%; overflow-x: auto;   /* 设备多了一行放不下时横向滚动 */
+    scrollbar-width: none;
+}
+.device-tabs::-webkit-scrollbar { display: none; }
+/* pill 自己画选中底色：这里没有 .seg-thumb 滑块（切换器的 DOM 由 JS 整块重建，
+   量位置的滑块在重建瞬间必然错位），视觉上与滑块式分段控件保持一致 */
+.device-pill { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.device-pill.active {
+    background: var(--seg-thumb);
+    box-shadow: var(--seg-thumb-shadow);
+    color: var(--text); font-weight: 600;
+}
+/* 在线小圆点：全屋哪台在线一眼可见（颜色 + 不透明度双重编码，不靠色差单独承担） */
+.device-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex: none;
+    background: var(--text-dim); opacity: 0.45;
+}
+.device-dot.is-on { background: var(--success); opacity: 1; }
+
 /* ── 下拉 ── */
 select, .mini-select {
     height: 32px;
@@ -1016,7 +1052,7 @@ html[data-appearance="light"] .port-icon img { filter: invert(1); }
 .port-toggle input:focus-visible + .toggle-slider { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ══════════════════════════════════════════════════════════════
-   7. 充电量限额 / 倒计时 / 设备设置
+   7. 充电量限额 / 倒计时 / 设备设置弹窗
    ══════════════════════════════════════════════════════════════ */
 
 /* 限额 / 倒计时：一沓堆叠卡。.deck 由 index.html 的脚本在拿到端口数据后加上；
@@ -1633,10 +1669,9 @@ html[data-appearance="light"] .session-detail.is-open { background: rgba(28, 36,
 .sd-label { margin-top: 2px; font-size: 11px; color: var(--text-dim); }
 .sd-action { display: flex; align-items: center; justify-content: center; }
 
-/* ── 设备设置：入口按钮 + 弹窗 ── */
-.settings-open { margin-left: auto; }
-.settings-open .ic { width: 14px; height: 14px; }
-/* 配置行平时不占右栏高度，点"设置"时才弹出 */
+/* ── 设备设置：弹窗 ──
+   入口不再是右栏底部那张空卡片（已撤掉），而是侧栏切换条上的那张设备卡：
+   卡片是谁，弹出来的就是谁的设置。 */
 .settings-overlay {
     display: none;
     position: fixed;
@@ -1777,6 +1812,12 @@ html[data-appearance="light"] .modal-overlay { background: rgba(28, 36, 52, 0.34
 @media (min-width: 1024px) {
     .page-grid { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
     .col-main, .col-side { gap: 16px; }
+    /* 左右两栏底部对齐：把富余高度**均摊进卡片之间的间距**，而不是把卡片拉高。
+       拉伸会让卡片里的元素散在一片空白里（标题在上、数值飘在中间），那正是
+       "别直接拉伸"要避免的样子；均摊间距则保持每张卡只由内容决定高度，
+       最后一张卡自然落到栏底。哪一栏更矮就由哪一栏吸收富余（另一栏本来就没有
+       富余，规则对它不生效），所以不必假定"侧栏一定更短"。 */
+    .col-main, .col-side { justify-content: space-between; }
 }
 
 /* 中屏及以下：左栏撑不到 300px 时并排会把端口卡挤扁，改为上下排。
@@ -1883,3 +1924,271 @@ html[lang="en"] .port-protocol {
     word-break: break-word;
     line-height: 1.35;
 }
+
+/* 多设备能力 Beta 标注（P5 canary 通过前一直挂着，README 同口径） */
+.beta-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 6px;
+    font-size: 10px;
+    line-height: 15px;
+    font-weight: 600;
+    letter-spacing: .02em;
+    color: #b26a00;
+    background: rgba(255, 170, 0, .16);
+    border: 1px solid rgba(255, 170, 0, .35);
+    vertical-align: middle;
+}
+body.light .beta-badge { color: #8a5200; background: rgba(255, 170, 0, .18); }
+
+
+/* ══════════════ 多设备工作台（device-bench.js）══════════════
+   侧栏里的一副"设备卡片堆" + 主列里的一页"全部设备"清单。视觉令牌全部复用
+   上面的 --seg-* / --card-* / --port-*，于是米家暗/浅两套主题自动跟着走。
+
+   为什么是"一次只显示一张的牌堆"而不是一排 pill / 一列长清单：切换条住在右侧栏、
+   正压在"当前总功率"卡上方，那一列只有 ~300px 宽、而且高度很贵——排成列设备一多
+   就把整栏顶下去。做成牌堆后它永远只有**一张卡的高度**：卡片落在同一个 grid 格子里，
+   只显示栈顶那张，下面几张完全藏起来（不露边、不投半透明的影）。
+   左右拖动 / 滚轮 / 方向键翻牌——不是横滑条：桌面上没有可见滚动条、滚轮也不会
+   横向滚，那种"滑法"实际上滑不动。
+   卡上底边一条"功率脊"按该台占全家的份额伸缩，右侧一行小点标出"这是第几张"。
+   单击卡片 = 打开这台设备的设置（右栏那张空的"设备设置"卡片就是为它腾地方的）。
+   一台设备时同样显示（此时它既是状态也是设置入口），只是没有"全部"这一面和进度点。 */
+
+/* 切换条容器就是右侧栏的第一格 */
+#deviceSwitcher { display: block; min-width: 0; }
+#deviceSwitcher[hidden] { display: none; }
+
+.bench-stack { position: relative; min-width: 0; }
+
+/* 一副牌：所有卡片落在同一个 grid 格子里，只有栈顶那张可见。
+   下层卡片用 opacity/visibility 藏起来（不是 display:none）——翻牌时"下一张"
+   要能原地淡入。overflow: hidden 把被划走那张飞出去的部分裁掉。 */
+.bench-deck {
+    display: grid;
+    grid-template-columns: 100%;
+    overflow: hidden;
+    touch-action: pan-y;           /* 纵向留给页面滚动，横向手势自己接管 */
+}
+.bench-tile:not(.is-top) { opacity: 0; visibility: hidden; }
+/* 拖动/翻牌期间把"下一张"放出来：栈顶那张滑走时，底下不该是空白。
+   注意这里只切换"看得见/看不见"，**没有**任何透明度渐变——半透明会让两张卡的
+   功率数字在同一块地方叠着显示（重影），翻牌时看到的就是那个。 */
+.bench-deck.is-shifting .bench-tile:not(.is-top) { opacity: 1; visibility: visible; }
+
+/* 预览模式（?preview=multi）的标记：那三台设备是伪造的，必须在界面上说清楚，
+   否则一眼看过去分不出"真有两台在充"还是"在看排版"。
+   它**绝对定位**，不吃高度——这副牌永远只有一张卡高。 */
+.bench-preview-tag {
+    position: absolute; top: 0; right: 2px; z-index: 2;
+    transform: translateY(-60%);
+    font-size: 9px; font-weight: 700; letter-spacing: .12em;
+    padding: 1px 5px; border-radius: 4px;
+    color: var(--text-dim);
+    background: var(--bg);
+    border: 1px solid var(--seg-border);
+}
+
+/* 这张卡就是"页面里的另一张卡"：底色/描边/圆角/投影全部用 .card 那几枚令牌
+   （--card-bg / --card-border / --r-card / --shadow-card），而不是分段控件那套
+   --seg-* —— 后者是给"控件轨道"用的半透明灰，放进右栏会和上下两张卡明显不是
+   一家人（深色主题下尤其明显：别人是纯黑 + 淡青描边，它是灰的）。
+   顺带解决"叠起来会透"：--card-bg 在两套主题下都是**不透明**的，
+   翻牌时下层卡片不会从上层透出来。 */
+.bench-tile {
+    /* 必须定位：功率脊是 position: absolute，它的包含块要是**这张卡**。
+       少了这一行，脊会挂到最近的定位祖先 .bench-stack 上 —— 牌堆下面现在还
+       有一条翻牌条，脊就跑到翻牌条底下去了（真实踩过）。 */
+    position: relative;
+    grid-area: 1 / 1;              /* 所有卡片叠在同一格 */
+    width: 100%;
+    display: flex; align-items: center; gap: 10px;
+    min-height: 60px; padding: 10px 13px 14px;
+    border-radius: var(--r-card); border: 1px solid var(--card-border);
+    background: var(--card-bg); box-shadow: var(--shadow-card); color: var(--text);
+    font: inherit; text-align: left; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none; user-select: none;   /* 拖动翻牌时不要选中文字 */
+    transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1),
+                background var(--dur-fast) var(--ease),
+                border-color var(--dur-fast) var(--ease);
+}
+/* "全部"是一张汇总卡，不是某台设备：虚线描边把它和设备卡区分开 */
+.bench-tile.bench-all { border-style: dashed; }
+.bench-tile:hover { background: var(--card-hover-bg); }
+.bench-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 可见的永远只有"当前"这一张，所以选中态不再需要换底色/换描边（那会让它
+   看起来和别的卡片不一样）。只剩鼠标指针的形状：这张卡可以拖动翻牌。 */
+.bench-tile.active { cursor: grab; }
+.bench-tile.active:active { cursor: grabbing; }
+html[data-appearance="light"] .bench-nav:hover { background: rgba(0, 0, 0, 0.05); }
+html[data-appearance="light"] .bench-dot { background: #9aa0aa; }
+html[data-appearance="light"] .bench-dot.is-on { background: #1a1a1a; }
+
+.bench-led {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: var(--dot-off); transition: background var(--dur) var(--ease);
+}
+.bench-led.is-on { background: var(--dot-on); }
+
+.bench-body { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; flex: 1; min-width: 0; }
+.bench-name {
+    font-size: 13px; font-weight: 600; letter-spacing: .01em;
+    max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bench-meta, .bench-ports { display: flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--text-dim); }
+.bench-ports { min-height: 10px; }
+
+/* 右列：瓦数，贴右边对齐。瓦数是这张卡的主角，所以给到 19px
+   （上一版 13px 和名字一样大，扫一眼分不出"哪台在干活"）。 */
+.bench-right {
+    display: flex; align-items: baseline; margin-left: auto; flex: none;
+}
+.bench-w {
+    display: flex; align-items: baseline; gap: 1px;
+    color: var(--text); white-space: nowrap;
+    font-variant-numeric: tabular-nums;   /* 1Hz 刷新时数字不跳 */
+}
+.bench-w b { font-size: 19px; font-weight: 650; letter-spacing: -0.01em; line-height: 1; }
+.bench-w em { font-style: normal; font-size: 10px; font-weight: 600; opacity: .55; }
+
+/* 卡片右端那枚齿轮 = "点这张卡进设置"。
+   整张卡就是它的点击区，所以它只是一枚提示（pointer-events: none）：
+   静止时压得很暗，指针移上来提亮并缓缓转一下——那点转动是"我能点"的唯一信号，
+   比任何一句话都省地方。 */
+.bench-cog {
+    width: 13px; height: 13px; flex: none; margin-left: 2px;
+    color: var(--text-dim); opacity: .42; pointer-events: none;
+    transition: opacity var(--dur) var(--ease), color var(--dur) var(--ease),
+                transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.bench-tile:hover .bench-cog,
+.bench-tile:focus-visible .bench-cog {
+    opacity: .95; color: var(--text); transform: rotate(45deg);
+}
+
+/* ── 翻牌条：‹ 进度点 › ──
+   提示"这里能左右切换"全靠它，一个字的说明都没有：
+   · 两端的箭头就是能点（单击翻一张），静止时也在（不 hover 也看得见，否则
+     第一次进页面的人根本不知道这副牌能翻）；
+   · 中间一排小点说明"一共有几张、现在在第几张"；
+   · 只有一张卡时整条不生成（箭头也就无从谈起）。 */
+.bench-pager {
+    display: flex; align-items: center; justify-content: center; gap: 2px;
+    margin-top: 5px;
+}
+.bench-nav {
+    width: 20px; height: 20px; padding: 0; flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: none; border-radius: 50%; background: transparent;
+    color: var(--text-dim); cursor: pointer;
+    opacity: .42;
+    transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+                background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.bench-nav .ic { width: 12px; height: 12px; stroke-width: 2.1; }
+.bench-nav:hover { opacity: 1; color: var(--text); background: var(--seg-track); }
+.bench-nav:active { transform: scale(.92); }
+.bench-nav[hidden] { display: none; }
+/* 指针在整副牌（卡片或翻牌条）上时，箭头亮起来：手还没点就已经知道能翻 */
+.bench-stack:hover .bench-nav { opacity: .9; }
+
+.bench-dots { display: flex; align-items: center; gap: 5px; padding: 0 6px; }
+.bench-dot {
+    width: 5px; height: 5px; border-radius: 50%; flex: none;
+    background: var(--text-dim); opacity: .3;
+    transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease),
+                width var(--dur-fast) var(--ease);
+}
+/* 当前那颗拉长成小胶囊：位置信息读起来比"哪颗亮"更快 */
+.bench-dot.is-on { width: 12px; border-radius: 3px; background: var(--accent); opacity: 1; }
+
+/* 端口微点：竖条 = 端口（与设备图上的口位一一对应），亮起 = 该口在供电。
+   颜色取该口自己的主题色（--port-c1..a），所以"哪个口在充"不需要读文字。 */
+.bench-port {
+    width: 5px; height: 10px; border-radius: 2px; flex: none;
+    background: var(--pc, var(--text-dim)); opacity: .26;
+    transition: opacity var(--dur) var(--ease);
+}
+.bench-port.is-on { opacity: 1; }
+.bench-port.is-off-mode { outline: 1px dashed rgba(255, 255, 255, .22); }
+
+/* 功率脊：底边一条线，长度 = 该台实时功率 / 120W（整机上限，"全部"那张是 n×120W）。
+   刻度固定，所以两台设备都 60W 时两条脊一样长——不是"各占一半"。
+   唯一会动的东西，240ms 线性过渡（不弹跳，因为它是读数不是庆祝）。 */
+.bench-spine {
+    position: absolute; left: 12px; right: 12px; bottom: 5px; height: 2px; border-radius: 2px;
+    background: linear-gradient(to right,
+        var(--accent) calc(var(--share, 0) * 100%),
+        var(--ring-track) calc(var(--share, 0) * 100%));
+    transition: background 240ms var(--ease);
+}
+.bench-tile:not(.active) .bench-spine { opacity: .55; }
+
+/* ── "全部设备"清单 ──
+   不是"一个总览大数字"，而是一张按实时功率排序的清单：谁在干活排最上面，
+   点哪行进哪台。顺序在这里承载信息，所以允许它随功率变动。 */
+.fleet-view { min-width: 0; }
+.fleet-view[hidden] { display: none; }
+/* 汇总页不是"另一个页面"，而是主列换了一份内容：主列只留清单，侧列只留设备
+   堆栈。相机不切走切换条，是因为进汇总之后用户的第一动作往往是"那我回哪台"
+   —— 点卡片就回去，不需要额外的返回按钮。 */
+.fleet-mode .col-main > :not(#fleetView) { display: none; }
+.fleet-mode .col-side > :not(#deviceSwitcher) { display: none; }
+.fleet-mode #statusBadge, .fleet-mode .topbar-status .btn-group { display: none; }
+
+/* 汇总清单已经在 .wrap 里了，内层不要再套一层 20px 缩进 */
+.fleet-view .wrap { max-width: none; padding: 0; }
+.fleet-wrap { padding-top: 2px; padding-bottom: 40px; }
+.fleet-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    flex-wrap: wrap; gap: 6px 18px; margin-bottom: 14px;
+}
+.fleet-title { font-size: 19px; font-weight: 600; letter-spacing: .01em; margin: 0; }
+.fleet-totals {
+    margin: 0; display: flex; gap: 16px; flex-wrap: wrap;
+    font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums;
+}
+.fleet-totals b { font-size: 14px; color: var(--text); font-weight: 600; }
+
+.fleet-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.fleet-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 14px; border-radius: var(--r-card);
+    background: var(--card-bg); border: 1px solid var(--card-border);
+    cursor: pointer; transition: border-color var(--dur-fast) var(--ease),
+                                 background var(--dur-fast) var(--ease);
+}
+.fleet-row:hover { background: var(--card-hover-bg); border-color: rgba(var(--accent-rgb), var(--edge)); }
+.fleet-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fleet-led { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--dot-off); }
+.fleet-led.is-on { background: var(--dot-on); }
+.fleet-id { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.fleet-name { font-size: 14px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fleet-mac { font-size: 10.5px; color: var(--text-dim); letter-spacing: .02em; }
+.fleet-dots { display: flex; gap: 4px; flex: none; }
+.fleet-port {
+    width: 7px; height: 18px; border-radius: 3px; flex: none;
+    background: var(--pc, var(--text-dim)); opacity: .22;
+}
+.fleet-port.is-on { opacity: 1; }
+.fleet-port.is-off-mode { outline: 1px dashed rgba(255, 255, 255, .22); }
+.fleet-nums {
+    display: flex; align-items: baseline; gap: 2px; flex: none;
+    font-variant-numeric: tabular-nums; min-width: 96px; justify-content: flex-end;
+}
+.fleet-w { font-size: 17px; font-weight: 600; color: var(--text); }
+.fleet-nums em { font-style: normal; font-size: 10px; color: var(--text-dim); margin-right: 8px; }
+.fleet-today { font-size: 10.5px; color: var(--text-dim); }
+
+/* 切换条首次出现：一次性 40ms 错峰淡入（全站唯一的入场动效）。
+   之后一切变化都是数值更新，不再有入场动画——每秒都演的动效等于噪音。 */
+@media (prefers-reduced-motion: no-preference) {
+    /* 注意不加 fill-mode：动画停在最后一帧会把"后排卡片暗一档、缩一点"盖掉 */
+    /* 只淡入，不碰 transform：卡片的站位是 --depth 决定的，动画改 transform
+       会在结束的瞬间"跳"一下（限额卡组为此专门做了 no-anim 首帧）。 */
+    body.has-device-bench .bench-tile { animation: benchIn 200ms var(--ease); }
+}
+@keyframes benchIn { from { opacity: 0; } to { opacity: 1; } }

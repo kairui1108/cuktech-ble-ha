@@ -195,7 +195,12 @@ includes the reason for falling back).
 
 ### Known Limitations
 
-- **Single Device**: Current architecture supports only one charger at a time. Multi-device support is planned for future releases.
+- **Multi-device is still Beta**: one BLE adapter can serve several chargers (`devices:` in
+  `config.yaml`, one entry per device). The software path (registration/routing/SSE/MQTT/DB/
+  limits/UI/HA) is covered by the virtual charger and multi-entry tests, but "two real
+  chargers authenticating against the same adapter" needs the 72h canary on a second unit
+  before the Beta label is dropped. The single-device path is locked by byte-exact golden
+  snapshots and is unaffected.
 - **Protocol Detection**: Protocol is derived from the authoritative firmware push (PIID 17/18, consistent with the Xiaomi Home app) and updates immediately on PD/PPS change — no periodic 60s refresh lag. A coarse voltage-based inference is used only in an extreme cold start (when PIID 17 is never received and its read fails).
 - **Platform Support**: Development and testing are done exclusively on Linux. Compatibility with other platforms (macOS, Windows) has not been verified — use at your own risk.
 

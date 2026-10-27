@@ -6,7 +6,18 @@
         "description": "Set up your CUKTECH charger. This integration uses MQTT to receive real-time data from the CUKTECH BLE server.",
         "data": {
           "name": "Device Name",
-          "server_url": "BLE Server URL"
+          "server_url": "BLE Server URL",
+          "topic_prefix": "MQTT Topic Prefix (optional)"
+        },
+        "data_description": {
+          "topic_prefix": "Leave empty for the default cuktech/charger. If the server advertises its devices, the prefix reported by the server is used instead."
+        }
+      },
+      "device": {
+        "title": "Select Charger",
+        "description": "The server reports several chargers. Each charger is added as its own entry.",
+        "data": {
+          "device_id": "Charger"
         }
       },
       "reauth": {
@@ -26,11 +37,32 @@
     },
     "error": {
       "cannot_connect": "Cannot connect to server",
+      "device_not_found": "The selected charger is no longer reported by the server",
       "unknown": "Unexpected error"
     },
     "abort": {
       "already_configured": "Device is already configured",
       "reauth_successful": "Re-authentication successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "CUKTECH Charger options",
+        "description": "Change the entry's MQTT namespace and its label. The entry is reloaded after saving.",
+        "data": {
+          "name": "Entry name (hub label)",
+          "server_url": "BLE Server URL",
+          "topic_prefix": "MQTT Topic Prefix",
+          "device_id": "Server device ID (optional)"
+        },
+        "data_description": {
+          "name": "This is the label of the integration card / hub node — not the charger's own name. The device name follows the server automatically (unless you renamed the device in Home Assistant, which takes precedence). Renaming here pins the label so auto-sync stops changing it; clear this field and save to hand it back to auto-sync.",
+          "server_url": "The ble_server (or ESP32) this entry talks to.",
+          "topic_prefix": "Topics this entry subscribes to and publishes on. Empty = cuktech/charger.",
+          "device_id": "Leave empty when the server has no per-device addressing (ESP32, old server)."
+        }
+      }
     }
   }
 }
