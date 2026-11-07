@@ -223,31 +223,36 @@ function renderSessionList(containerId, sessions, onClick) {
     }
     el.innerHTML = filtered.map(s => {
         const proto = s.protocol || '';
-        const protoHtml = proto ? `<span style="font-size:11px;color:var(--accent-ink);margin-left:6px;">${esc(proto)}</span>` : '';
         const isActive = s.is_active;
-        // 长期供电状态只在"充电量限额"卡里体现，记录行不加徽标（行本身仍可点开
-        // 窗口详情：permanent 标记通过 data-* 传给详情浮层，不参与视觉渲染）。
+        // 长期供电状态只在"充电量限额"卡里体现，卡片不加徽标（可点开详情：
+        // permanent 标记通过 data-* 传给详情浮层，不参与视觉渲染）
         const isPerm = !!s.permanent;
         const wh = (s.total_wh && s.total_wh > 0) ? s.total_wh.toFixed(1) : '0';
-        const activeDot = isActive ? `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--dot-on,#34C759);margin-right:4px;animation:pulse 1.5s infinite;"></span>` : '';
+        // 时长：服务端给了 duration_sec；没有就按 end-start 兜底，取整到分钟
+        const secs = s.duration_sec || ((s.end_time && s.start_time) ? (s.end_time - s.start_time) : 0);
+        const mins = secs > 0 ? Math.max(1, Math.round(secs / 60)) : 0;
+        const durText = mins ? I18N.t('common.minutes', { count: mins }) : '';
+        const timeText = fmtTime(s.start_time) + (!isActive && s.end_time ? ' – ' + fmtTime(s.end_time) : '');
         // 行原来是 div[onclick]，键盘/读屏用户打不开详情：补 role/tabindex/aria-label + 回车与空格
-        const rowLabel = `${portNames[s.port] || s.port} ${fmtTime(s.start_time)} ${I18N.t('charge.energy', { wh })}`;
+        const rowLabel = `${portNames[s.port] || s.port} ${timeText} ${I18N.t('charge.energy', { wh })}`
+            + (durText ? ` ${durText}` : '');
         // 只有可信的标识符才能拼进 onclick 字符串：那是"可执行代码"不是属性值，
         // 转义引号挡不住注入。非标识符（例如带参数的调用）一律退回默认处理函数。
         const open = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(onClick || '') ? onClick : 'showSessionDetail';
         return `
-        <div class="session-item" data-id="${s.id}" data-permanent="${isPerm ? 1 : 0}" onclick="(${open})(this.dataset.id, this.dataset.permanent === '1')"
+        <div class="session-item session-card" data-id="${s.id}" data-permanent="${isPerm ? 1 : 0}"
              role="button" tabindex="0" aria-label="${esc(rowLabel)}"
-             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();(${open})(this.dataset.id, this.dataset.permanent === '1');}"
-             style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(128,128,128,0.1);cursor:pointer;">
-            <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;">
-                ${activeDot}
-                <div style="width:8px;height:8px;border-radius:50%;background:${portColors[s.port] || '#888'};flex-shrink:0;"></div>
-                <span style="font-size:13px;color:var(--text);flex-shrink:0;">${esc(portNames[s.port] || s.port)}</span>
-                <span style="font-size:12px;color:var(--text-dim);flex-shrink:0;">${fmtTime(s.start_time)}${!isActive && s.end_time ? ' ~ ' + fmtTime(s.end_time) : ''}</span>
-                ${protoHtml}
-            </div>
-            <span style="font-size:13px;font-weight:600;color:${isActive ? 'var(--success,#34C759)' : 'var(--text)'};flex-shrink:0;margin-left:8px;">${I18N.t('charge.energy', { wh: wh })}</span>
+             style="--pc:${portColors[s.port] || '#888'}"
+             onclick="(${open})(this.dataset.id, this.dataset.permanent === '1')"
+             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();(${open})(this.dataset.id, this.dataset.permanent === '1');}">
+            <span class="session-card-id">
+                <span class="session-port"><i class="session-port-dot" aria-hidden="true"></i>${esc(portNames[s.port] || String(s.port))}</span>
+                ${proto ? `<span class="session-proto">${esc(proto)}</span>` : ''}
+                ${isActive ? `<span class="session-live"><i aria-hidden="true"></i>${I18N.t('charge.inProgress')}</span>` : ''}
+            </span>
+            <span class="session-card-energy"><b>${wh}</b><em>Wh</em></span>
+            <span class="session-card-time">${esc(timeText)}</span>
+            ${durText ? `<span class="session-dur">${durText}</span>` : '<span></span>'}
         </div>`;
     }).join('');
 }

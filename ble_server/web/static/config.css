@@ -1,0 +1,799 @@
+/*!
+ * config.css — 「系统配置」页的版式与控件皮肤（本页专属）
+ *
+ * 与 phone.css 的关系：phone.css 提供外壳与原子件（.phone / .navbar / .card /
+ * .toggle / select / .mini-btn / .toast / 明暗两套令牌），本文件只做三件事：
+ *   1. 把 430px 的手机壳在桌面放宽成「左侧吸顶目录 + 右侧表单」的两栏设置页；
+ *   2. 给每个设置块一套真正的层级（图标 + 标题 + 说明 + 分节线），
+ *      而不是五张一模一样的黑卡；
+ *   3. 承载 JS 拼出来的设备卡 / 语音开关表 / 小米云弹窗的皮肤。
+ *
+ * 配色纪律：不新增色相。所有颜色要么引用 phone.css 的既有令牌，要么是本文件
+ * 顶部这批"材质灰"（黑底上的 4%/7%/12% 白，与卡面描边同一套取法）。
+ * JS 依赖的类名不可改名：device-card* / config-row / config-input / btn-save /
+ * xm-* 全部由 config.html 的内联脚本拼出来（tests/js/config_*_test.js 也盯着）。
+ */
+
+/* ══════════════════════════════════════════════════════════════
+   1. 本页令牌
+   挂在 :root 而不是 .config-app 上：小米云弹窗与二次确认弹层都在 <body> 末尾，
+   不在 .config-app 的作用域里，挂作用域会让它们拿不到 --cfg-*（边框/底色失效）。
+   本文件只被 config.html 引用，所以 :root 不会影响另外两页。
+   ══════════════════════════════════════════════════════════════ */
+:root {
+    /* 桌面壳宽：手机端仍由 phone.css 的 430px 决定，这里只在 ≥1024 生效 */
+    --cfg-max: 1120px;
+    --rail-w: 212px;
+    --cfg-gap: 16px;
+    --cfg-pad: 20px;
+    --ctl-w: 176px;      /* 表单控件列宽：所有输入框/下拉/开关共用这一条竖线 */
+    --col-gap: 32px;     /* 一张卡内部两列字段之间的间距（也参与奇数行的对齐计算） */
+
+    /* 材质：黑底上的三档提亮 + 两档分节线 */
+    --cfg-line: rgba(255, 255, 255, 0.07);
+    --cfg-line-2: rgba(255, 255, 255, 0.12);
+    --cfg-raise: rgba(255, 255, 255, 0.04);
+    --cfg-raise-2: rgba(255, 255, 255, 0.07);
+    --cfg-chip: rgba(128, 128, 128, 0.14);
+    --cfg-chip-ink: rgba(255, 255, 255, 0.75);
+
+    /* 语义色：沿用页面里已有的那几个值，不新起色号 */
+    --cfg-accent: #46B4FF;          /* = --c1，本页的主按钮蓝 */
+    --cfg-ok: #34C759;
+    --cfg-warn: #FFD24B;            /* = --limit-a */
+    --cfg-danger: var(--limit-danger, #FF6B60);
+
+    /* --accent 是 phone.css 里没有、而本页原子件（.btn-save / select / .proto-btn）
+       都引用的令牌：在 .config-app 上补齐，别再散落到各处。 */
+    --accent: #46B4FF;
+}
+
+body.light {
+    --cfg-line: rgba(0, 0, 0, 0.07);
+    --cfg-line-2: rgba(0, 0, 0, 0.12);
+    --cfg-raise: rgba(0, 0, 0, 0.03);
+    --cfg-raise-2: rgba(0, 0, 0, 0.05);
+    --cfg-chip: rgba(0, 0, 0, 0.05);
+    --cfg-chip-ink: rgba(0, 0, 0, 0.7);
+    --cfg-accent: #0f7fd1;
+    --accent: #0f7fd1;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   2. 外壳：手机单列 / 桌面「目录 + 表单」
+   ══════════════════════════════════════════════════════════════ */
+@media (min-width: 1024px) {
+    .config-app { --page-width: var(--cfg-max); }
+}
+/* phone.css 在 ≥431px 给 .phone 套了一个"桌面手机框"（92–96vh + 圆角 + 阴影 +
+   内部滚动）。那是给 phone.html 的模拟机用的；配置页在桌面上是一个真正的设置页，
+   要占满窗口、由窗口自己滚动——否则左侧吸顶目录会对着内层滚动容器算位置，
+   页面也永远滚不到底。body 上带 config-page 类，只在本页解除这个框。 */
+body.config-page { padding-top: 0; align-items: stretch; }
+@media (min-width: 431px) {
+    body.config-page .phone {
+        border-radius: 0; border: 0; box-shadow: none;
+        min-height: 100vh; max-height: none; overflow: visible;
+    }
+}
+
+/* 手机壳的 80px 底部留白是给仪表盘避让 Home 指示条的；本页底部是吸底保存栏，
+   它自己带 env(safe-area-inset-bottom)，这段留白会在按钮下面留出死区。 */
+.config-app { padding-bottom: 0; }
+
+.config-app .navbar {
+    border-radius: 0;
+    border-bottom: 1px solid var(--cfg-line);
+    background: rgba(18, 18, 21, 0.92);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+}
+body.light .config-app .navbar { background: rgba(240, 240, 245, 0.92); }
+.config-app .nav-title { font-size: 15px; letter-spacing: 0.01em; }
+body.light .config-app .nav-title { font-size: 15px; }
+
+/* 两个导航按钮：视觉 28px，命中区 48px（触屏够得到，又不改动标题居中） */
+.cfg-nav-btn {
+    position: relative; flex: none;
+    width: 28px; height: 28px; padding: 0; border: 0; background: none;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); cursor: pointer; border-radius: 8px;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+.cfg-nav-btn::after { content: ''; position: absolute; inset: -10px; }
+.cfg-nav-btn:hover { color: var(--text); background: var(--cfg-raise-2); }
+.cfg-nav-btn:active { transform: scale(0.94); }
+.cfg-ic {
+    width: 18px; height: 18px; flex: none; display: block;
+    fill: none; stroke: currentColor; stroke-width: 1.7;
+    stroke-linecap: round; stroke-linejoin: round;
+}
+.cfg-ic--20 { width: 20px; height: 20px; }
+
+/* 外壳网格 */
+.cfg-shell {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    padding: 16px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+    max-width: var(--cfg-max);
+    margin: 0 auto;
+}
+
+/* ── 左侧吸顶目录（桌面）／顶部横滑条（手机） ── */
+.cfg-rail {
+    min-width: 0;
+    position: sticky; top: 48px; z-index: 30;
+    margin: 0 -16px;
+    padding: 8px 16px 10px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--cfg-line);
+}
+.cfg-rail-list {
+    list-style: none; margin: 0; padding: 0;
+    display: flex; gap: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+.cfg-rail-list::-webkit-scrollbar { display: none; }
+.cfg-rail-link {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-radius: 999px;
+    border: 1px solid var(--cfg-line);
+    background: transparent; color: var(--text-sub);
+    font-size: 13px; line-height: 1; white-space: nowrap;
+    text-decoration: none; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+.cfg-rail-link:hover { color: var(--text); background: var(--cfg-raise); }
+.cfg-rail-link.is-active {
+    color: var(--text); border-color: rgba(70, 180, 255, 0.45);
+    background: rgba(70, 180, 255, 0.10);
+}
+.cfg-rail-link .cfg-ic { width: 15px; height: 15px; opacity: 0.8; }
+@media (hover: hover) {
+    .cfg-rail-link:not(.is-active):hover { border-color: var(--cfg-line-2); }
+}
+
+/* 内容列 */
+.cfg-content {
+    display: grid; gap: var(--cfg-gap); min-width: 0;
+    align-content: start;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   3. 分节卡：图标 + 标题 + 说明 + （可选）开关
+   ══════════════════════════════════════════════════════════════ */
+.cfg-sec {
+    --sec-pad: var(--cfg-pad);
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    overflow: hidden;
+    scroll-margin-top: 76px;         /* 锚点跳转别被吸顶导航盖住 */
+}
+body.light .cfg-sec { border-color: rgba(0, 0, 0, 0.10); }
+
+/* 分节头是网格：图标 | 标题+说明 | 右侧控件。
+   右侧只放开关（或一枚次级按钮），标题因此不会被挤成两行——
+   带文字的"启用 MQTT"标签已撤掉，标签语义由开关自己的 aria-label 承担。 */
+.cfg-sec-head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center; column-gap: 12px;
+    padding: 16px var(--sec-pad) 14px;
+    border-bottom: 1px solid var(--cfg-line);
+    min-width: 0;
+}
+.cfg-sec-icon {
+    grid-column: 1; align-self: center;
+    width: 34px; height: 34px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--cfg-chip); color: var(--cfg-chip-ink);
+}
+.cfg-sec-titles { display: contents; }      /* 标题与说明各占一格，说明才能整行铺开 */
+.cfg-sec-title {
+    grid-column: 2; grid-row: 1; min-width: 0; margin: 0;
+    font-size: 16px; font-weight: 600; line-height: 1.3;
+    color: var(--text); letter-spacing: 0.01em;
+}
+.cfg-sec-desc {
+    grid-column: 1 / -1; grid-row: 2; margin-top: 5px;
+    font-size: 12px; line-height: 1.5; color: var(--text-dim);
+}
+/* 标题右侧的开关 / 次级按钮 */
+.cfg-sec-tools { grid-column: 3; display: flex; align-items: center; gap: 10px; }
+.cfg-sec-body { padding: 4px var(--sec-pad) 10px; }
+.cfg-sec-body--flush { padding: 0; }
+
+/* 卡片里的分组小标题（目前只有设备区用） */
+.cfg-subhead {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 14px var(--cfg-pad) 8px;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.04em;
+    color: var(--text-dim); text-transform: uppercase;
+}
+html[lang^="zh"] .cfg-subhead { letter-spacing: 0.08em; text-transform: none; font-weight: 500; }
+
+/* ══════════════════════════════════════════════════════════════
+   4. 表单行
+   ══════════════════════════════════════════════════════════════ */
+/* 一行 = 「标签（弹性） + 控件（定宽）」。控件列定宽是这一版整齐的关键：
+   以前控件是 auto 宽 + 靠右，于是"96px 的数字框 / 132px 的下拉 / 51px 的开关"
+   各自从不同的 x 开始，一列看下来边缘全是对不齐的锯齿。
+   定宽 + 撑满之后，同一张卡里所有控件的左右边缘各自成一条直线。 */
+.config-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--ctl-w);
+    align-items: center; column-gap: 16px;
+    min-height: 52px; padding: 10px 0;
+    border-bottom: 1px solid var(--cfg-line);
+}
+.config-row > :last-child { width: 100%; justify-self: stretch; }
+/* 开关不撑满：靠控件列的**右边缘**对齐——它右边和上面那些输入框、下拉的右端
+   落在同一条竖线上（左对齐会缩在控件列中间，看着像没放到位）。
+   宽度必须留住 51px：写成 width:auto 会让轨道塌成 0，只剩一颗滑块。 */
+.config-row > .toggle { width: 51px; justify-self: end; }
+.config-row:last-child { border-bottom: 0; }
+.config-row > div:first-child { min-width: 0; }
+.config-label { font-size: 14px; line-height: 1.35; color: var(--text); }
+.config-hint { margin-top: 3px; font-size: 11.5px; line-height: 1.45; color: var(--text-dim); }
+/* 开关行（整行可点）：把 hover 底色铺到卡片内边距上 */
+.config-row.is-switch { cursor: pointer; user-select: none; border-radius: 10px; }
+.config-row.is-switch:hover { background: var(--cfg-raise); }
+.config-row.is-switch:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.config-input {
+    width: 100%; max-width: 100%;
+    padding: 9px 12px; border-radius: 10px;
+    background: var(--cfg-raise); border: 1px solid var(--cfg-line-2);
+    color: var(--text); font-size: 13.5px; font-family: inherit;
+    outline: none; -webkit-appearance: none; appearance: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.config-input[type="number"] { text-align: right; }
+.config-input::placeholder { color: var(--text-dim); }
+.config-input:hover { border-color: var(--cfg-line-2); background: var(--cfg-raise-2); }
+.config-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(70, 180, 255, 0.16);
+}
+body.light .config-input:focus { box-shadow: 0 0 0 3px rgba(15, 127, 209, 0.16); }
+.config-input[type="number"]::-webkit-outer-spin-button,
+.config-input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.config-select { width: 100%; font-size: 13px; }
+.config-select:hover, .config-select:focus { color: var(--text); }
+
+/* ══════════════════════════════════════════════════════════════
+   5. 设备卡（config.html 的内联脚本拼出来，类名固定）
+   ══════════════════════════════════════════════════════════════ */
+.device-list-hint { padding: 0 0 10px; }
+.device-card {
+    border: 1px solid var(--cfg-line-2); border-radius: 14px;
+    margin-bottom: 10px; overflow: hidden;
+    background: var(--cfg-raise);
+    transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+.device-card:hover { border-color: rgba(255, 255, 255, 0.2); }
+body.light .device-card { border-color: rgba(0, 0, 0, 0.12); background: #fff; }
+body.light .device-card:hover { border-color: rgba(0, 0, 0, 0.2); }
+.device-card.is-editing { border-color: var(--c1); background: transparent; }
+.device-card.is-unconfigured { border-style: dashed; }
+
+.device-card-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+.device-card-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.device-led {
+    width: 9px; height: 9px; border-radius: 50%; flex: none;
+    background: var(--text-dim); opacity: 0.5;
+}
+.device-led.on { background: var(--cfg-ok); opacity: 1; box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.16); }
+.device-card-main { flex: 1; min-width: 0; }
+.device-card-name {
+    display: flex; align-items: center; gap: 6px; min-width: 0;
+    font-size: 14.5px; font-weight: 600; color: var(--text);
+}
+.device-card-name > span:first-child {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.device-card-sub {
+    margin-top: 3px; font-size: 11.5px; color: var(--text-dim);
+    font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+}
+.device-tag {
+    flex: none; padding: 2px 7px; border-radius: 6px;
+    font-size: 10px; font-weight: 500; line-height: 1.4;
+    background: var(--cfg-chip); color: var(--text-sub);
+}
+.device-tag-todo { background: rgba(255, 210, 75, 0.14); color: #E8A33D; }
+body.light .device-tag-todo { background: rgba(255, 150, 0, 0.14); color: #B36B00; }
+.device-card-btn {
+    flex: none; min-height: 32px; padding: 6px 12px; border-radius: 9px;
+    font-size: 12px; font-family: inherit; white-space: nowrap; cursor: pointer;
+    background: var(--cfg-raise-2); color: var(--text);
+    border: 1px solid var(--cfg-line-2);
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.device-card-btn:hover { background: var(--cfg-chip); border-color: var(--cfg-line-2); }
+.device-card-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.device-card-btn.danger { color: var(--cfg-danger); }
+.device-card-btn.danger:hover { background: rgba(255, 107, 96, 0.12); border-color: rgba(255, 107, 96, 0.4); }
+body.light .device-card-btn { background: rgba(0, 0, 0, 0.03); border-color: rgba(0, 0, 0, 0.12); }
+body.light .device-card-btn:hover { background: rgba(0, 0, 0, 0.06); }
+body.light .device-card-btn.danger:hover { background: rgba(208, 43, 30, 0.08); border-color: rgba(208, 43, 30, 0.35); }
+
+.device-card-body { padding: 0 14px 6px; border-top: 1px solid var(--cfg-line); }
+.device-card-body[hidden] { display: none; }
+.device-card-body .config-row { padding: 8px 0; min-height: 46px; }
+.device-card-body .config-row { grid-template-columns: minmax(0, 1fr) 280px; }
+.device-card-actions {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 12px 0 10px; margin-top: 4px;
+    border-top: 1px solid var(--cfg-line);
+}
+.device-card-actions .device-card-btn { background: transparent; }
+.device-card-action-hint {
+    flex: 1 1 160px; min-width: 0;
+    font-size: 11.5px; line-height: 1.5; color: var(--text-dim);
+}
+
+/* 全新部署引导条：只在"一张还没配置的主设备卡"时出现 */
+.device-onboarding {
+    margin: 0 0 10px; padding: 10px 12px;
+    font-size: 11.5px; line-height: 1.6; color: var(--text-sub);
+    border: 1px dashed var(--cfg-line-2); border-radius: 12px;
+    background: var(--cfg-raise);
+}
+.device-onboarding[hidden] { display: none; }
+
+/* 添加充电器：虚线行，与上面的设备卡同一节奏 */
+.device-add-btn {
+    width: 100%; min-height: 46px; margin-top: 2px;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    border: 1px dashed var(--cfg-line-2); border-radius: 12px;
+    background: transparent; color: var(--text-sub);
+    font-size: 13px; font-family: inherit; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+.device-add-btn:hover { color: var(--text); border-color: var(--cfg-line-2); background: var(--cfg-raise); }
+.device-add-btn:active { transform: scale(0.995); }
+.device-add-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ══════════════════════════════════════════════════════════════
+   6. 巴法云语音开关表
+   ══════════════════════════════════════════════════════════════ */
+.bemfa-toggle {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    min-height: 52px; padding: 10px 0;
+    cursor: pointer; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    border-bottom: 1px solid var(--cfg-line);
+}
+.bemfa-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 10px; }
+.bemfa-head-text { min-width: 0; }
+.bemfa-count { margin-left: 6px; font-size: 11.5px; font-weight: 400; color: var(--text-dim); }
+.bemfa-chevron {
+    flex: none; font-size: 11px; line-height: 1; color: var(--text-dim);
+    transition: transform 0.18s ease;
+}
+.bemfa-toggle[aria-expanded="true"] .bemfa-chevron { transform: rotate(180deg); }
+.bemfa-body { padding-top: 10px; }
+.bemfa-body[hidden] { display: none; }
+.bemfa-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.bemfa-row {
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 10px; margin-bottom: 8px;
+    border: 1px solid var(--cfg-line-2); border-radius: 12px;
+    background: var(--cfg-raise);
+}
+.bemfa-row-line { display: flex; align-items: center; gap: 8px; }
+.bemfa-row-line .config-input { flex: 1; width: auto; min-width: 0; }
+.bemfa-row-line .config-select { flex: 1; width: auto; min-width: 0; }
+.bemfa-port { flex: none; min-width: 20px; text-align: center; font-size: 11px; color: var(--text-dim); }
+.bemfa-del {
+    flex: none; width: 34px; height: 34px; border-radius: 9px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent; border: 1px solid var(--cfg-line-2);
+    color: var(--cfg-danger); font-size: 15px; line-height: 1;
+    -webkit-tap-highlight-color: transparent;
+}
+.bemfa-del:hover { background: rgba(255, 107, 96, 0.12); border-color: rgba(255, 107, 96, 0.4); }
+.bemfa-del:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bemfa-empty {
+    padding: 16px 12px; text-align: center;
+    font-size: 12px; line-height: 1.6; color: var(--text-dim);
+    border: 1px dashed var(--cfg-line-2); border-radius: 12px;
+}
+
+.mini-btn {
+    min-height: 32px; padding: 6px 11px; border-radius: 9px;
+    font-size: 12px; font-family: inherit; white-space: nowrap; cursor: pointer;
+    background: var(--cfg-raise-2); border: 1px solid var(--cfg-line-2);
+    color: var(--text);
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.mini-btn:hover { background: var(--cfg-chip); }
+.mini-btn:active { transform: scale(0.97); }
+.mini-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mini-btn.accent { color: var(--cfg-accent); border-color: rgba(70, 180, 255, 0.45); background: rgba(70, 180, 255, 0.08); }
+.mini-btn.accent:hover { background: rgba(70, 180, 255, 0.16); }
+body.light .mini-btn { background: rgba(0, 0, 0, 0.03); border-color: rgba(0, 0, 0, 0.12); }
+body.light .mini-btn.accent { color: #0f7fd1; border-color: rgba(15, 127, 209, 0.4); background: rgba(15, 127, 209, 0.08); }
+
+/* ══════════════════════════════════════════════════════════════
+   7. 运行状态
+   ══════════════════════════════════════════════════════════════ */
+.status-row {
+    display: flex; align-items: center; gap: 10px;
+    min-height: 44px; padding: 8px 0;
+    font-size: 13.5px; color: var(--text-sub);
+}
+.status-dot-sm {
+    flex: none; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--text-dim); opacity: 0.6;
+}
+.status-dot-sm.ok { background: var(--cfg-ok); opacity: 1; box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.16); }
+.status-dot-sm.err { background: var(--cfg-danger); opacity: 1; box-shadow: 0 0 0 3px rgba(255, 107, 96, 0.16); }
+.cfg-status-meta {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    padding: 4px 0 12px;
+}
+.cfg-status-chip {
+    padding: 5px 10px; border-radius: 999px;
+    font-size: 11.5px; color: var(--text-sub);
+    background: var(--cfg-raise-2); border: 1px solid var(--cfg-line);
+    font-variant-numeric: tabular-nums;
+}
+.cfg-status-note { font-size: 11.5px; line-height: 1.6; color: var(--text-dim); padding-bottom: 12px; }
+
+/* ══════════════════════════════════════════════════════════════
+   8. 吸底保存栏
+   ══════════════════════════════════════════════════════════════ */
+/* 保存栏铺满整行、上下用一条发丝线分隔：它是"页面底部的一条带"，不是浮在
+   内容上的卡片。左右内边距与卡片同值（16px / 桌面 24px），按钮右边缘因此和
+   卡片右边缘落在同一条竖线上。 */
+.cfg-savebar {
+    position: sticky; bottom: 0; z-index: 40;
+    display: flex; align-items: center; gap: 12px;
+    margin: 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+    background: rgba(18, 18, 21, 0.94);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+    border-top: 1px solid var(--cfg-line);
+}
+body.light .cfg-savebar { background: rgba(240, 240, 245, 0.94); }
+.cfg-save-state {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--text-dim);
+    transition: color 0.18s ease;
+}
+.cfg-save-state::before {
+    content: ''; width: 7px; height: 7px; border-radius: 50%; flex: none;
+    background: currentColor; opacity: 0.5;
+}
+.cfg-savebar[data-dirty="true"] .cfg-save-state { color: var(--cfg-warn); }
+.cfg-savebar[data-dirty="true"] .cfg-save-state::before { opacity: 1; }
+.cfg-savebar[data-state="saved"] .cfg-save-state { color: var(--cfg-ok); }
+.cfg-savebar[data-state="saved"] .cfg-save-state::before { opacity: 1; }
+
+.btn-save {
+    flex: none; min-height: 44px; padding: 0 20px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    border: 0; border-radius: 12px;
+    background: var(--accent); color: #fff;
+    font-size: 14.5px; font-weight: 600; font-family: inherit;
+    cursor: pointer; -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+    transition: background-color 0.18s ease, opacity 0.18s ease, transform 0.12s ease;
+}
+.btn-save:hover { background: #3ea6f0; }
+.btn-save:active { transform: scale(0.98); }
+.btn-save:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+.btn-save:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.btn-save .cfg-ic { width: 17px; height: 17px; stroke-width: 1.8; }
+body.light .btn-save { color: #fff; }
+body.light .btn-save:hover { background: #0e6fb8; }
+/* 保存中：图标转一圈（reduced-motion 由 phone.css 的全局兜底停掉） */
+.btn-save.is-saving .cfg-ic { animation: cfgSpin 1.1s linear infinite; }
+@keyframes cfgSpin { to { transform: rotate(360deg); } }
+/* 导入成功后的指引：把视线带到"保存"这一步 */
+.btn-save.is-attention { animation: cfgSaveAttention 0.9s ease-in-out 2; }
+@keyframes cfgSaveAttention {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(70, 180, 255, 0); }
+    50% { box-shadow: 0 0 0 7px rgba(70, 180, 255, 0.30); }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   9. 小米云弹窗（原来整块写在行内 style 里，这里收成类）
+   ══════════════════════════════════════════════════════════════ */
+.xm-modal {
+    position: fixed; inset: 0; z-index: 200;
+    display: none; align-items: center; justify-content: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.72);
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+.xm-modal.is-open { display: flex; }
+.xm-dialog {
+    width: 100%; max-width: 400px; max-height: 82vh; overflow-y: auto;
+    padding: 18px 20px 20px;
+    background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: 18px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+.xm-dialog-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: 14px;
+}
+.xm-dialog-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.xm-close {
+    width: 32px; height: 32px; margin-right: -6px;
+    display: flex; align-items: center; justify-content: center;
+    border: 0; background: none; border-radius: 9px;
+    color: var(--text-dim); font-size: 20px; line-height: 1; cursor: pointer;
+}
+.xm-close:hover { color: var(--text); background: var(--cfg-raise-2); }
+.xm-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.xm-field { margin-bottom: 12px; }
+.xm-field .config-label { margin-bottom: 6px; }
+.xm-field .config-select { width: 100%; }
+.xm-qr-wrap { text-align: center; margin-bottom: 14px; }
+.xm-qr-hint { font-size: 12.5px; color: var(--text-sub); margin-bottom: 10px; }
+.xm-qr-hint strong { color: var(--text); font-weight: 600; }
+.xm-qr-box {
+    display: inline-block; padding: 8px; border-radius: 10px;
+    background: #fff;
+}
+.xm-link-row { margin-bottom: 12px; }
+.xm-link-row .config-input { width: 100%; max-width: none; text-align: left; font-size: 11.5px; }
+.xm-status { min-height: 18px; margin-top: 8px; font-size: 12px; text-align: center; color: var(--text-dim); }
+.xm-list {
+    max-height: 36vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    margin-bottom: 10px; padding-right: 2px;
+}
+.xm-item {
+    display: flex; align-items: center; gap: 10px; cursor: pointer;
+    padding: 10px; margin-bottom: 6px;
+    border: 1px solid var(--cfg-line-2); border-radius: 10px;
+}
+.xm-item.is-on { border-color: var(--accent); background: rgba(70, 180, 255, 0.07); }
+.xm-item input[type="checkbox"] { width: 18px; height: 18px; flex: none; margin: 0; accent-color: var(--accent); }
+.xm-item-main { min-width: 0; flex: 1; }
+.xm-item-name { font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xm-item-sub { margin-top: 2px; font-size: 11px; color: var(--text-dim); }
+.xm-options {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; margin-bottom: 10px;
+    border: 1px solid var(--cfg-line-2); border-radius: 12px;
+    background: var(--cfg-raise);
+}
+.xm-options-text { flex: 1; min-width: 0; }
+.xm-options .config-label { font-size: 13px; }
+.xm-select-actions { display: flex; gap: 6px; flex: none; }
+.xm-foot { display: flex; gap: 8px; margin-top: 12px; }
+.xm-foot .btn-save { flex: 1; min-height: 42px; }
+.xm-foot .btn-save.ghost {
+    flex: 1; background: var(--cfg-raise-2); color: var(--text);
+    border: 1px solid var(--cfg-line-2);
+}
+.xm-foot .btn-save.ghost:hover { background: var(--cfg-chip); }
+.xm-foot #xiaomiImportBtn { flex: 2; }
+
+/* ══════════════════════════════════════════════════════════════
+   10. 响应式：≥1024 两栏；≥1280 内容再分两列
+   ══════════════════════════════════════════════════════════════ */
+@media (min-width: 1024px) {
+    .cfg-shell {
+        grid-template-columns: var(--rail-w) minmax(0, 1fr);
+        gap: 24px;
+        padding: 24px 24px calc(28px + env(safe-area-inset-bottom, 0px));
+        align-items: start;
+    }
+    /* 桌面：目录常驻左栏，不再是顶部横条 */
+    .cfg-rail {
+        position: sticky; top: 76px;
+        margin: 0; padding: 0;
+        background: none; border: 0;
+    }
+    .cfg-rail-list { flex-direction: column; gap: 4px; overflow: visible; }
+    .cfg-rail-link {
+        width: 100%; justify-content: flex-start;
+        padding: 9px 12px; border-radius: 10px;
+        border-color: transparent; font-size: 13.5px;
+    }
+    .cfg-rail-link.is-active {
+        background: var(--cfg-raise-2);
+        border-color: var(--cfg-line-2);
+        box-shadow: inset 2px 0 0 var(--cfg-accent);
+    }
+    html[lang^="zh"] .cfg-rail-link { letter-spacing: 0.02em; }
+    .cfg-content { gap: 18px; }
+    .cfg-sec { --sec-pad: 22px; }
+    .cfg-savebar {
+        max-width: var(--cfg-max); margin: 0 auto;
+        padding: 12px 24px calc(12px + env(safe-area-inset-bottom, 0px)) calc(var(--rail-w) + 48px);
+        border-radius: 0; border: 0; border-top: 1px solid var(--cfg-line);
+    }
+    .device-card-body .config-input { width: 300px; }
+}
+
+/* 桌面宽屏：**不再把两张卡并排**。
+   并排会立刻产生"隔壁那张更矮"的洞——巴法云两行、服务器五行，配在一起就是
+   一块永远填不满的空白（用户的原话：不要这种留白）。改成单列卡片，把宽度
+   花在每张卡**内部**：字段两列并排，行数减半，卡片高度各按内容来，页面上
+   没有任何一栏需要跟别人对齐。 */
+@media (min-width: 1280px) {
+    .cfg-content { grid-template-columns: minmax(0, 1fr); }
+
+    /* 只给"纯字段"的分节开启两列：设备卡（一卡一台机）与巴法云（自带可展开的
+       开关表）保持单列，强行两列会把一张卡切成两半。 */
+    .cfg-sec--mqtt .cfg-sec-body,
+    .cfg-sec--server .cfg-sec-body {
+        display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+        column-gap: var(--col-gap, 32px);
+    }
+    .cfg-sec--mqtt .cfg-sec-body > .config-row,
+    .cfg-sec--server .cfg-sec-body > .config-row {
+        border-bottom: 1px solid var(--cfg-line);
+        /* 撑满所在网格行：两列的 row 高度由更高的一侧决定，撑满后分隔线才对齐 */
+        align-self: stretch;
+    }
+    /* 字段数为奇数时，最后一行横跨两列，但控件仍落在**左列那条控件线**上：
+       三列分别是「标签 | 控件 | 余量」，中间那列与左列控件同宽同位，右边留白。
+       这样不会出现"标签在最左、控件甩到最右"的巨缝（那是上一版最难看的一处）。 */
+    /* 收尾行如果是个开关，让它贴到卡片右边缘：iOS 设置那种"标签在左、开关在右"
+       的收尾更符合直觉。文本/下拉的收尾行不动——跟着跳到最右会和上一行的输入框
+       错开一截，反而更乱。 */
+    .cfg-sec--mqtt .cfg-sec-body > .config-row.is-switch:last-child:nth-child(odd),
+    .cfg-sec--server .cfg-sec-body > .config-row.is-switch:last-child:nth-child(odd) {
+        grid-template-columns: minmax(0, 1fr) var(--ctl-w);
+    }
+    .cfg-sec--mqtt .cfg-sec-body > .config-row.is-switch:last-child:nth-child(odd) > .toggle,
+    .cfg-sec--server .cfg-sec-body > .config-row.is-switch:last-child:nth-child(odd) > .toggle {
+        justify-self: end;
+    }
+
+    /* 奇数个字段：最后一行占满整行，但控件列仍落在**左列控件的那条竖线**上
+       （左列宽 =(100% - 列间距)/2，控件贴着它的右边缘）。算出来的第一列宽
+       正好让中列起点 = 左列控件的左边缘，视觉上还是同一条线，只是右边留白。 */
+    .cfg-sec--mqtt .cfg-sec-body > .config-row:last-child:nth-child(odd),
+    .cfg-sec--server .cfg-sec-body > .config-row:last-child:nth-child(odd) {
+        grid-column: 1 / -1;
+        grid-template-columns:
+            calc((100% - var(--col-gap)) / 2 - var(--ctl-w) - 16px)
+            var(--ctl-w) 1fr;
+    }
+}
+
+/* 平板一档（640–1023）：单列但不必挤在 430 的手机壳里，放宽到 640。
+   这一档仍用顶部图标目录，桌面两栏从 1024 才开始。 */
+@media (min-width: 640px) and (max-width: 1023px) {
+    .config-app { --page-width: 640px; }
+    .cfg-shell { padding: 20px 20px calc(24px + env(safe-area-inset-bottom, 0px)); }
+    .cfg-savebar {
+        padding-left: 20px; padding-right: 20px;
+        padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    }
+    .cfg-rail { margin: 0 -20px; padding: 8px 20px 10px; }
+    .cfg-rail-link { min-height: 38px; }
+}
+
+/* 手机：设备卡头的按钮在 360px 上会挤压名字，收到第二行（390/430 仍然一行） */
+@media (max-width: 360px) {
+    .device-card-head { flex-wrap: wrap; }
+    .device-card-main { flex: 1 1 100%; order: 1; }
+    .device-card-head .device-card-btn { order: 2; }
+    .device-card-body .config-input { width: 100%; max-width: none; }
+    .config-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    .config-row > :last-child { justify-self: start; }
+    .config-input, .config-input[type="number"], .config-select { width: 100%; max-width: none; text-align: left; }
+    .cfg-save-state { font-size: 11.5px; }
+}
+
+/* 减少动态效果：本页只有转圈与指引脉冲需要停 */
+@media (prefers-reduced-motion: reduce) {
+    .btn-save.is-saving .cfg-ic { animation: none; }
+    .btn-save.is-attention { animation: none; box-shadow: 0 0 0 3px rgba(70, 180, 255, 0.35); }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   11. 零碎件：徽标 / 开关行小字 / 行内链接 / 锚点落点
+   ══════════════════════════════════════════════════════════════ */
+.cfg-sec-badge {
+    margin-left: 6px; padding: 1px 6px; border-radius: 6px;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+    vertical-align: 2px;
+    color: var(--text-dim); background: var(--cfg-chip);
+}
+/* 分节头右侧"启用 XX"小字：窄屏收起（开关本身有 aria-label，读屏不受影响） */
+.cfg-switch-text { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+@media (max-width: 520px) { .cfg-switch-text { display: none; } }
+
+.cfg-inline-link { color: var(--cfg-accent); text-decoration: none; }
+.cfg-inline-link:hover { text-decoration: underline; }
+.cfg-inline-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+#deviceList:not(:empty) + .device-add-btn { margin-top: 4px; }
+.device-onboarding:not([hidden]) + .device-add-btn { margin-top: 0; }
+
+/* 手机：锚点落点要避开「固定导航 48px + 吸顶目录条」，否则标题被压在目录下面 */
+@media (max-width: 1023px) {
+    .cfg-sec { scroll-margin-top: 104px; }
+    /* 手机目录：五个图标一行排开（5×34 + 间距 < 390），只有当前项展开文字。
+       以前是横滑长条，"MQTT (Home Assistant)" 这种长标签会把后面的项挤到屏幕外，
+       看起来像被切断；图标+当前项标签既放得下、又始终能看出自己在哪一节。 */
+    .cfg-rail-list { padding-right: 0; gap: 4px; overflow-x: visible; }
+    .cfg-rail-link { padding: 8px 9px; gap: 7px; }
+    .cfg-rail-link span { display: none; }
+    .cfg-rail-link.is-active span { display: inline; }
+    .cfg-rail-link.is-active { padding-right: 12px; }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   12. 二次确认弹层（替代原生 confirm）
+   材质与小米云弹窗同一套：暗色遮罩 + 卡面 + 18px 圆角，
+   破坏性操作的确认键用 --cfg-danger，与"清空主设备/删除"按钮同色。
+   ══════════════════════════════════════════════════════════════ */
+.ui-confirm {
+    position: fixed; inset: 0; z-index: 240;
+    display: none; align-items: center; justify-content: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.66);
+    -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+}
+.ui-confirm.is-open { display: flex; }
+.ui-confirm-sheet {
+    width: 100%; max-width: 340px;
+    padding: 20px 20px 16px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 18px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    animation: uiConfirmIn 0.16s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+@keyframes uiConfirmIn {
+    from { opacity: 0; transform: translateY(6px) scale(0.985); }
+    to { opacity: 1; transform: none; }
+}
+.ui-confirm-text {
+    margin: 0 0 16px;
+    font-size: 14px; line-height: 1.6; color: var(--text);
+    overflow-wrap: anywhere;
+}
+.ui-confirm-actions { display: flex; gap: 8px; }
+.ui-confirm-btn {
+    flex: 1; min-height: 42px; padding: 0 14px;
+    border-radius: 11px; border: 1px solid var(--cfg-line-2);
+    background: var(--cfg-raise-2); color: var(--text);
+    font-size: 14px; font-weight: 500; font-family: inherit;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.ui-confirm-btn:hover { background: var(--cfg-chip); }
+.ui-confirm-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ui-confirm-btn.is-primary {
+    background: rgba(70, 180, 255, 0.16);
+    border-color: rgba(70, 180, 255, 0.45);
+    color: var(--cfg-accent); font-weight: 600;
+}
+.ui-confirm-btn.is-primary:hover { background: rgba(70, 180, 255, 0.24); }
+/* 破坏性：确认键换成危险色（与 .device-card-btn.danger 同一套） */
+.ui-confirm[data-danger="danger"] .ui-confirm-btn.is-primary {
+    background: rgba(255, 107, 96, 0.14);
+    border-color: rgba(255, 107, 96, 0.45);
+    color: var(--cfg-danger);
+}
+.ui-confirm[data-danger="danger"] .ui-confirm-btn.is-primary:hover { background: rgba(255, 107, 96, 0.22); }
+body.light .ui-confirm-btn.is-primary { color: #0f7fd1; }
+body.light .ui-confirm[data-danger="danger"] .ui-confirm-btn.is-primary { color: #b21f14; }
+
+@media (prefers-reduced-motion: reduce) {
+    .ui-confirm-sheet { animation: none; }
+}

@@ -5,399 +5,248 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title data-i18n="pageTitle.config">CUKTECH 配置</title>
 <link rel="icon" href="/static/favicon.ico">
-<script src="/static/locales/zh-CN.js?v=28"></script>
-<script src="/static/locales/en.js?v=28"></script>
+<script src="/static/locales/zh-CN.js?v=31"></script>
+<script src="/static/locales/en.js?v=31"></script>
 <script src="/static/i18n.js?v=6"></script>
 <link rel="stylesheet" href="static/phone.css?v=36">
-<style>
-/* Config page overrides */
-/* 本页只引 phone.css，而 --accent 是 index.css 的令牌：这里补一份。
-   不补的话 .btn-save/链接/复选框上的 var(--accent) 全部在计算值阶段失效
-   （结果是"保存"按钮背景变透明），本页看起来就像少了主按钮。 */
-:root { --accent: #46B4FF; }
-body.light { --accent: #0f7fd1; }
-.config-section { margin-top: 12px; }
-.config-section-title {
-    font-size: 12px; font-weight: 600; color: var(--text-dim);
-    text-transform: uppercase; letter-spacing: 1px;
-    margin-bottom: 8px; padding: 0 4px;
-}
-.config-row {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.06);
-}
-.config-row > div:first-child { min-width: 0; } /* 英文长标签可换行，不挤压输入框 */
-body.light .config-row { border-bottom-color: rgba(0,0,0,0.06); }
-.config-row:last-child { border-bottom: none; }
-.config-label { font-size: 15px; color: var(--text); }
-.config-hint { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-.config-input {
-    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 8px; padding: 8px 12px; color: var(--text); font-size: 14px;
-    width: 180px; text-align: right; outline: none; transition: border-color 0.2s;
-}
-body.light .config-input {
-    background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.12);
-}
-.config-input:focus { border-color: var(--accent); }
-.config-input::placeholder { color: var(--text-dim); }
-.config-select { min-width: 100px; font-size: 13px; }
-/* 视觉外观（底色/描边/箭头/hover/focus）统一走 phone.css 的 select 皮肤 */
-.config-select:hover, .config-select:focus { color: var(--text); }
-.btn-save {
-    width: 100%; padding: 14px; border: none; border-radius: 12px;
-    /* 实底 --accent 上的文字必须是白色：浅色主题的 --text 是近黑色，压在蓝底上
-       只有 1.3:1，等于看不见 */
-    background: var(--accent); color: #fff; font-size: 15px; font-weight: 600;
-    cursor: pointer; transition: all 0.2s; margin-top: 12px;
-    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
-    display: flex; align-items: center; justify-content: center; gap: 8px;
-}
-.btn-save:active { transform: scale(0.97); opacity: 0.9; }
-.btn-save:disabled { opacity: 0.5; cursor: not-allowed; }
-/* 扫码导入成功关窗后，把视线引到"保存"这一步：导入只是填了卡片，还没落盘 */
-.btn-save.is-attention { animation: save-attention 0.9s ease-in-out 2; }
-@keyframes save-attention {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
-    50% { box-shadow: 0 0 0 7px rgba(0, 122, 255, 0.30); }
-}
-.status-row {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 0; font-size: 13px; color: var(--text-dim);
-}
-.status-dot-sm { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
-.status-dot-sm.ok { background: #34C759; }
-.status-dot-sm.err { background: #FF3B30; }
-
-/* ── 设备卡片列表（多设备，§3.12）──
-   卡片头永远只显示"连接灯 + 名字 + MAC"，编辑时在下面展开凭据表单：
-   一眼能看到配了几台，又不至于把五组输入框全铺开。 */
-.device-list-hint { padding: 0 4px 8px; }
-.device-card {
-    border: 1px solid rgba(255,255,255,0.10); border-radius: 12px;
-    margin-bottom: 8px; overflow: hidden;
-}
-body.light .device-card { border-color: rgba(0,0,0,0.10); }
-/* 展开态高亮用端口蓝 --c1（与卡片上的端口色一致；--accent 在本页是上面补的
-   主按钮蓝，两者刻意分开：卡片选中态属于"端口蓝"，不是"可点主色"） */
-.device-card.is-editing { border-color: var(--c1); }
-.device-card-head {
-    display: flex; align-items: center; gap: 10px;
-    padding: 12px; cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-}
-.device-led {
-    width: 8px; height: 8px; border-radius: 50%; flex: none;
-    background: var(--text-dim); opacity: 0.5;
-}
-.device-led.on { background: #34C759; opacity: 1; }
-.device-card-main { flex: 1; min-width: 0; }
-.device-card-name {
-    font-size: 15px; color: var(--text);
-    display: flex; align-items: center; gap: 6px; min-width: 0;
-}
-.device-card-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.device-card-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-.device-tag {
-    font-size: 10px; padding: 1px 6px; border-radius: 6px; flex: none;
-    background: rgba(255,255,255,0.10); color: var(--text-dim);
-}
-body.light .device-tag { background: rgba(0,0,0,0.06); }
-.device-card-btn {
-    flex: none; padding: 6px 10px; border-radius: 8px; cursor: pointer;
-    font-size: 12px; background: rgba(255,255,255,0.08); color: var(--text);
-    border: 1px solid rgba(255,255,255,0.10);
-    -webkit-tap-highlight-color: transparent;
-}
-body.light .device-card-btn { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.10); }
-.device-card-btn.danger { color: var(--limit-danger); }
-.device-card-body { padding: 0 12px 4px; }
-.device-card-body[hidden] { display: none; }
-.device-card-body .config-row:last-child { border-bottom: none; }
-/* 还没配置的设备卡（全新部署的 primary、刚点「添加」的空卡）：虚线 + "待配置"，
-   不能画成一台已经存在的设备——"凭空多出一台删不掉的主设备"就是那种观感。 */
-.device-card.is-unconfigured { border-style: dashed; }
-.device-tag-todo { background: rgba(255, 170, 0, 0.16); color: #E8A33D; }
-body.light .device-tag-todo { background: rgba(255, 150, 0, 0.14); color: #B36B00; }
-/* 设备级动作（设为主设备 / 清空主设备）放在**展开的编辑区底部**，而不是卡片头上：
-   卡片头在 390px 宽的手机上只剩 ~200px 给设备名，多一个按钮就把名字挤成
-   省略号；而"清空主设备"是不可逆操作，离手指远一点反而更安全。 */
-.device-card-actions {
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 10px 0 6px; margin-top: 2px;
-    border-top: 1px solid rgba(255,255,255,0.06);
-}
-body.light .device-card-actions { border-top-color: rgba(0,0,0,0.06); }
-.device-card-action-hint { font-size: 11px; line-height: 1.5; color: var(--text-dim); flex: 1 1 140px; }
-.device-card-btn { white-space: nowrap; }
-.device-onboarding {
-    font-size: 11px; line-height: 1.6; color: var(--text-dim);
-    padding: 8px 10px; margin: -2px 0 8px;
-    border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px;
-}
-body.light .device-onboarding { border-color: rgba(0,0,0,0.14); }
-.device-onboarding[hidden] { display: none; }
-/* 折叠时整块不渲染：display:none 由 [hidden] 负责，避免和 flex/grid 样式打架 */
-.device-add-btn {
-    width: 100%; margin-top: 4px; padding: 10px;
-    border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px;
-    background: transparent; color: var(--text-dim); font-size: 13px;
-    display: flex; align-items: center; justify-content: center; gap: 6px;
-    cursor: pointer; -webkit-tap-highlight-color: transparent;
-}
-body.light .device-add-btn { border-color: rgba(0,0,0,0.16); }
-.device-add-btn:active { opacity: 0.7; }
-
-/* ── 巴法云语音开关（实体表）──
-   一行 = 一个语音开关 = (名字, 设备, 端口)。放成卡片而不是 config-row 表格：
-   430px 宽度里塞不下"名称输入 + 两个下拉 + 删除"一行，删掉任何一列都会让用户
-   猜不出来剩下的是什么。 */
-/* 折叠头：整行可点（触控目标 ≥44px），右侧 ▾ 展开时翻转。 */
-.bemfa-toggle {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 8px; padding: 12px 0 10px; min-height: 44px;
-    cursor: pointer; -webkit-tap-highlight-color: transparent;
-    user-select: none;
-}
-.bemfa-toggle:active { opacity: 0.65; }
-.bemfa-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
-.bemfa-head-text { min-width: 0; }
-.bemfa-count { font-size: 11px; font-weight: 400; color: var(--text-dim); margin-left: 6px; }
-.bemfa-chevron {
-    flex: none; font-size: 11px; color: var(--text-dim); line-height: 1;
-    transition: transform 0.18s ease;
-}
-.bemfa-toggle[aria-expanded="true"] .bemfa-chevron { transform: rotate(180deg); }
-.bemfa-body { padding-top: 2px; }
-.bemfa-actions { display: flex; gap: 6px; flex: none; margin-bottom: 8px; }
-.mini-btn {
-    padding: 6px 10px; border-radius: 8px; font-size: 12px; cursor: pointer;
-    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
-    color: var(--text); white-space: nowrap;
-    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
-}
-body.light .mini-btn { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.10); }
-.mini-btn:active { opacity: 0.65; }
-.mini-btn.accent { color: var(--accent); border-color: rgba(70,180,255,0.45); }
-.bemfa-row {
-    display: flex; flex-direction: column; gap: 8px;
-    padding: 10px; margin-bottom: 8px;
-    border: 1px solid rgba(255,255,255,0.10); border-radius: 12px;
-}
-body.light .bemfa-row { border-color: rgba(0,0,0,0.10); }
-.bemfa-row-line { display: flex; align-items: center; gap: 8px; }
-.bemfa-row-line .config-input { flex: 1; width: auto; min-width: 0; text-align: left; }
-.bemfa-row-line .config-select { flex: 1; min-width: 0; font-size: 13px; }
-.bemfa-port {
-    flex: none; font-size: 11px; color: var(--text-dim);
-    min-width: 18px; text-align: center;
-}
-.bemfa-del {
-    flex: none; width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
-    background: transparent; border: 1px solid rgba(255,255,255,0.12);
-    color: var(--limit-danger); font-size: 16px; line-height: 1;
-    display: flex; align-items: center; justify-content: center;
-    -webkit-tap-highlight-color: transparent;
-}
-body.light .bemfa-del { border-color: rgba(0,0,0,0.12); }
-.bemfa-del:active { opacity: 0.6; }
-.bemfa-empty {
-    text-align: center; color: var(--text-dim); font-size: 12px;
-    padding: 14px 8px; border: 1px dashed rgba(255,255,255,0.14); border-radius: 12px;
-}
-body.light .bemfa-empty { border-color: rgba(0,0,0,0.12); }
-
-/* ── 小米云弹窗：设备清单 + 选项条 ──
-   清单限高滚动、选项条贴在底部操作区上方：清单再长，勾选"同步名称"和「导入」
-   按钮也不会被挤出屏幕（弹窗本身 max-height:80vh）。 */
-.xm-list {
-    max-height: 38vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
-    padding-right: 2px; margin-bottom: 10px;
-}
-.xm-item {
-    display: flex; align-items: center; gap: 10px; cursor: pointer;
-    padding: 10px; margin-bottom: 6px;
-    border: 1px solid rgba(255,255,255,0.10); border-radius: 10px;
-}
-body.light .xm-item { border-color: rgba(0,0,0,0.10); }
-.xm-item.is-on { border-color: var(--accent); }
-.xm-item input[type="checkbox"] {
-    width: 18px; height: 18px; flex: none; accent-color: var(--accent); margin: 0;
-}
-.xm-item-main { min-width: 0; flex: 1; }
-.xm-item-name {
-    font-size: 14px; color: var(--text);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.xm-item-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-.xm-options {
-    display: flex; align-items: center; gap: 10px;
-    padding: 10px 12px; margin-bottom: 10px;
-    border: 1px solid var(--card-border); border-radius: 12px;
-    background: rgba(255,255,255,0.03);
-}
-body.light .xm-options { background: rgba(0,0,0,0.02); }
-.xm-options-text { flex: 1; min-width: 0; }
-.xm-options .config-label { font-size: 14px; }
-.xm-options .config-hint { margin-top: 2px; }
-</style>
+<link rel="stylesheet" href="static/config.css?v=1">
 </head>
-<body>
-<div class="phone" id="app">
-    <!-- Top Navigation -->
-    <div class="navbar">
-        <div class="nav-back" onclick="history.back()" style="cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text);">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity:0.7;">
-                <polyline points="15 18 9 12 15 6"></polyline>
-            </svg>
-        </div>
+<body class="config-page">
+<div class="phone config-app" id="app">
+    <!-- 顶部导航：返回 / 标题 / 外观。两端按钮视觉 28px、命中区 48px -->
+    <header class="navbar">
+        <button class="cfg-nav-btn" type="button" data-i18n-aria-label="common.back" aria-label="返回"
+                onclick="history.length>1?history.back():location.href='/'">
+            <svg class="cfg-ic cfg-ic--20" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+        </button>
         <div class="nav-title" data-i18n="config.title">系统配置</div>
-        <div class="theme-btn" id="themeBtn" onclick="toggleTheme()" style="width:28px;height:28px;cursor:pointer;font-size:18px;line-height:28px;text-align:center;">☀️</div>
+        <button class="cfg-nav-btn" id="themeBtn" type="button" data-i18n-aria-label="common.theme" aria-label="主题"
+                onclick="toggleTheme()">
+            <svg class="cfg-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 0 0 16.8Z" fill="currentColor" stroke="none"/></svg>
+        </button>
+    </header>
+
+    <!-- ── 设置外壳：桌面＝左侧吸顶目录 + 右侧表单；手机＝顶部横滑目录 + 单列 ── -->
+    <div class="cfg-shell">
+
+        <!-- 目录：锚点跳转 + 滚动高亮（高亮逻辑在页尾脚本里，靠 IntersectionObserver，
+             不支持时静默不亮，不影响跳转） -->
+        <nav class="cfg-rail" data-i18n-aria-label="config.railTitle" aria-label="配置目录">
+            <ul class="cfg-rail-list">
+                <li><a class="cfg-rail-link is-active" href="#sec-devices" data-sec="sec-devices" data-i18n-aria-label="config.devicesSection" aria-label="充电器">
+                    <svg class="cfg-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v5M15 3v5"/><path d="M6.5 8h11v3a5.5 5.5 0 0 1-11 0V8Z"/><path d="M12 16.5V21"/></svg>
+                    <span data-i18n="config.devicesSection">充电器</span></a></li>
+                <li><a class="cfg-rail-link" href="#sec-mqtt" data-sec="sec-mqtt" data-i18n-aria-label="config.mqttSection" aria-label="MQTT">
+                    <svg class="cfg-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M8.6 8.6a4.8 4.8 0 0 0 0 6.8M15.4 8.6a4.8 4.8 0 0 1 0 6.8"/><path d="M5.8 5.8a8.8 8.8 0 0 0 0 12.4M18.2 5.8a8.8 8.8 0 0 1 0 12.4"/></svg>
+                    <span data-i18n="config.mqttSection">MQTT</span></a></li>
+                <li><a class="cfg-rail-link" href="#sec-bemfa" data-sec="sec-bemfa" data-i18n-aria-label="config.bemfaSection" aria-label="巴法云">
+                    <svg class="cfg-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18h9.6a3.6 3.6 0 0 0 .4-7.2 5.2 5.2 0 0 0-9.9-1.3A4 4 0 0 0 7 18Z"/></svg>
+                    <span data-i18n="config.bemfaSection">巴法云</span></a></li>
+                <li><a class="cfg-rail-link" href="#sec-server" data-sec="sec-server" data-i18n-aria-label="config.serverSection" aria-label="服务器">
+                    <svg class="cfg-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.6" y="4.6" width="16.8" height="6" rx="2"/><rect x="3.6" y="13.4" width="16.8" height="6" rx="2"/><path d="M7.2 7.6h.02M7.2 16.4h.02"/></svg>
+                    <span data-i18n="config.serverSection">服务器</span></a></li>
+                <li><a class="cfg-rail-link" href="#sec-status" data-sec="sec-status" data-i18n-aria-label="config.currentStatus" aria-label="当前状态">
+                    <svg class="cfg-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h3.6L9 5.4l4 13.2 2.4-6.6H21"/></svg>
+                    <span data-i18n="config.currentStatus">当前状态</span></a></li>
+            </ul>
+        </nav>
+
+        <main class="cfg-content">
+
+            <!-- ═══ 充电器（设备列表，§3.12）═══ -->
+            <section class="cfg-sec cfg-sec--devices" id="sec-devices">
+                <div class="cfg-sec-head">
+                    <span class="cfg-sec-icon" aria-hidden="true">
+                        <svg class="cfg-ic" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5"/><path d="M6.5 8h11v3a5.5 5.5 0 0 1-11 0V8Z"/><path d="M12 16.5V21"/></svg>
+                    </span>
+                    <div class="cfg-sec-titles">
+                        <h2 class="cfg-sec-title">
+                            <span data-i18n="config.devicesSection">充电器</span>
+                            <span class="cfg-sec-badge" data-i18n="config.multiDeviceBeta">Beta</span>
+                        </h2>
+                        <p class="cfg-sec-desc" data-i18n="config.devicesHint">一台主机可同时连接多台充电器；保存后需重启生效</p>
+                    </div>
+                    <div class="cfg-sec-tools">
+                        <button type="button" class="mini-btn accent" onclick="openXiaomiModal()" data-i18n="config.xiaomiAuto">小米云自动获取</button>
+                    </div>
+                </div>
+                <div class="cfg-sec-body">
+                    <div id="deviceList"></div>
+                    <!-- 全新部署的引导：只说"有哪两条入口"，不复述实现细节 -->
+                    <div class="device-onboarding" id="deviceOnboardingHint" hidden></div>
+                    <button type="button" class="device-add-btn" onclick="addDevice()">
+                        <span aria-hidden="true">+</span>
+                        <span data-i18n="config.addDevice">添加充电器</span>
+                    </button>
+                </div>
+            </section>
+
+            <!-- ═══ MQTT ═══ -->
+            <section class="cfg-sec cfg-sec--mqtt" id="sec-mqtt">
+                <div class="cfg-sec-head">
+                    <span class="cfg-sec-icon" aria-hidden="true">
+                        <svg class="cfg-ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M8.6 8.6a4.8 4.8 0 0 0 0 6.8M15.4 8.6a4.8 4.8 0 0 1 0 6.8"/><path d="M5.8 5.8a8.8 8.8 0 0 0 0 12.4M18.2 5.8a8.8 8.8 0 0 1 0 12.4"/></svg>
+                    </span>
+                    <div class="cfg-sec-titles">
+                        <h2 class="cfg-sec-title" data-i18n="config.mqttSection">MQTT (Home Assistant)</h2>
+                        <p class="cfg-sec-desc" data-i18n="config.mqttSectionHint">Home Assistant 的 MQTT Broker 地址与凭据</p>
+                    </div>
+                    <div class="cfg-sec-tools">
+                        <label class="toggle"><input type="checkbox" id="mqtt_enabled" data-i18n-aria-label="config.enableMqtt"><span class="toggle-slider"></span></label>
+                    </div>
+                </div>
+                <div class="cfg-sec-body">
+                    <div class="config-row">
+                        <div><div class="config-label" data-i18n="config.server">服务器</div><div class="config-hint" data-i18n="config.serverHint">MQTT Broker 地址</div></div>
+                        <input class="config-input" id="mqtt_host" placeholder="localhost">
+                    </div>
+                    <div class="config-row">
+                        <div class="config-label" data-i18n="config.port">端口</div>
+                        <input class="config-input" id="mqtt_port" type="number" value="1883">
+                    </div>
+                    <div class="config-row">
+                        <div class="config-label" data-i18n="config.username">用户名</div>
+                        <input class="config-input" id="mqtt_username" data-i18n-placeholder="config.optional" placeholder="可选">
+                    </div>
+                    <div class="config-row">
+                        <div class="config-label" data-i18n="config.password">密码</div>
+                        <input class="config-input" id="mqtt_password" type="password" data-i18n-placeholder="config.optional" placeholder="可选">
+                    </div>
+                    <div class="config-row">
+                        <div><div class="config-label" data-i18n="config.topicPrefix">Topic 前缀</div><div class="config-hint" data-i18n="config.topicHint">MQTT 主题前缀</div></div>
+                        <input class="config-input" id="mqtt_topic" placeholder="cuktech/charger">
+                    </div>
+                </div>
+            </section>
+
+            <!-- ═══ 巴法云 ═══ -->
+            <section class="cfg-sec cfg-sec--bemfa" id="sec-bemfa">
+                <div class="cfg-sec-head">
+                    <span class="cfg-sec-icon" aria-hidden="true">
+                        <svg class="cfg-ic" viewBox="0 0 24 24"><path d="M7 18h9.6a3.6 3.6 0 0 0 .4-7.2 5.2 5.2 0 0 0-9.9-1.3A4 4 0 0 0 7 18Z"/></svg>
+                    </span>
+                    <div class="cfg-sec-titles">
+                        <h2 class="cfg-sec-title" data-i18n="config.bemfaSection">巴法云</h2>
+                        <p class="cfg-sec-desc" data-i18n="config.bemfaSectionHint">把小爱 / 小度能说的语音开关映射到端口</p>
+                    </div>
+                    <div class="cfg-sec-tools">
+                        <label class="toggle"><input type="checkbox" id="bemfa_enabled" data-i18n-aria-label="config.enableBemfa"><span class="toggle-slider"></span></label>
+                    </div>
+                </div>
+                <div class="cfg-sec-body">
+                    <div class="config-row">
+                        <div>
+                            <div class="config-label" data-i18n="config.privateKey">私钥</div>
+                            <div class="config-hint">
+                                <span data-i18n="config.privateKeyHint">巴法云用户 私钥</span>
+                                ·
+                                <a class="cfg-inline-link" href="https://cloud.bemfa.com/tcp/devicemqtt.html" target="_blank" rel="noopener" data-i18n="config.bemfaRegister">注册获取私钥</a>
+                            </div>
+                        </div>
+                        <input class="config-input" id="bemfa_uid" data-i18n-placeholder="config.placeholderUid" placeholder="巴法云 私钥">
+                    </div>
+                    <!-- 语音开关表：默认折叠（5 个开关 400+px，大多数人打开本页不是来改它的） -->
+                    <div class="bemfa-block">
+                        <div class="bemfa-toggle" id="bemfaToggle" role="button" tabindex="0"
+                             aria-expanded="false" aria-controls="bemfaBody" onclick="toggleBemfaSection()"
+                             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleBemfaSection();}">
+                            <div class="bemfa-head-text">
+                                <div class="config-label">
+                                    <span data-i18n="config.bemfaSwitchSection">语音开关</span>
+                                    <span class="bemfa-count" id="bemfaCount"></span>
+                                </div>
+                                <div class="config-hint" data-i18n="config.bemfaSwitchHint">一行一个开关：显示名 + 哪台设备 + 哪个口</div>
+                            </div>
+                            <span class="bemfa-chevron" id="bemfaChevron" aria-hidden="true">&#9662;</span>
+                        </div>
+                        <div class="bemfa-body" id="bemfaBody" hidden>
+                            <div class="bemfa-actions">
+                                <button type="button" class="mini-btn accent" onclick="uiAutoFillBemfa()" data-i18n="config.bemfaAutoFill">按设备生成</button>
+                                <button type="button" class="mini-btn" onclick="addBemfaEntity()" data-i18n="config.bemfaAdd">+ 添加</button>
+                            </div>
+                            <div id="bemfaEntityList"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ═══ 服务器 ═══ -->
+            <section class="cfg-sec cfg-sec--server" id="sec-server">
+                <div class="cfg-sec-head">
+                    <span class="cfg-sec-icon" aria-hidden="true">
+                        <svg class="cfg-ic" viewBox="0 0 24 24"><rect x="3.6" y="4.6" width="16.8" height="6" rx="2"/><rect x="3.6" y="13.4" width="16.8" height="6" rx="2"/><path d="M7.2 7.6h.02M7.2 16.4h.02"/></svg>
+                    </span>
+                    <div class="cfg-sec-titles">
+                        <h2 class="cfg-sec-title" data-i18n="config.serverSection">服务器</h2>
+                        <p class="cfg-sec-desc" data-i18n="config.serverSectionHint">Web 端口、界面语言、日志与数据保留</p>
+                    </div>
+                </div>
+                <div class="cfg-sec-body">
+                    <div class="config-row">
+                        <div class="config-label" data-i18n="config.webPort">Web 端口</div>
+                        <input class="config-input" id="server_port" type="number" value="8199">
+                    </div>
+                    <div class="config-row">
+                        <div><div class="config-label" data-i18n="config.webLanguage">界面语言</div><div class="config-hint" data-i18n="config.webLanguageHint">即时生效，无需重启；所有页面自动同步</div></div>
+                        <select class="config-select" id="web_language" onchange="setWebLanguage(this.value)">
+                            <option value="auto" data-i18n="config.langAuto">跟随系统</option>
+                            <option value="zh-CN">中文</option>
+                            <option value="en">English</option>
+                        </select>
+                    </div>
+                    <div class="config-row">
+                        <div class="config-label" data-i18n="config.retention">数据保留天数</div>
+                        <input class="config-input" id="server_retention" type="number" value="2">
+                    </div>
+                    <div class="config-row">
+                        <div><div class="config-label" data-i18n="config.logLevel">日志等级</div><div class="config-hint" data-i18n="config.logLevelHint">即时生效，无需重启；error 最少，debug 最详细</div></div>
+                        <select class="config-select" id="server_log_level" onchange="setLogLevel(this.value)">
+                            <option value="error">error</option>
+                            <option value="warning">warning</option>
+                            <option value="info">info</option>
+                            <option value="debug">debug</option>
+                        </select>
+                    </div>
+                    <div class="config-row is-switch">
+                        <div><div class="config-label" data-i18n="config.sessionRecording">充电会话记录</div><div class="config-hint" data-i18n="config.sessionRecordingHint">即时生效，无需重启；关闭后不再记录充电历史</div></div>
+                        <label class="toggle"><input type="checkbox" id="server_session_recording" onchange="toggleSessionRecording(this.checked)"><span class="toggle-slider"></span></label>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ═══ 当前状态 ═══ -->
+            <section class="cfg-sec cfg-sec--status" id="sec-status">
+                <div class="cfg-sec-head">
+                    <span class="cfg-sec-icon" aria-hidden="true">
+                        <svg class="cfg-ic" viewBox="0 0 24 24"><path d="M3 12h3.6L9 5.4l4 13.2 2.4-6.6H21"/></svg>
+                    </span>
+                    <div class="cfg-sec-titles">
+                        <h2 class="cfg-sec-title" data-i18n="config.currentStatus">当前状态</h2>
+                        <p class="cfg-sec-desc" data-i18n="config.statusHint">保存后服务会自动重启，新配置随即生效</p>
+                    </div>
+                </div>
+                <div class="cfg-sec-body">
+                    <div class="status-row">
+                        <div class="status-dot-sm" id="statusDot"></div>
+                        <span id="statusText" data-i18n="common.loading">加载中...</span>
+                    </div>
+                    <!-- 设备摘要：由页尾脚本按 #deviceList 的现状填，纯展示，不新增状态机 -->
+                    <div class="cfg-status-meta" id="statusMeta"></div>
+                </div>
+            </section>
+
+        </main>
     </div>
 
-    <div class="bottom-view" style="padding-top:12px;">
-
-        <!-- 充电器（设备列表，§3.12）：
-             原来是一组固定凭据表单；多设备后一台充电器一张卡片。
-             第一张恒为 primary（由配置文件 ble: 节提供，不可删除），
-             其余写进 devices: 节。 -->
-        <div class="card config-section">
-            <div class="config-section-title" style="display:flex;align-items:center;justify-content:space-between;">
-                <span>
-                    <span data-i18n="config.devicesSection">充电器</span>
-                    <!-- 多设备能力在 P5 真机 canary 通过前标 Beta（README 同口径） -->
-                    <span class="beta-badge" data-i18n="config.multiDeviceBeta" title="">Beta</span>
-                </span>
-                <span onclick="openXiaomiModal()" style="font-size:10px;color:var(--accent);cursor:pointer;" data-i18n="config.xiaomiAuto">小米云自动获取 &#8599;</span>
-            </div>
-            <div class="config-hint device-list-hint" data-i18n="config.devicesHint">一台主机可同时连接多台充电器；保存后需重启生效</div>
-            <div id="deviceList"></div>
-            <!-- 全新部署的引导：只说"有哪两条入口"（扫码导入 / 手动填），不复述
-                 "第一台会自动收编"这类实现细节——行为可能变，界面承诺不该跟着变。 -->
-            <div class="device-onboarding" id="deviceOnboardingHint" hidden></div>
-            <button type="button" class="device-add-btn" onclick="addDevice()">
-                <span aria-hidden="true">+</span>
-                <span data-i18n="config.addDevice">添加充电器</span>
-            </button>
-        </div>
-
-        <!-- MQTT Config -->
-        <div class="card config-section">
-            <div class="config-section-title" data-i18n="config.mqttSection">MQTT (Home Assistant)</div>
-            <div class="config-row">
-                <div class="config-label" data-i18n="config.enableMqtt">启用 MQTT</div>
-                <label class="toggle"><input type="checkbox" id="mqtt_enabled"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.server">服务器</div><div class="config-hint" data-i18n="config.serverHint">MQTT Broker 地址</div></div>
-                <input class="config-input" id="mqtt_host" placeholder="localhost">
-            </div>
-            <div class="config-row">
-                <div class="config-label" data-i18n="config.port">端口</div>
-                <input class="config-input" id="mqtt_port" type="number" value="1883" style="width:80px;">
-            </div>
-            <div class="config-row">
-                <div class="config-label" data-i18n="config.username">用户名</div>
-                <input class="config-input" id="mqtt_username" data-i18n-placeholder="config.optional" placeholder="可选">
-            </div>
-            <div class="config-row">
-                <div class="config-label" data-i18n="config.password">密码</div>
-                <input class="config-input" id="mqtt_password" type="password" data-i18n-placeholder="config.optional" placeholder="可选">
-            </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.topicPrefix">Topic 前缀</div><div class="config-hint" data-i18n="config.topicHint">MQTT 主题前缀</div></div>
-                <input class="config-input" id="mqtt_topic" placeholder="cuktech/charger">
-            </div>
-        </div>
-
-        <!-- Bemfa Config -->
-        <div class="card config-section">
-            <div class="config-section-title"><span data-i18n="config.bemfaSection">巴法云</span> <a href="https://cloud.bemfa.com/tcp/devicemqtt.html" target="_blank" style="font-size:10px;color:var(--accent);font-weight:400;text-transform:none;letter-spacing:0;" data-i18n="config.bemfaRegister">注册获取私钥 &#8599;</a></div>
-            <div class="config-row">
-                <div class="config-label" data-i18n="config.enableBemfa">启用巴法云</div>
-                <label class="toggle"><input type="checkbox" id="bemfa_enabled"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.privateKey">私钥</div><div class="config-hint" data-i18n="config.privateKeyHint">巴法云用户 私钥</div></div>
-                <input class="config-input" id="bemfa_uid" data-i18n-placeholder="config.placeholderUid" placeholder="巴法云 私钥">
-            </div>
-            <!-- 语音开关表：一行一个开关，(名字, 哪台设备, 哪个口) 三件套。
-                 **默认折叠**：5 个开关就要 400+ 像素，而绝大多数人打开本页不是来改
-                 语音开关的——常驻展开会把 MQTT/服务器这些更常改的配置推到看不见的
-                 地方。头是整行可点的按钮，右侧显示"共 N 个"，展开才画行。 -->
-            <div class="bemfa-block">
-                <div class="bemfa-toggle" id="bemfaToggle" role="button" tabindex="0"
-                     aria-expanded="false" aria-controls="bemfaBody" onclick="toggleBemfaSection()"
-                     onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleBemfaSection();}">
-                    <div class="bemfa-head-text">
-                        <div class="config-label">
-                            <span data-i18n="config.bemfaSwitchSection">语音开关</span>
-                            <span class="bemfa-count" id="bemfaCount"></span>
-                        </div>
-                        <div class="config-hint" data-i18n="config.bemfaSwitchHint">一行一个开关：显示名 + 哪台设备 + 哪个口</div>
-                    </div>
-                    <span class="bemfa-chevron" id="bemfaChevron" aria-hidden="true">&#9662;</span>
-                </div>
-                <div class="bemfa-body" id="bemfaBody" hidden>
-                    <div class="bemfa-actions">
-                        <button type="button" class="mini-btn accent" onclick="autoFillBemfaEntities()" data-i18n="config.bemfaAutoFill">按设备生成</button>
-                        <button type="button" class="mini-btn" onclick="addBemfaEntity()" data-i18n="config.bemfaAdd">+ 添加</button>
-                    </div>
-                    <div id="bemfaEntityList"></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Server Config -->
-        <div class="card config-section">
-            <div class="config-section-title" data-i18n="config.serverSection">服务器</div>
-            <div class="config-row">
-                <div class="config-label" data-i18n="config.webPort">Web 端口</div>
-                <input class="config-input" id="server_port" type="number" value="8199" style="width:80px;">
-            </div>
-            <div class="config-row">
-                <div class="config-label" data-i18n="config.retention">数据保留天数</div>
-                <input class="config-input" id="server_retention" type="number" value="2" style="width:80px;">
-            </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.webLanguage">界面语言</div><div class="config-hint" data-i18n="config.webLanguageHint">即时生效，无需重启；所有页面自动同步</div></div>
-                <select class="config-select" id="web_language" onchange="setWebLanguage(this.value)" style="min-width:110px;">
-                    <option value="auto" data-i18n="config.langAuto">跟随系统</option>
-                    <option value="zh-CN">中文</option>
-                    <option value="en">English</option>
-                </select>
-            </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.sessionRecording">充电会话记录</div><div class="config-hint" data-i18n="config.sessionRecordingHint">即时生效，无需重启；关闭后不再记录充电历史</div></div>
-                <label class="toggle"><input type="checkbox" id="server_session_recording" onchange="toggleSessionRecording(this.checked)"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="config-row">
-                <div><div class="config-label" data-i18n="config.logLevel">日志等级</div><div class="config-hint" data-i18n="config.logLevelHint">即时生效，无需重启；级别从上到下越来越详细</div></div>
-                <select class="config-select" id="server_log_level" onchange="setLogLevel(this.value)" style="min-width:110px;">
-                    <option value="error">error</option>
-                    <option value="warning">warning</option>
-                    <option value="info">info</option>
-                    <option value="debug">debug</option>
-                </select>
-            </div>
-        </div>
-
-        <!-- Status -->
-        <div class="card config-section">
-            <div class="config-section-title" data-i18n="config.currentStatus">当前状态</div>
-            <div class="status-row">
-                <div class="status-dot-sm" id="statusDot"></div>
-                <span id="statusText" data-i18n="common.loading">加载中...</span>
-            </div>
-        </div>
-
-        <!-- Save Button -->
-        <div style="padding: 0 0 20px;">
-            <button class="btn-save" id="btnSave" onclick="saveConfig()">
-                <span id="btnSaveIcon">&#9881;</span> <span id="btnSaveText" data-i18n="config.saveRestart">保存配置并重启</span>
-            </button>
-        </div>
-
+    <!-- ═══ 吸底保存栏：常驻，左侧是"有没有未保存的改动"，右侧是主操作 ═══ -->
+    <div class="cfg-savebar" id="saveBar">
+        <div class="cfg-save-state" id="saveState" data-i18n="config.saveIdle">修改后点保存生效</div>
+        <button class="btn-save" id="btnSave" type="button" onclick="saveConfig()">
+            <span id="btnSaveIcon" aria-hidden="true">
+                <svg class="cfg-ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
+            </span>
+            <span id="btnSaveText" data-i18n="config.saveRestart">保存配置并重启</span>
+        </button>
     </div>
 </div>
 
@@ -543,7 +392,7 @@ function renderDeviceList() {
                     <div class="device-card-sub" id="device-sub-${i}">${escText(subText)}</div>
                 </div>
                 <button type="button" class="device-card-btn" onclick="event.stopPropagation();toggleDeviceEditor(${i})">${escText(I18N.t('config.editDevice'))}</button>
-                ${d.is_primary ? '' : `<button type="button" class="device-card-btn danger" onclick="event.stopPropagation();removeDevice(${i})">${escText(I18N.t('config.removeDevice'))}</button>`}
+                ${d.is_primary ? '' : `<button type="button" class="device-card-btn danger" onclick="event.stopPropagation();uiRemoveDevice(${i})">${escText(I18N.t('config.removeDevice'))}</button>`}
             </div>
             <div class="device-card-body" id="device-body-${i}"${open ? '' : ' hidden'}>
                 ${open ? deviceEditorHtml(d, i) : ''}
@@ -607,14 +456,14 @@ function deviceEditorHtml(d, i) {
         // 换主设备：primary 不能删，所以换机/清不掉的历史配置只能靠"把真在用的那台
         // 换上来"。放在编辑区而不是卡片头：卡片头在 390px 上只剩 ~200px 给设备名。
         html += `<div class="device-card-actions">
-            <button type="button" class="device-card-btn" onclick="promoteDevice(${i})">${escText(I18N.t('config.promotePrimary'))}</button>
+            <button type="button" class="device-card-btn" onclick="uiPromote(${i})">${escText(I18N.t('config.promotePrimary'))}</button>
             <span class="device-card-action-hint">${escText(I18N.t('config.promoteHint'))}</span>
         </div>`;
     } else {
         // 清空主设备：孤儿主设备（换机、云上残留同名设备）唯一能清理的动作。
         // 不可逆，所以放在编辑区里 + 二次确认，不摆在卡片头随手可点。
         html += `<div class="device-card-actions">
-            <button type="button" class="device-card-btn danger" onclick="clearPrimary()">${escText(I18N.t('config.clearPrimary'))}</button>
+            <button type="button" class="device-card-btn danger" onclick="uiClearPrimary()">${escText(I18N.t('config.clearPrimary'))}</button>
             <span class="device-card-action-hint">${escText(I18N.t('config.clearPrimaryHint'))}</span>
         </div>`;
     }
@@ -635,12 +484,13 @@ function addDevice(prefill) {
     if (!prefill) showToast(I18N.t('config.deviceAdded'));
 }
 
-function removeDevice(index) {
+function removeDevice(index, confirmed) {
     const d = _devices[index];
     if (!d) return;
     // 前端提示（服务端也会校验，§3.10）：primary 来自 ble: 节，删掉它等于没有主设备
     if (d.is_primary) { showToast(I18N.t('config.primaryUndeletable')); return; }
-    if (!confirm(I18N.t('config.confirmRemoveDevice', { name: deviceLabel(d) }))) return;
+    // confirmed=true 表示界面已经问过了（页内弹层），这里不再重复确认
+    if (!confirmed && !confirm(I18N.t('config.confirmRemoveDevice', { name: deviceLabel(d) }))) return;
     // 绑定在这台设备上的语音实体一起删：留着的话保存会被服务端拦下（指向的设备
     // 不存在），而用户根本不知道那个报错来自自己刚删的这台
     dropBemfaEntitiesOf(canonicalDeviceId(d) || 'default');
@@ -660,7 +510,7 @@ function removeDevice(index) {
  *  重新生成一个合法 id），绑定在设备上的语音开关跟着**物理设备**重绑。明文
  *  凭据不用在前端搬——服务端按 MAC 从旧配置里继承（`_apply_devices_payload`）。
  */
-function promoteDevice(index) {
+function promoteDevice(index, confirmed) {
     const target = _devices[index];
     if (!target || target.is_primary) return;
     if (!hasUsableCredentials(target)) {
@@ -670,7 +520,7 @@ function promoteDevice(index) {
         if (_editing !== index) toggleDeviceEditor(index);
         return;
     }
-    if (!confirm(I18N.t('config.promoteConfirm', { name: deviceLabel(target) }))) return;
+    if (!confirmed && !confirm(I18N.t('config.promoteConfirm', { name: deviceLabel(target) }))) return;
     moveCardToPrimary(index);
     showToast(I18N.t('config.promoted', { name: deviceLabel(target) }));
 }
@@ -725,10 +575,10 @@ function moveCardToPrimary(index) {
  *  这一条路能清理；清空后可以重新扫码导入。
  *  服务端按 `clear_credentials` 显式清空，不会被"空值 = 没改"的规则救回来。
  */
-function clearPrimary() {
+function clearPrimary(confirmed) {
     const p = _devices[0];
     if (!p || !p.is_primary) return;
-    if (!confirm(I18N.t('config.clearPrimaryConfirm'))) return;
+    if (!confirmed && !confirm(I18N.t('config.clearPrimaryConfirm'))) return;
     p.name = ''; p.mac = ''; p.token = ''; p.ble_key = '';
     p.clear_credentials = true;
     _editing = 0;                    // 打开编辑区，让用户看到"确实空了"
@@ -796,7 +646,7 @@ function renderBemfaEntities() {
                 <input class="config-input" value="${escText(e.name)}"
                        placeholder="${escText(I18N.t('config.bemfaNamePlaceholder'))}"
                        oninput="updateBemfaEntity(${i}, 'name', this.value)">
-                <button type="button" class="bemfa-del" onclick="removeBemfaEntity(${i})"
+                <button type="button" class="bemfa-del" onclick="uiRemoveBemfa(${i})"
                         aria-label="${escText(I18N.t('config.removeDevice'))}">&times;</button>
             </div>
             <div class="bemfa-row-line">
@@ -847,11 +697,11 @@ function addBemfaEntity() {
     showToast(I18N.t('config.bemfaAllUsed'), 4000);
 }
 
-function removeBemfaEntity(index) {
+function removeBemfaEntity(index, confirmed) {
     // 删到空表 = 明确"一个语音开关都不要"：保存后服务端会把已注册的实体从巴法云
     // 真的删掉（registered 差集），小爱/小度里引用它们的指令随即失效。逐行删本来
     // 就是手动动作，但"删最后一条"这一步必须停下来问一次。
-    if (_bemfaEntities.length === 1
+    if (!confirmed && _bemfaEntities.length === 1
             && !confirm(I18N.t('config.bemfaRemoveLastConfirm', {
                 name: _bemfaEntities[index].name || '' }))) return;
     _bemfaEntities.splice(index, 1);
@@ -868,8 +718,8 @@ function primaryBemfaName(port, fallback) {
 
 // 一键按设备铺开：每台设备 × 5 个开关（4 个口 + 蓝牙）。多设备时这是最省事的
 // 起手式——用户随后改名/删行即可，而不是从零手填 N×5 行。
-function autoFillBemfaEntities() {
-    if (_bemfaEntities.length && !confirm(I18N.t('config.bemfaAutoFillConfirm'))) return;
+function autoFillBemfaEntities(confirmed) {
+    if (!confirmed && _bemfaEntities.length && !confirm(I18N.t('config.bemfaAutoFillConfirm'))) return;
     const rows = [];
     _devices.forEach(d => {
         const id = (d.id || '').trim();
@@ -1043,13 +893,12 @@ async function loadDeviceList(bleCfg, configDevices) {
 function toggleTheme() {
     isDark = !isDark;
     document.body.classList.toggle('light', !isDark);
-    document.getElementById('themeBtn').textContent = isDark ? '☀️' : '🌙';
     localStorage.setItem('cuktech-config-theme', isDark ? 'dark' : 'light');
 }
 // Load saved theme
 (function() {
     const saved = localStorage.getItem('cuktech-config-theme');
-    if (saved === 'light') { isDark = false; document.body.classList.add('light'); document.getElementById('themeBtn').textContent = '🌙'; }
+    if (saved === 'light') { isDark = false; document.body.classList.add('light'); }
 })();
 
 function showToast(msg, duration) {
@@ -1165,7 +1014,7 @@ async function saveConfig() {
     const btn = document.getElementById('btnSave');
     btn.disabled = true;
     _saving = true;
-    document.getElementById('btnSaveIcon').textContent = '⏳';
+    btn.classList.add('is-saving');
     document.getElementById('btnSaveText').textContent = I18N.t('common.saving');
 
     // 统一设备数组（A 形）：每项带 `is_primary`，落盘结构由服务端决定
@@ -1257,14 +1106,14 @@ async function saveConfig() {
             showToast(I18N.t('common.saveFailed', { msg: data.error || I18N.t('common.unknownError') }), 5000);
             _saving = false;
             btn.disabled = false;
-            document.getElementById('btnSaveIcon').textContent = '⚙';
+            btn.classList.remove('is-saving');
             document.getElementById('btnSaveText').textContent = I18N.t('config.saveRestart');
         }
     } catch (e) {
         showToast(I18N.t('common.networkError', { msg: e.message }), 5000);
         _saving = false;
         btn.disabled = false;
-        document.getElementById('btnSaveIcon').textContent = '⚙';
+        btn.classList.remove('is-saving');
         document.getElementById('btnSaveText').textContent = I18N.t('config.saveRestart');
     }
 }
@@ -1756,19 +1605,19 @@ if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
 }
 </script>
 
-<!-- Xiaomi Cloud Login Modal -->
-<div id="xiaomiModal" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
-    <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:16px;padding:20px;width:90%;max-width:400px;max-height:80vh;overflow-y:auto;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-            <span style="font-size:17px;font-weight:600;color:var(--text);" data-i18n="config.xiaomiLogin">小米云登录</span>
-            <span onclick="closeXiaomiModal()" style="font-size:20px;cursor:pointer;color:var(--text-dim);padding:4px;">&times;</span>
+<!-- 小米云登录 / 设备导入弹窗（显隐仍由内联脚本切 style.display，皮肤在 config.css） -->
+<div id="xiaomiModal" class="xm-modal">
+    <div class="xm-dialog" role="dialog" aria-modal="true" aria-labelledby="xmTitle">
+        <div class="xm-dialog-head">
+            <span class="xm-dialog-title" id="xmTitle" data-i18n="config.xiaomiLogin">小米云登录</span>
+            <button class="xm-close" type="button" onclick="closeXiaomiModal()" data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
         </div>
 
-        <!-- Login Form -->
+        <!-- 登录表单 -->
         <div id="xiaomiLoginForm">
-            <div style="margin-bottom:12px;">
-                <div class="config-label" style="margin-bottom:4px;" data-i18n="config.serverRegion">服务器区域</div>
-                <select id="xiaomi_server" class="config-select" style="width:100%;">
+            <div class="xm-field">
+                <div class="config-label" data-i18n="config.serverRegion">服务器区域</div>
+                <select id="xiaomi_server" class="config-select">
                     <option value="cn" selected data-i18n="config.regionCn">中国大陆 (cn)</option>
                     <option value="de" data-i18n="config.regionDe">欧洲 (de)</option>
                     <option value="us" data-i18n="config.regionUs">美国 (us)</option>
@@ -1778,36 +1627,34 @@ if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
                     <option value="in" data-i18n="config.regionIn">印度 (in)</option>
                 </select>
             </div>
-            <button class="btn-save" id="xiaomiLoginBtn" onclick="xiaomiStartQR()" data-i18n="config.getQR" style="margin-top:0;">获取二维码</button>
-            <div id="xiaomiLoginStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);text-align:center;min-height:18px;"></div>
+            <button class="btn-save" id="xiaomiLoginBtn" type="button" onclick="xiaomiStartQR()" data-i18n="config.getQR" style="width:100%;">获取二维码</button>
+            <div id="xiaomiLoginStatus" class="xm-status"></div>
         </div>
 
-        <!-- QR Code Display -->
+        <!-- 二维码 -->
         <div id="xiaomiQRForm" style="display:none;">
-            <div style="text-align:center;margin-bottom:12px;">
-                <div style="font-size:13px;color:#666;margin-bottom:8px;" data-i18n-html="config.scanWithApp">使用<strong style="color:#333;">米家 App</strong> 扫描下方二维码</div>
-                <div id="xiaomiQRImg" style="display:inline-block;padding:8px;background:#fff;border-radius:8px;"></div>
+            <div class="xm-qr-wrap">
+                <div class="xm-qr-hint" data-i18n-html="config.scanWithApp">使用<strong>米家 App</strong>扫描下方二维码</div>
+                <div id="xiaomiQRImg" class="xm-qr-box"></div>
             </div>
-            <div style="margin-bottom:12px;">
-                <div style="font-size:11px;color:#888;margin-bottom:4px;" data-i18n="config.orOpenLink">或复制链接到浏览器打开：</div>
-                <input class="config-input" id="xiaomiLoginUrl" readonly style="width:100%;text-align:left;font-size:11px;word-break:break-all;">
+            <div class="xm-link-row">
+                <div class="config-hint" data-i18n="config.orOpenLink">或复制链接到浏览器打开：</div>
+                <input class="config-input" id="xiaomiLoginUrl" readonly>
             </div>
-            <button class="btn-save" id="xiaomiScanBtn" onclick="xiaomiCompleteQR()" data-i18n="config.scanned" style="margin-top:0;">已完成扫码</button>
-            <div id="xiaomiQRStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);text-align:center;min-height:18px;"></div>
+            <button class="btn-save" id="xiaomiScanBtn" type="button" onclick="xiaomiCompleteQR()" data-i18n="config.scanned" style="width:100%;">已完成扫码</button>
+            <div id="xiaomiQRStatus" class="xm-status"></div>
         </div>
 
-        <!-- Device List：勾选后**一次导入多台**（§3.10 多设备） -->
+        <!-- 设备清单：勾选后一次导入多台（§3.10） -->
         <div id="xiaomiDeviceList" style="display:none;">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
-                <span style="font-size:13px;color:var(--text-dim);" data-i18n="config.selectCharger">选择充电器设备：</span>
-                <span style="display:flex;gap:6px;flex:none;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;">
+                <span class="config-label" style="font-size:13px;" data-i18n="config.selectCharger">选择充电器设备：</span>
+                <span class="xm-select-actions">
                     <button type="button" class="mini-btn" onclick="xiaomiSelectAll(true)" data-i18n="config.xiaomiSelectAll">全选</button>
                     <button type="button" class="mini-btn" onclick="xiaomiSelectAll(false)" data-i18n="config.xiaomiSelectNone">全不选</button>
                 </span>
             </div>
             <div id="xiaomiDevices" class="xm-list"></div>
-            <!-- 名称同步：设备卡片里的名字是用户可改的，所以是否覆盖要显式勾选。
-                 放在清单下方、操作按钮上方，并且和"导入"按钮同屏可见（清单自己滚动） -->
             <div class="xm-options">
                 <div class="xm-options-text">
                     <div class="config-label" data-i18n="config.xiaomiSyncNames">同步小米云设备名称</div>
@@ -1815,14 +1662,337 @@ if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
                 </div>
                 <label class="toggle"><input type="checkbox" id="xiaomiSyncNames" checked><span class="toggle-slider"></span></label>
             </div>
-            <div id="xiaomiImportStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);text-align:center;min-height:18px;"></div>
-            <div style="margin-top:12px;display:flex;gap:8px;">
-                <button class="btn-save" onclick="closeXiaomiModal()" data-i18n="common.cancel" style="margin-top:0;flex:1;background:rgba(255,255,255,0.06);border:1px solid var(--card-border);color:var(--text);">取消</button>
-                <button class="btn-save" id="xiaomiImportBtn" onclick="importXiaomiSelected()" style="margin-top:0;flex:2;"></button>
+            <div id="xiaomiImportStatus" class="xm-status"></div>
+            <div class="xm-foot">
+                <button class="btn-save ghost" type="button" onclick="closeXiaomiModal()" data-i18n="common.cancel">取消</button>
+                <button class="btn-save" id="xiaomiImportBtn" type="button" onclick="importXiaomiSelected()"></button>
             </div>
         </div>
     </div>
 </div>
+
+<!-- 二次确认：页内弹层。原生 confirm 会挡住整页、样式也不属于这套材质 -->
+<div class="ui-confirm" id="uiConfirm" role="dialog" aria-modal="true" aria-labelledby="uiConfirmText">
+    <div class="ui-confirm-sheet">
+        <p class="ui-confirm-text" id="uiConfirmText"></p>
+        <div class="ui-confirm-actions">
+            <button type="button" class="ui-confirm-btn" id="uiConfirmCancel" data-i18n="common.cancel">取消</button>
+            <button type="button" class="ui-confirm-btn is-primary" id="uiConfirmOk" data-i18n="common.confirm">确定</button>
+        </div>
+    </div>
+</div>
+
+<script>
+/*
+ * 二次确认的页内实现。
+ *
+ * 原生 confirm() 是同步的，弹层是异步的：所以会改数据的函数（removeDevice /
+ * promoteDevice / clearPrimary / removeBemfaEntity / autoFillBemfaEntities）都多了一个
+ * 可选的 `confirmed` 参数——传 true 表示"界面已经问过了"，函数内部不再重复确认。
+ * 校验、提示、toast 仍然只有那一份实现，这里只负责"问一句"。
+ *
+ * 页面上生成的按钮走 ui* 包装：先弹层，确认后再带 confirmed=true 调同一个函数。
+ * 测试桩（vm，没有 HTMLElement）里自动退回原生 confirm，行为与改造前一致。
+ */
+function askConfirm(message, opts) {
+    opts = opts || {};
+    var host = document.getElementById('uiConfirm');
+    var realDom = (typeof HTMLElement !== 'undefined') && (host instanceof HTMLElement);
+    if (!realDom) {
+        return Promise.resolve(typeof confirm === 'function' ? !!confirm(message) : false);
+    }
+    var textEl = document.getElementById('uiConfirmText');
+    var okBtn = document.getElementById('uiConfirmOk');
+    var cancelBtn = document.getElementById('uiConfirmCancel');
+    var lastFocus = document.activeElement;
+
+    return new Promise(function (resolve) {
+        function close(answer) {
+            host.classList.remove('is-open');
+            host.removeAttribute('data-danger');
+            document.removeEventListener('keydown', onKey, true);
+            host.removeEventListener('click', onScrim);
+            okBtn.onclick = null;
+            cancelBtn.onclick = null;
+            // 焦点回到触发它的那颗按钮：Esc 关掉后键盘用户不会掉到页首
+            if (lastFocus && lastFocus.focus) lastFocus.focus();
+            resolve(answer);
+        }
+        function onKey(e) {
+            if (e.key === 'Escape') { e.preventDefault(); close(false); return; }
+            // Enter 落在按钮上由按钮自己的 click 处理，避免一次回车确认两次
+            var tag = e.target && e.target.tagName ? String(e.target.tagName).toUpperCase() : '';
+            if (e.key === 'Enter' && tag !== 'BUTTON') { e.preventDefault(); close(true); }
+        }
+        function onScrim(e) { if (e.target === host) close(false); }
+
+        if (textEl) textEl.textContent = message;
+        if (okBtn) okBtn.textContent = I18N.t('common.confirm');
+        if (cancelBtn) cancelBtn.textContent = I18N.t('common.cancel');
+        host.setAttribute('data-danger', opts.danger ? 'danger' : 'normal');
+        okBtn.onclick = function () { close(true); };
+        cancelBtn.onclick = function () { close(false); };
+        host.addEventListener('click', onScrim);
+        document.addEventListener('keydown', onKey, true);
+        host.classList.add('is-open');
+        // 破坏性操作默认聚焦"取消"：连按回车不会误删
+        var target = opts.danger ? cancelBtn : okBtn;
+        if (target && target.focus) target.focus();
+    });
+}
+
+/* 设备：删除附加设备 */
+function uiRemoveDevice(index) {
+    var d = _devices[index];
+    if (!d) return;
+    if (d.is_primary) { removeDevice(index, true); return; }   // 复用"主设备不可删"的提示
+    askConfirm(I18N.t('config.confirmRemoveDevice', { name: deviceLabel(d) }), { danger: true })
+        .then(function (ok) { if (ok) removeDevice(index, true); });
+}
+
+/* 设备：把某台设为主设备 */
+function uiPromote(index) {
+    var t = _devices[index];
+    if (!t || t.is_primary) return;
+    // 凭据不全的那张卡：直接交给原函数（它会提示并展开编辑区），不必先问一句
+    if (!hasUsableCredentials(t)) { promoteDevice(index, true); return; }
+    askConfirm(I18N.t('config.promoteConfirm', { name: deviceLabel(t) }))
+        .then(function (ok) { if (ok) promoteDevice(index, true); });
+}
+
+/* 设备：清空主设备（不可逆） */
+function uiClearPrimary() {
+    var p = _devices[0];
+    if (!p || !p.is_primary) return;
+    askConfirm(I18N.t('config.clearPrimaryConfirm'), { danger: true })
+        .then(function (ok) { if (ok) clearPrimary(true); });
+}
+
+/* 巴法云：删掉一条语音开关（只有删到最后一条时才需要问） */
+function uiRemoveBemfa(index) {
+    var e = _bemfaEntities[index];
+    if (!e) return;
+    if (_bemfaEntities.length === 1) {
+        askConfirm(I18N.t('config.bemfaRemoveLastConfirm', { name: e.name || '' }), { danger: true })
+            .then(function (ok) { if (ok) removeBemfaEntity(index, true); });
+        return;
+    }
+    removeBemfaEntity(index, true);
+}
+
+/* 巴法云：按设备重建整张表（会覆盖现有条目） */
+function uiAutoFillBemfa() {
+    if (!_bemfaEntities.length) { autoFillBemfaEntities(true); return; }
+    askConfirm(I18N.t('config.bemfaAutoFillConfirm'))
+        .then(function (ok) { if (ok) autoFillBemfaEntities(true); });
+}
+</script>
+
+<script>
+/*
+ * 「系统配置」页的交互补充（与上面的业务脚本并列，互不依赖）。
+ *
+ * 三件事：
+ *   1. 目录高亮：滚到哪一节，左侧目录就点亮哪一项（IntersectionObserver 不可用时静默跳过，
+ *      锚点跳转本身不依赖它）。
+ *   2. 未保存状态：只有**需要保存**的字段才算"改动"——界面语言、日志等级、会话记录是
+ *      "即时生效"的，改完立刻写盘，把它们的修改也算成"未保存"会误导用户去点保存。
+ *      设备的新增/删除用卡片数量变化来判断（展开/收起会重绘整块列表，却不能算改动）。
+ *   3. 状态卡的设备摘要：从 #deviceList 的现状读，不新增状态机。
+ *
+ * 全部包在 try 里：这段是"锦上添花"，任何一步失败都不该影响保存本身。
+ */
+(function () {
+    'use strict';
+    var INSTANT_IDS = { web_language: 1, server_log_level: 1, server_session_recording: 1 };
+
+    function t(key, params) {
+        return (typeof I18N !== 'undefined' && I18N.t) ? I18N.t(key, params) : '';
+    }
+
+    // ── 1. 目录高亮 ─────────────────────────────────────────────────────
+    function initRail() {
+        var links = document.querySelectorAll('.cfg-rail-link');
+        if (!links.length || typeof IntersectionObserver !== 'function') return;
+        var byId = {};
+        for (var i = 0; i < links.length; i++) {
+            byId[links[i].getAttribute('data-sec')] = links[i];
+        }
+        function activate(id) {
+            for (var k in byId) {
+                if (!Object.prototype.hasOwnProperty.call(byId, k)) continue;
+                byId[k].classList.toggle('is-active', k === id);
+            }
+        }
+        var seen = {};
+        var io = new IntersectionObserver(function (entries) {
+            entries.forEach(function (e) {
+                seen[e.target.id] = e.isIntersecting ? e.intersectionRatio : 0;
+            });
+            // 取"最靠近顶部且可见"的那一节：吸顶导航下方 90px 内的优先
+            var bestId = null, bestTop = Infinity;
+            for (var id in seen) {
+                if (!Object.prototype.hasOwnProperty.call(seen, id)) continue;
+                var el = document.getElementById(id);
+                if (!el || !seen[id]) continue;
+                var top = el.getBoundingClientRect().top - 90;
+                var d = Math.abs(top);
+                if (d < bestTop) { bestTop = d; bestId = id; }
+            }
+            if (bestId) activate(bestId);
+        }, { rootMargin: '-72px 0px -55% 0px', threshold: [0, 0.15, 0.5, 1] });
+        for (var id in byId) {
+            var sec = document.getElementById(id);
+            if (sec) io.observe(sec);
+        }
+        // 点击时立刻高亮（等观察器回调会有半拍延迟）
+        for (var j = 0; j < links.length; j++) {
+            links[j].addEventListener('click', function () {
+                activate(this.getAttribute('data-sec'));
+            });
+        }
+    }
+
+    // ── 2. 未保存状态 ───────────────────────────────────────────────────
+    function initDirty() {
+        var bar = document.getElementById('saveBar');
+        var label = document.getElementById('saveState');
+        var content = document.querySelector('.cfg-content');
+        if (!bar || !label || !content) return;
+        var dirty = false;
+
+        function setState(state) {
+            if (state === 'dirty') {
+                dirty = true;
+                bar.setAttribute('data-dirty', 'true');
+                bar.removeAttribute('data-state');
+                label.textContent = t('config.unsaved');
+            } else if (state === 'saved') {
+                dirty = false;
+                bar.removeAttribute('data-dirty');
+                bar.setAttribute('data-state', 'saved');
+                label.textContent = t('config.saved');
+            } else {
+                dirty = false;
+                bar.removeAttribute('data-dirty');
+                bar.removeAttribute('data-state');
+                label.textContent = t('config.saveIdle');
+            }
+        }
+        window.__cfgSetSaveState = setState;   // 保存流程与导入流程复用
+
+        // 判定"有没有改动"只看**数据本身**：把 _devices / _bemfaEntities 序列化后与
+        // 载入时的快照比对。这样"展开/收起设备卡"（会整块重绘 DOM）不会被误判成改动，
+        // 而"清空主设备""删掉一台"这类直接改数组的操作也能立刻点亮。
+        function snapshot() {
+            try {
+                return JSON.stringify({
+                    d: (typeof _devices !== 'undefined') ? _devices : null,
+                    b: (typeof _bemfaEntities !== 'undefined') ? _bemfaEntities : null,
+                    port: (document.getElementById('server_port') || {}).value || '',
+                    keep: (document.getElementById('server_retention') || {}).value || '',
+                    host: (document.getElementById('mqtt_host') || {}).value || '',
+                    user: (document.getElementById('mqtt_username') || {}).value || '',
+                    pass: (document.getElementById('mqtt_password') || {}).value || '',
+                    topic: (document.getElementById('mqtt_topic') || {}).value || '',
+                    bemfa: (document.getElementById('bemfa_uid') || {}).value || '',
+                });
+            } catch (e) { return ''; }
+        }
+        var baseline = null;
+        function check() {
+            if (baseline === null) return;
+            var now = snapshot();
+            if (now === baseline) {
+                if (dirty) setState(bar.getAttribute('data-state') === 'saved' ? 'saved' : 'idle');
+                return;
+            }
+            markDirty();
+        }
+        function markDirty() { if (!dirty) setState('dirty'); }
+
+        // 输入/选择：即时生效的那几个不算（它们不经过保存）
+        function onChange(e) {
+            var el = e.target;
+            if (el && el.id && INSTANT_IDS[el.id]) return;
+            check();
+        }
+        content.addEventListener('input', onChange, true);
+        content.addEventListener('change', onChange, true);
+
+        // 设备/语音开关表：重绘后重新比对一次（数量不变但内容变了也要认）
+        var lists = [document.getElementById('deviceList'), document.getElementById('bemfaEntityList')];
+        if (typeof MutationObserver === 'function') {
+            lists.forEach(function (host) {
+                if (!host) return;
+                new MutationObserver(check).observe(host, { childList: true, subtree: true, characterData: true });
+            });
+        }
+
+        // 保存按钮进入"保存中"时，把左侧文案换成保存中（结果由 saveConfig 决定）
+        var btn = document.getElementById('btnSave');
+        if (btn) {
+            btn.addEventListener('click', function () {
+                if (btn.disabled) return;
+                label.textContent = t('common.saving');
+            });
+        }
+        // 切语言：applyTranslations 会把这行文案重置成 data-i18n 的静态值，
+        // 所以按当前状态再写一次
+        if (typeof I18N !== 'undefined' && I18N.onChange) {
+            I18N.onChange(function () {
+                if (dirty) setState('dirty');
+                else if (bar.getAttribute('data-state') === 'saved') setState('saved');
+                else setState('idle');
+            });
+        }
+        setState('idle');
+        // 首屏 loadConfig 是异步的：等它把 DOM 填完再拍基准快照（也算"没有改动"）
+        var tries = 0;
+        (function waitReady() {
+            tries++;
+            var host = document.getElementById('deviceList');
+            var filled = host && host.children && host.children.length > 0;
+            var status = document.getElementById('statusText');
+            var loaded = status && status.textContent && status.textContent !== t('common.loading');
+            if ((filled && loaded) || tries > 30) { baseline = snapshot(); return; }
+            setTimeout(waitReady, 100);
+        })();
+    }
+
+    // ── 3. 状态卡的设备摘要 ─────────────────────────────────────────────
+    function initMeta() {
+        var meta = document.getElementById('statusMeta');
+        var host = document.getElementById('deviceList');
+        if (!meta || !host) return;
+        function chip(text) {
+            var s = document.createElement('span');
+            s.className = 'cfg-status-chip';
+            s.textContent = text;
+            return s;
+        }
+        function render() {
+            var cards = host.querySelectorAll('.device-card');
+            meta.textContent = '';
+            if (!cards.length) return;
+            meta.appendChild(chip(t('config.statusDevicesCount', { n: cards.length })));
+            var primary = document.getElementById('device-name-0');
+            if (primary && primary.textContent) {
+                meta.appendChild(chip(t('config.statusPrimary', { name: primary.textContent })));
+            }
+        }
+        render();
+        if (typeof MutationObserver === 'function') {
+            new MutationObserver(render).observe(host, { childList: true, subtree: true, characterData: true });
+        }
+        if (typeof I18N !== 'undefined' && I18N.onChange) I18N.onChange(render);
+    }
+
+    try { initRail(); } catch (e) { /* 目录高亮非必需 */ }
+    try { initDirty(); } catch (e) { /* 未保存状态非必需 */ }
+    try { initMeta(); } catch (e) { /* 设备摘要非必需 */ }
+})();
+</script>
 
 </body>
 </html>

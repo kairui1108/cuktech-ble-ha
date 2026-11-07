@@ -13,6 +13,8 @@
             disconnect: 'Disconnect',
             restart: 'Restart',
             close: 'Close',
+            confirm: 'Confirm',
+            back: 'Back',
             cancel: 'Cancel',
             set: 'Set',
             clear: 'Clear',
@@ -199,6 +201,7 @@
             avgPower: 'Avg Power (W)',
             peakPower: 'Peak Power (W)',
             noRecords: 'No charge records yet',
+            inProgress: 'Live',
             energy: 'Energy: {{wh}} Wh',
             powerTooltip: 'Power: {{power}} W',
             protocolTooltip: 'Protocol: {{protocol}}',
@@ -225,6 +228,7 @@
         energy: {
             title: 'Energy Overview',
             tabPorts: 'By port',
+            tabShare: 'Breakdown',
             tabHourly: 'Hourly',
             tabProtocols: 'Protocols',
             total: '{{period}} · {{wh}} Wh total',
@@ -254,6 +258,17 @@
         // ── Config page ──
         config: {
             title: 'System Config',
+            // ── section index + one-line descriptions used by the redesigned page ──
+            railTitle: 'Sections',
+            mqttSectionHint: 'Broker address and credentials for Home Assistant',
+            bemfaSectionHint: 'Map voice switches (Xiao Ai / Xiao Du) onto charger ports',
+            serverSectionHint: 'Web port, interface language, logging and data retention',
+            statusHint: 'Saving restarts the service, then the new config takes effect',
+            saveIdle: 'Changes apply when saved',
+            unsaved: 'Unsaved changes',
+            saved: 'Saved',
+            statusDevicesCount: '{{n}} charger(s)',
+            statusPrimary: 'Primary {{name}}',
             xiaomiAuto: 'Get from Xiaomi Cloud',
             mac: 'MAC Address',
             macHint: 'Charger BLE MAC address',

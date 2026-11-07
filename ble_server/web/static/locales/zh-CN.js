@@ -13,6 +13,8 @@
             disconnect: '断开设备',
             restart: '重启',
             close: '关闭',
+            confirm: '确定',
+            back: '返回',
             cancel: '取消',
             set: '设置',
             clear: '清除',
@@ -199,6 +201,7 @@
             avgPower: '平均功率 W',
             peakPower: '峰值功率 W',
             noRecords: '暂无充电记录',
+            inProgress: '进行中',
             energy: '电量：{{wh}}Wh',
             powerTooltip: '功率: {{power}}W',
             protocolTooltip: '协议: {{protocol}}',
@@ -225,6 +228,7 @@
         energy: {
             title: '用电统计',
             tabPorts: '按端口',
+            tabShare: '占比',
             tabHourly: '每小时',
             tabProtocols: '快充协议',
             total: '{{period}} · 合计 {{wh}} Wh',
@@ -254,6 +258,17 @@
         // ── Config page ──
         config: {
             title: '系统配置',
+            // ── 重新设计后的分节目录与分节说明（config.html 用）──
+            railTitle: '配置目录',
+            mqttSectionHint: 'Home Assistant 的 MQTT Broker 地址与凭据',
+            bemfaSectionHint: '把小爱 / 小度能说的语音开关映射到端口',
+            serverSectionHint: 'Web 端口、界面语言、日志与数据保留',
+            statusHint: '保存后服务会自动重启，新配置随即生效',
+            saveIdle: '修改后点保存生效',
+            unsaved: '有未保存的改动',
+            saved: '已保存',
+            statusDevicesCount: '{{n}} 台充电器',
+            statusPrimary: '主设备 {{name}}',
             xiaomiAuto: '小米云自动获取',
             mac: 'MAC 地址',
             macHint: '充电器蓝牙 MAC 地址',

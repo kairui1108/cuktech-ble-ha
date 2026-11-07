@@ -915,7 +915,9 @@
         //                               单页只有 50 条，今日就有 120+ 条会话，自己算必然是错的）
         //    · /api/chart?hours=24&interval=3600 → 近 24h 每小时平均功率（1h 桶里数值即 Wh）
         // ══════════════════════════════════════════════════════════
-        const ENERGY_TABS = ['ports', 'hourly', 'protocols'];
+        // 占比视图把"按端口"与"快充协议"合并成一屏左右两块，所以旧的三个 tab 现在只有两个。
+        // 'ports' / 'protocols' 是历史 localStorage 里可能残留的值，见 initEnergyCard 的迁移。
+        const ENERGY_TABS = ['share', 'hourly'];
         const ENERGY_PORTS = [
             { id: 1, key: 'c1', label: 'C1' },
             { id: 2, key: 'c2', label: 'C2' },
@@ -1763,9 +1765,11 @@
         // 用电统计卡：恢复上次看的 tab，先拉一次数据，之后按分钟级慢轮询
         // （会话结束由 SSE 立即触发，见下面的 sse-session-end 监听）
         function initEnergyCard() {
-            let saved = 'ports';
-            try { saved = localStorage.getItem('cuktech-energy-tab') || 'ports'; } catch (e) {}
-            setEnergyTab(ENERGY_TABS.indexOf(saved) >= 0 ? saved : 'ports');
+            let saved = 'share';
+            try { saved = localStorage.getItem('cuktech-energy-tab') || 'share'; } catch (e) {}
+            // 老版本存的是 'ports'/'protocols'（那时是两个独立 tab）：都并到现在这一屏里
+            if (saved === 'ports' || saved === 'protocols') saved = 'share';
+            setEnergyTab(ENERGY_TABS.indexOf(saved) >= 0 ? saved : 'share');
             refreshEnergyCard(energyPeriod);
             setInterval(() => refreshEnergyCard(), 60000);
             window.addEventListener('sse-session-end', (e) => {

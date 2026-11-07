@@ -36,8 +36,8 @@
     })();
     </script>
 
-    <script src="/static/locales/zh-CN.js?v=28"></script>
-    <script src="/static/locales/en.js?v=28"></script>
+    <script src="/static/locales/zh-CN.js?v=31"></script>
+    <script src="/static/locales/en.js?v=31"></script>
     <script src="/static/i18n.js?v=6"></script>
     <!-- 多设备状态中枢：必须早于 app.js（后者在顶层就用它的视图），
          也必须早于 charge_history/charge_limit（两者都经它发请求） -->
@@ -45,11 +45,11 @@
     <!-- 多设备工作台（切换条 + 全部设备汇总）：只做呈现，数据与请求仍走 device-store.js -->
     <script src="/static/device-bench.js?v=18"></script>
     <script defer src="/static/chart.umd.min.js"></script>
-    <script defer src="/static/charge_history.js?v=17"></script>
+    <script defer src="/static/charge_history.js?v=21"></script>
     <script defer src="/static/charge_limit.js?v=25"></script>
     <script src="/static/chart-loader.js"></script>
     <script src="/static/chart-config.js"></script>
-    <link rel="stylesheet" href="static/index.css?v=52">
+    <link rel="stylesheet" href="static/index.css?v=60">
 </head>
 <body>
 
@@ -292,18 +292,28 @@
                         <div class="segmented" role="group" id="energyTabs">
                             <button class="time-btn" data-energy-tab="hourly" onclick="setEnergyTab('hourly')"
                                     data-i18n="energy.tabHourly">每小时</button>
-                            <button class="time-btn active" data-energy-tab="ports" onclick="setEnergyTab('ports')"
-                                    data-i18n="energy.tabPorts">按端口</button>
-                            <button class="time-btn" data-energy-tab="protocols" onclick="setEnergyTab('protocols')"
-                                    data-i18n="energy.tabProtocols">快充协议</button>
+                            <button class="time-btn active" data-energy-tab="share" onclick="setEnergyTab('share')"
+                                    data-i18n="energy.tabShare">占比</button>
                         </div>
                     </div>
 
-                    <div class="energy-pane energy-pane--ring is-active" data-energy-pane="ports">
-                        <!-- 环只承担占比这一件事，数值与名称由右侧图例承载；
-                             所以环对读屏器是装饰（aria-hidden），信息不靠颜色单独传达。 -->
-                        <div class="energy-ring" id="energyPortRing" aria-hidden="true"></div>
-                        <div class="energy-rows" id="energyPortRows"></div>
+                    <!-- 占比视图：按端口 / 快充协议 两块并排，各占一半。
+                         以前是两个 tab 轮流显示，一个环 + 四行挤在卡片左侧、右半边整片空白；
+                         并排之后宽度用满，两张图的读法也一致（都是"环 + 图例行"）。
+                         环对读屏器是装饰（aria-hidden），数值与名称由右侧行承载。 -->
+                    <div class="energy-pane energy-pane--split is-active" data-energy-pane="share">
+                        <div class="energy-group">
+                            <div class="energy-group-body">
+                                <div class="energy-ring" id="energyPortRing" aria-hidden="true"></div>
+                                <div class="energy-rows" id="energyPortRows"></div>
+                            </div>
+                        </div>
+                        <div class="energy-group">
+                            <div class="energy-group-body">
+                                <div class="energy-ring" id="energyProtoRing" aria-hidden="true"></div>
+                                <div class="energy-rows" id="energyProtoRows"></div>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="energy-pane" data-energy-pane="hourly">
@@ -311,10 +321,6 @@
                              data-i18n-aria-label="energy.hourlyAria" aria-label="近 24 小时每小时用电量"></canvas></div>
                     </div>
 
-                    <div class="energy-pane energy-pane--ring" data-energy-pane="protocols">
-                        <div class="energy-ring" id="energyProtoRing" aria-hidden="true"></div>
-                        <div class="energy-rows" id="energyProtoRows"></div>
-                    </div>
                 </section>
 
             </div>
@@ -760,6 +766,6 @@
 
 </script>
 
-<script defer src="/static/app.js?v=32"></script>
+<script defer src="/static/app.js?v=33"></script>
 </body>
 </html>

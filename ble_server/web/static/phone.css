@@ -862,3 +862,93 @@ body.light .fleet-row { background: #fff; border-color: rgba(0,0,0,0.06); box-sh
 .fleet-w { font-size: 16px; font-weight: 600; color: var(--text); }
 .fleet-nums em { font-style: normal; font-size: 9.5px; color: var(--text-dim); }
 .fleet-today { font-size: 10px; color: var(--text-dim); margin-left: 6px; }
+
+
+/* ══════════════════════════════════════════════════════════════
+   充电记录：卡片列表（与 index.css 同一套结构，令牌按本文件的写法）
+   charge_history.js 在两页共用，所以类名与结构必须一致。
+   ══════════════════════════════════════════════════════════════ */
+.session-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
+    gap: 10px;
+    align-content: start;
+}
+.session-list > .session-empty { grid-column: 1 / -1; }
+.session-list > div:last-child:not(.session-item) {
+    grid-column: 1 / -1;
+    margin-top: 2px; padding-top: 8px;
+    border-top: 1px solid rgba(128, 128, 128, 0.15);
+}
+
+.session-card {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    column-gap: 10px; row-gap: 5px;
+    padding: 13px 14px 13px 16px;
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.03);
+    cursor: pointer;
+    overflow: hidden;
+    transition: border-color 0.15s ease, transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+}
+body.light .session-card {
+    background: #fff;
+    border-color: rgba(0, 0, 0, 0.06);
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 6px 16px rgba(16, 24, 40, 0.07);
+}
+/* 浅色主题悬停：不整圈染品牌色，改用"底色压深 + 投影抬起" */
+body.light .session-card:hover {
+    border-color: rgba(0, 0, 0, 0.09);
+    background: #fff;
+    box-shadow: 0 2px 6px rgba(16, 24, 40, 0.08), 0 12px 26px rgba(16, 24, 40, 0.12);
+}
+.session-card:hover { border-color: rgba(var(--limit-c2-rgb), 0.55); transform: translateY(-1px); }
+.session-card:active { transform: none; }
+.session-card:focus-visible { outline: 2px solid var(--c1); outline-offset: 2px; }
+.session-card::before {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--pc, var(--c1)); opacity: .85;
+}
+.session-card-id { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.session-port { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--text-sub); flex: none; }
+.session-port-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pc, var(--c1)); flex: none; }
+.session-proto {
+    flex: none;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em;
+    color: var(--c1); opacity: .9;
+}
+.session-live {
+    flex: none; display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 7px; border-radius: 999px;
+    font-size: 10px; font-weight: 600;
+    color: #34C759; background: rgba(52, 199, 89, 0.14);
+}
+.session-live i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: sessionPulse 1.6s ease-in-out infinite; }
+@keyframes sessionPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.session-card-energy {
+    justify-self: end;
+    display: inline-flex; align-items: baseline; gap: 3px;
+    color: var(--text); font-variant-numeric: tabular-nums;
+}
+.session-card-energy b { font-size: 21px; font-weight: 650; letter-spacing: -0.02em; line-height: 1; }
+.session-card-energy em { font-style: normal; font-size: 10px; font-weight: 600; opacity: .5; }
+.session-card-time {
+    min-width: 0;
+    font-size: 11px; color: var(--text-dim);
+    font-variant-numeric: tabular-nums; letter-spacing: 0.01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.session-dur {
+    justify-self: end; flex: none;
+    font-size: 11px; color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+    .session-live i { animation: none; }
+    .session-card { transition: none; }
+}
