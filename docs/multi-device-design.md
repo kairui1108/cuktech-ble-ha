@@ -166,10 +166,48 @@ CREATE INDEX idx_port_history_dev_port_time ON port_history(device_id, port, tim
 `load_config(tmp_path)` 试算，失败即 400 且删临时文件——否则"存得进去、起不来"，重启被拒后
 Web UI 也没了，用户只能手改 YAML。
 
+#### 3.10.1 primary 的生命周期（首次导入 / 换主设备 / 清空）
+
+primary 是 `ble:` 节，`device_id` 恒为 `default`，同时是 legacy MQTT 前缀、历史分区和
+HA unique_id 的锚点，所以**结构上不可删除**。这条约束在 v2.0.0-Beta 的真机反馈里暴露出
+两个洞（已修）：
+
+1. **首次使用**：全新安装的 `ble:` 是空值（Docker 模板里是占位符 `XX:XX:XX:XX:XX:XX`），
+   而小米云导入按 **MAC 匹配**——空 MAC 永远匹配不到，导入必然 `push` 一张新卡。用户看到
+   的是"空主设备 + 真实设备"两张卡：主设备删不掉，保存又被"有附加设备时 primary 必须配齐
+   MAC/Token"拦下（前后端同一条规则），第一次扫码入网直接走进死胡同。
+   **现在**：主设备为空时，第一台导入的设备直接写进主设备（导入不再是"纯 append"）。
+2. **主设备和实物对不上**（换机、失败重装、云上残留同名设备）：以前没有任何出口，只能手改
+   YAML。**现在**：附加设备编辑区提供「设为主设备」，主设备编辑区提供「清空主设备」——
+   前者交换 primary 槽位，后者清空身份后重新扫码导入。
+
+保存协议相应扩展为**统一数组（A 形）**：前端把全部卡片（含 primary）按顺序发上来，每项带
+`is_primary`，服务端据此决定落盘结构（primary → `ble:`，其余 → `devices:`）。两个细节：
+
+- **凭据按 MAC 继承**：页面拿到的 token/ble_key 永远是打码值，换主设备时两台设备的
+  `device_id` 全变了（`default` ↔ 新 id），只能按 MAC 从旧文件的 `ble:` / `devices:` 里
+  找回明文。**查得到**就用那台设备自己的凭据；**查不到**（新设备 / 手改了 MAC，不是
+  换主设备）就留空——绝不把上一台的 token/ble_key 挂到新 MAC 上，否则"认证失败"会
+  变成"用别人的凭据"。附加设备的 `token`/`ble_key` 空串与打码值同样按 id/MAC 继承
+  （页面从不给它下发明文，否则每次保存都会把 BLE Key 抹掉），但"按 id 继承"只在
+  MAC 没变时成立。
+- **空值是权威的**：A 形里 `name: ""` = 用户真的清空（孤儿名字只有这条路径能清）；
+  清空凭据还要带 `clear_credentials`，否则会被"打码/空 = 没改"的保护救回来。
+  校验也改成对着**要落盘的那份文件**跑（不能用进程当前配置补缺项，否则刚清空的
+  mac/token 会被补回来，校验通过、重启却起不来）。
+
+**换主设备的代价**（静默发生会很糟，所以写在文档和确认弹窗里）：primary 槽位绑定的是
+`device_id`（`default`），不是物理设备。交换后两台设备的 MQTT 前缀、历史分区、HA
+device/unique_id 都会跟着变；retained 主题由保存路径的 `purge_removed_devices` /
+`purge_stale_prefix` 清掉，历史数据不迁移（要归档用 `./cuktech_ctl.sh history-down`）。
+
 ### 3.11 Bemfa
 
 - 实体 id 规则：primary 沿用 legacy（`cuktech_c1/…cuktech_ble`，老语音指令不许失效），
   其它设备 `{device_id}_c1` 等；
+- `devices[].bemfa_<port>` 是**实体 id 的钉死项**（不是显示名）：配置页那一格叫
+  「巴法云实体 ID」，留空按上面的规则派生。显示名另由 `_derived_bemfa_plan` 生成
+  （`{设备名} {端口}`），HA 侧完全不读这些键；
 - **`bemfa.entities`**（一行 = 名字 + 设备 + 端口）是建模唯一真源；**没写过这个键**才按
   `allowed_devices × 5 + name_c*` 派生（升级后语音指令一个都不变）。`entities_defined`
   区分"没配过"与"配了 0 条"；
@@ -211,7 +249,10 @@ L1.5 退避状态（升级不上去时）经 `/api/devices.recovery` 暴露，�
 `GET /api/devices` 三级回退：404/超时（ESP32、旧 server）→ 单设备流程；1 台 → 自动选中并
 取其前缀；N 台 → 设备选择列表（名称 · MAC · 连接状态 · 前缀，同名同型号也能分辨）。
 `unique_id = cuktech_{md5(server_url|topic_prefix)[:16]}`，**仅影响新建 entry**。
-reauth 沿用 entry 现有 unique_id，不重算。选择期间设备消失 → 重新发现，绝不猜。
+reauth / 普通保存沿用 entry 现有 unique_id，不重算；只有用户主动改绑（换设备、换前缀、
+换服务端）时才按新的 `(server, prefix)` 重算——否则 HA 的重复条目判断会停留在旧身份上
+（旧设备被"释放"了却仍被占着，新设备又能被第二个 entry 再加一次）。选择期间设备消失 →
+重新发现，绝不猜。
 
 ### 4.3 ESP32 兼容约束
 
@@ -329,7 +370,7 @@ Mock `bluetoothctl`：N=1 时序与旧版逐条一致；N=2 有活连接时**不
 | 场景 | 结果 |
 |---|---|
 | 老 `config.yaml`（只有 `ble:`） | 单设备 registry，行为逐字节不变 |
-| 老 HA entry（无 `topic_prefix`） | 回退默认前缀，unique_id 不重算 |
+| 老 HA entry（无 `topic_prefix`） | 回退默认前缀，unique_id 不重算（仅用户主动改绑时重算） |
 | 旧 `history.db` | 启动自动 ALTER，数据归 `default`，曲线无缝 |
 | 新 HA + 旧 server / ESP32 | `/api/devices` 404 → 单设备流程 |
 | ESP32 固件 | 零改动 |

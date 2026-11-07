@@ -113,3 +113,31 @@ class TestLoadConfig:
         """Test history retention days from environment variable."""
         config = load_config()
         assert config.server.history_retention_days == 7
+
+
+class TestHistoryDbPath:
+    """`history_db_path` 为空时必须回落默认文件。
+
+    回归：`config.yaml.example` 里这一项就是 `""`，原生部署按 README `cp` 起步。
+    以前空串被原样传给 `sqlite3.connect("")` —— 那是 SQLite 的**临时库**，重启即丢；
+    `cuktech_ctl.sh clear-history` 也找不到文件（它按配置解析路径）。
+    """
+
+    def test_empty_falls_back_to_default(self, monkeypatch):
+        from config import config_from_mapping
+        monkeypatch.delenv("CUKTECH_HISTORY_DB_PATH", raising=False)
+        cfg = config_from_mapping({"ble": {"mac": "", "token": ""},
+                                   "server": {"history_db_path": ""}})
+        assert cfg.server.history_db_path == "port_history.db"
+
+    def test_explicit_path_is_kept(self, monkeypatch):
+        from config import config_from_mapping
+        monkeypatch.delenv("CUKTECH_HISTORY_DB_PATH", raising=False)
+        cfg = config_from_mapping({"ble": {}, "server": {"history_db_path": "data/x.db"}})
+        assert cfg.server.history_db_path == "data/x.db"
+
+    def test_env_still_overrides(self, monkeypatch):
+        from config import config_from_mapping
+        monkeypatch.setenv("CUKTECH_HISTORY_DB_PATH", "/data/port_history.db")
+        cfg = config_from_mapping({"ble": {}, "server": {"history_db_path": ""}})
+        assert cfg.server.history_db_path == "/data/port_history.db"

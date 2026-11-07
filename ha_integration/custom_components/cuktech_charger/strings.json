@@ -49,20 +49,25 @@
     "step": {
       "init": {
         "title": "CUKTECH Charger options",
-        "description": "Change the entry's MQTT namespace and its label. The entry is reloaded after saving.",
+        "description": "Change which charger this entry follows, its MQTT namespace and its label. The entry is reloaded after saving.",
         "data": {
           "name": "Entry name (hub label)",
           "server_url": "BLE Server URL",
           "topic_prefix": "MQTT Topic Prefix",
-          "device_id": "Server device ID (optional)"
+          "device_id": "Charger"
         },
         "data_description": {
           "name": "This is the label of the integration card / hub node — not the charger's own name. The device name follows the server automatically (unless you renamed the device in Home Assistant, which takes precedence). Renaming here pins the label so auto-sync stops changing it; clear this field and save to hand it back to auto-sync.",
           "server_url": "The ble_server (or ESP32) this entry talks to.",
-          "topic_prefix": "Topics this entry subscribes to and publishes on. Empty = cuktech/charger.",
-          "device_id": "Leave empty when the server has no per-device addressing (ESP32, old server)."
+          "topic_prefix": "Only shown when the server cannot advertise its devices (ESP32 / old server). Empty = cuktech/charger.",
+          "device_id": "Picked from the devices advertised by the server; that device's MQTT prefix is applied automatically. When the server has no device discovery (ESP32 / old server), a manual device ID can be typed instead."
         }
       }
+    },
+    "error": {
+      "device_not_found": "The selected charger is no longer reported by the server",
+      "device_in_use": "Another entry already uses that charger / MQTT prefix",
+      "discovery_failed": "Could not read the device list from the server, so the new selection was not saved. Check the server URL and try again."
     }
   }
 }

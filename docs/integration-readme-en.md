@@ -37,6 +37,27 @@ Restart Home Assistant and add the integration.
 
 Re-authentication supported when server URL changes.
 
+### Multiple chargers / switching the bound charger (integration "Options")
+
+When the server advertises several chargers, adding the integration lists them
+(`/api/devices`) and you add one entry per charger. To **switch the charger or change the
+binding** later, you do not need to delete and re-add the entry:
+
+1. Integration card → "Options";
+2. the "Charger" dropdown **re-fetches** the device list from the server (name · MAC ·
+   connection state · topic prefix); picking one applies its `device_id` and MQTT prefix
+   (server-advertised values win);
+3. saving reloads the entry; `entry_id` / entity unique_ids stay the same, so history and
+   automations survive.
+
+> - If you change a device **ID / topic prefix** in the Web UI, come back here and re-pick
+>   it; otherwise the entry keeps subscribing to the old prefix (it looks like "the device
+>   went offline in HA").
+> - ESP32 / old servers have no discovery endpoint: the form falls back to manual
+>   "MQTT prefix + device ID".
+> - "Another entry already uses that charger / MQTT prefix" means another entry is already
+>   bound to it — resolve that entry first.
+
 ## Features
 
 - **Real-time power monitoring**: Voltage, current, power via MQTT

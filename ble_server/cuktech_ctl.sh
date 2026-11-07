@@ -35,6 +35,65 @@ get_pid() {
     return 1
 }
 
+# 服务端实际读取的配置文件：口径与 config.py 的 `load_config` 一致——
+# `CUKTECH_CONFIG_PATH` 优先（相对路径按脚本目录解析，do_start 会先 cd 过来），
+# 没设或指向的文件不存在时回落脚本目录的 config.yaml。
+# 以前各函数硬编码 `$SCRIPT_DIR/config.yaml`：用 CUKTECH_CONFIG_PATH 部署时，
+# 脚本读的是另一份（或根本不存在的）配置，清历史/清 MQTT 都会操作错对象。
+resolve_config_path() {
+    local path="${CUKTECH_CONFIG_PATH:-}"
+    if [ -n "$path" ]; then
+        case "$path" in
+            /*) ;;
+            *)  path="$SCRIPT_DIR/$path" ;;
+        esac
+        if [ -f "$path" ]; then
+            printf '%s\n' "$path"
+            return 0
+        fi
+    fi
+    printf '%s\n' "$SCRIPT_DIR/config.yaml"
+}
+CONFIG_FILE="$(resolve_config_path)"
+
+# 历史库路径：**以配置文件里的 server.history_db_path 为准**（相对路径按脚本目录
+# 解析），其次认 README 推荐的 `data/port_history.db` 持久化布局，最后才退回脚本目录。
+# 以前 clear-history / history-down 都硬编码 `$SCRIPT_DIR/port_history.db`：配置成
+# `data/port_history.db` 的部署跑清理只会打印 "No database found"，历史一条都没删。
+resolve_history_db() {
+    # 1) 环境变量优先（与服务端 config_from_mapping 的优先级一致：env > config.yaml）。
+    #    相对路径按脚本目录解析：服务端就是在这个目录下启动的（do_start 会 cd 过来），
+    #    否则从别处调用 ctl 会 rm 到别的目录去。
+    if [ -n "${CUKTECH_HISTORY_DB_PATH:-}" ]; then
+        case "$CUKTECH_HISTORY_DB_PATH" in
+            /*) printf '%s\n' "$CUKTECH_HISTORY_DB_PATH" ;;
+            *)  printf '%s\n' "$SCRIPT_DIR/$CUKTECH_HISTORY_DB_PATH" ;;
+        esac
+        return 0
+    fi
+    # 2) 配置文件里的 server.history_db_path（相对路径按脚本目录解析）
+    local db=""
+    if [ -f "$CONFIG_FILE" ]; then
+        db=$("$PYTHON" -c 'import sys
+try:
+    import yaml
+    cfg = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+except Exception:
+    cfg = {}
+print(str((cfg.get("server") or {}).get("history_db_path") or "").strip())' \
+            "$CONFIG_FILE" 2>/dev/null || true)
+    fi
+    if [ -n "$db" ]; then
+        case "$db" in
+            /*) printf '%s\n' "$db" ;;
+            *)  printf '%s\n' "$SCRIPT_DIR/$db" ;;
+        esac
+        return 0
+    fi
+    # 3) 纯环境变量/无配置部署：就是服务端的默认文件名（cwd 也是脚本目录）
+    printf '%s\n' "$SCRIPT_DIR/port_history.db"
+}
+
 mqtt_cleanup() {
     echo "Clearing MQTT data..."
     "$PYTHON" -c "
@@ -42,7 +101,7 @@ import json, sys
 from pathlib import Path
 
 # Load config from YAML
-config_path = Path('$SCRIPT_DIR/config.yaml')
+config_path = Path('$CONFIG_FILE')
 if config_path.exists():
     try:
         import yaml
@@ -84,7 +143,7 @@ read_server_port() {
     "$PYTHON" -c "
 import yaml
 from pathlib import Path
-cfg_path = Path('$SCRIPT_DIR/config.yaml')
+cfg_path = Path('$CONFIG_FILE')
 if cfg_path.exists():
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f) or {}
@@ -98,7 +157,7 @@ is_mqtt_enabled() {
     "$PYTHON" -c "
 import yaml
 from pathlib import Path
-cfg_path = Path('$SCRIPT_DIR/config.yaml')
+cfg_path = Path('$CONFIG_FILE')
 if cfg_path.exists():
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f) or {}
@@ -124,7 +183,7 @@ do_cleanup() {
     MAC=$("$PYTHON" -c "
 import yaml
 from pathlib import Path
-cfg_path = Path('$SCRIPT_DIR/config.yaml')
+cfg_path = Path('$CONFIG_FILE')
 if cfg_path.exists():
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f) or {}
@@ -271,7 +330,13 @@ do_clear_log() {
 
 do_clear_history() {
     echo "Clearing history database..."
-    local db="$SCRIPT_DIR/port_history.db"
+    if pid=$(get_pid); then
+        echo "Server is running (PID: $pid) — 先 stop 再清库：SQLite 还持有旧文件的 inode，"
+        echo "运行时删掉只是 unlink，进程还在往旧库里写，直到退出才真正释放。"
+        return 1
+    fi
+    local db
+    db="$(resolve_history_db)"
     if [ -f "$db" ]; then
         rm -f "$db" "${db}-wal" "${db}-shm"
         echo "  ✓ Removed $db"
@@ -283,7 +348,8 @@ do_clear_history() {
 do_history_down() {
     # 回滚用（设计文档 §6.1）：把非 primary 设备的历史归档到 *_archive，主表恢复
     # 为旧代码可读。先停服务再跑（写库进程持有 WAL）。幂等，可重跑。
-    local db="$SCRIPT_DIR/port_history.db"
+    local db
+    db="$(resolve_history_db)"
     if [ ! -f "$db" ]; then
         echo "No history database found at $db"
         return 1

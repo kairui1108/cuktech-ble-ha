@@ -186,28 +186,69 @@ setTimeout(async () => {
         eq(cfg.ble.token, '****1234', 'primary 的掩码 token 原样回传（服务端据此保留原值）');
         eq(cfg.ble.name, '书房充电器', 'primary 的显示名随卡片一起回写（与 /api/devices 报来的一致）');
 
-        eq(cfg.devices.length, 2, 'devices 节 = 除 primary 外的两台');
-        eq(cfg.devices[0].id, 'desk', '附加设备 id 字段名与 config.py 一致');
-        eq(cfg.devices[0].token, 'tok-desk', '用户重填的 token 上报');
-        ok(!('bemfa_ble' in cfg.devices[0]), '空的 bemfa 覆盖项不写进 YAML');
-        eq(cfg.devices[1].id, 'balcony', '新加的设备也进 devices 节');
-        eq(cfg.devices[1].name, '阳台充电器', '名字一并保存');
-        eq(cfg.devices[1].mac, 'AA:BB:CC:DD:EE:03', 'mac 一并保存');
-        ok(!('is_primary' in cfg.devices[1]) && !('connected' in cfg.devices[1]),
-           'payload 只带配置字段（不含运行时的 is_primary/connected）');
+        eq(cfg.devices.length, 3, '统一数组 = 全部设备卡片（primary 也在里面）');
+        eq(cfg.devices[0].id, 'default', '第一项就是 primary（服务端据此展开回 ble: 节）');
+        eq(cfg.devices[0].is_primary, true, 'primary 带 is_primary 标记');
+        eq(cfg.devices[1].id, 'desk', '附加设备 id 字段名与 config.py 一致');
+        eq(cfg.devices[1].token, 'tok-desk', '用户重填的 token 上报');
+        ok(!('bemfa_ble' in cfg.devices[1]), '空的 bemfa 覆盖项不写进 YAML');
+        eq(cfg.devices[2].id, 'balcony', '新加的设备也在同一份清单里');
+        eq(cfg.devices[2].name, '阳台充电器', '名字一并保存');
+        eq(cfg.devices[2].mac, 'AA:BB:CC:DD:EE:03', 'mac 一并保存');
+        ok(cfg.devices.slice(1).every((d) => d.is_primary === false),
+           '其余设备明确 is_primary=false（换主设备就靠这个标记重排）');
+        ok(!('connected' in cfg.devices[1]),
+           'payload 只带配置字段（不含运行时的 connected）');
 
-        // 清空名字：不能写空串。GET /api/config 不返回 ble.name，"没设置"与
-        // "被清空"在页面上无法区分，写空串会误删配置里已有的名字 —— 宁可这次不清。
+        // 清空名字：A 形的 name 是**权威**字段，空串 = 用户确实清空了，服务端据此
+        // 抹掉 ble.name —— 孤儿主设备上那个删不掉的名字只有这条路径能清。
         peek(ctx, `updateDeviceField(0, 'name', '')`);
         await peek(ctx, 'saveConfig()');
         const postCleared = ctx.__posts.filter((p) => p.url.indexOf('/api/config') >= 0).pop();
-        ok(!('name' in postCleared.body.config.ble), '名字清空时不写 ble.name（保住配置里已有的名字）');
+        ok(!('name' in postCleared.body.config.ble), 'ble 节照旧不写空串（老服务端不会误删）');
+        eq(postCleared.body.config.devices[0].name, '', 'A 形里的空串才是"清空"的权威信号');
 
         // 主设备起名后要写回 ble.name
         peek(ctx, `updateDeviceField(0, 'name', '书房主充')`);
         await peek(ctx, 'saveConfig()');
         const post2 = ctx.__posts.filter((p) => p.url.indexOf('/api/config') >= 0).pop();
         eq(post2.body.config.ble.name, '书房主充', 'primary 起了名就写进 ble.name');
+    }
+
+    console.log('\n-- "待配置"标签随 MAC 实时出现/退场 --');
+    {
+        // 卡片头的标签与虚线框必须一起变：只改一个会留下"已配置 + 待配置"的怪状态
+        peek(ctx, `updateDeviceField(1, 'mac', '')`);
+        eq(peek(ctx, 'document.getElementById("device-todo-1").hidden'), false,
+           '清空 MAC → "待配置"标签出现');
+        peek(ctx, `updateDeviceField(1, 'mac', 'AA:BB:CC:DD:EE:02')`);
+        eq(peek(ctx, 'document.getElementById("device-todo-1").hidden'), true,
+           '填上 MAC → "待配置"标签退场');
+    }
+
+    console.log('\n-- 附加设备的 bemfa 覆盖项：载入值透传，清空 = 显式解绑 --');
+    {
+        // /api/devices 现在会下发 `bemfa` 覆盖项（页面只编辑 bemfa_ble，其余透传）
+        peek(ctx, `_devices[1].bemfa_ble = 'desk_voice'`);
+        peek(ctx, `_devices[1].bemfa_c1 = 'desk_c1_voice'`);
+        peek(ctx, `_devices[1]._bemfaBleLoaded = 'desk_voice'`);
+        const idx = ctx.__posts.length;
+        await peek(ctx, 'saveConfig()');
+        const payload = ctx.__posts[idx].body.config.devices[1];
+        eq(payload.bemfa_ble, 'desk_voice', '载入的 bemfa_ble 原样回传');
+        eq(payload.bemfa_c1, 'desk_c1_voice', '不可编辑的覆盖项也要透传（否则保存即丢失）');
+
+        // 用户清空输入框：必须发空串，服务端才能区分"解绑"和"没改"
+        peek(ctx, `updateDeviceField(1, 'bemfa_ble', '')`);
+        const idx2 = ctx.__posts.length;
+        await peek(ctx, 'saveConfig()');
+        eq(ctx.__posts[idx2].body.config.devices[1].bemfa_ble, '',
+           '清空已载入的覆盖项 → 显式空串（解绑）');
+
+        // 复原给后续用例
+        peek(ctx, `_devices[1].bemfa_ble = ''`);
+        peek(ctx, `delete _devices[1].bemfa_c1`);
+        peek(ctx, `_devices[1]._bemfaBleLoaded = ''`);
     }
 
     console.log('\n-- 本地校验拦下明显会起不来的配置 --');
@@ -219,11 +260,20 @@ setTimeout(async () => {
         eq(ctx.__posts.length, before, '非法 id → 不提交（不会被重启后才发现的错误拖下水）');
         peek(ctx, `updateDeviceField(1, 'id', 'desk')`);
 
-        // 缺 token
+        // 缺 token：**新加的卡**必须填（从服务端载入的卡空 token = 沿用旧值，见
+        // loadDeviceList 的 creds_from_server；这条区别是"换主设备"能用的前提）
+        peek(ctx, `_devices[1].creds_from_server = false`);
         peek(ctx, `updateDeviceField(1, 'token', '')`);
         const before2 = ctx.__posts.length;
         await peek(ctx, 'saveConfig()');
-        eq(ctx.__posts.length, before2, '缺 token → 不提交');
+        eq(ctx.__posts.length, before2, '缺 token 的新卡 → 不提交');
+
+        // 载入的卡空 token 不该拦：服务端按 id/MAC 继承明文，逼用户重敲一遍是折磨
+        peek(ctx, `_devices[1].creds_from_server = true`);
+        const before3 = ctx.__posts.length;
+        await peek(ctx, 'saveConfig()');
+        ok(ctx.__posts.length > before3, '服务端已配置的卡 → 空 token 表示"沿用旧值"，照常提交');
+        peek(ctx, `updateDeviceField(1, 'token', 'tok-desk')`);
     }
 
     console.log('\n-- 设备改名：巴法云实体重绑必须用 trim 后的 id --');
@@ -443,7 +493,10 @@ setTimeout(async () => {
            '导入结果给用户看（新增/更新计数）');
         ok(peek(ctx, 'document.getElementById("xiaomiImportStatus").textContent').indexOf('保存') >= 0,
            '结果文案必须点明"还没落盘，要再点保存"（否则关掉页面就白干）');
-        eq(ctx.__closed, 0, '导入后**不自动关窗**（导入 ≠ 已保存）');
+        eq(ctx.__closed, 1, '导入成功后自动关窗（不用再点一次「取消」）');
+        const closedToast = peek(ctx, '(document.getElementById("toast") || {}).textContent') || '';
+        ok(closedToast.indexOf('还没保存') >= 0,
+           `关窗后的 toast 继续提醒"还没保存"（实际：${closedToast}）`);
     }
 
     console.log('\n-- 小米云：不勾"同步名称"时保留用户自己起的名字 --');

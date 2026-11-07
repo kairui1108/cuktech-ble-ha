@@ -70,6 +70,23 @@ Then open `http://<server-ip>:8199/config.html`:
 2. Fill in MQTT settings (for Home Assistant)
 3. Click "Save & Restart"
 
+**Config page features:**
+- Xiaomi Cloud QR login; **batch import** MAC / token / BLE key for several chargers at once
+- Device names can be synced from the cloud (tick "sync Xiaomi Cloud device names")
+- Import matches existing cards **by MAC**: the same device only updates credentials/name,
+  it is never added twice — *provided the device is already in the card list*
+- **Make primary**: the primary device **is** the `ble:` section, its ID is always
+  `default` and it **cannot be removed**. After replacing a charger (or when the primary
+  no longer matches the hardware), open the charger that is really in use →
+  "Make primary"; the old primary is demoted to an extra device (and can then be removed)
+- **Clear primary**: when the primary is gone/unreachable, open it → "Clear primary":
+  name/MAC/token/BLE key are wiped so you can scan and import again
+- Re-import after a token rotation updates the card in place — no YAML editing
+- BLE / MQTT / Bemfa / server settings are editable online; secrets are masked in the UI
+- Bemfa voice switches are one row per switch (display name + device + port);
+  switches removed from the config are deleted from Bemfa on the next start
+- Saving restarts the service automatically
+
 ### Option B: Docker
 
 #### Run with persistent data directory (recommended):
@@ -142,6 +159,7 @@ docker compose -f docker/docker-compose.env.yml up -d
 **Option A: Web Config Page (Recommended)**
 
 After starting the server, open `http://<server-ip>:8199/config.html` and use the Xiaomi Cloud QR login to auto-fetch MAC, Token, and BLE Key.
+On a fresh install the primary slot (`ble:` section) starts empty; the config page guides you through the two ways to fill it.
 
 **Option B: Manual**
 

@@ -163,6 +163,32 @@ def _bemfa_entity_signature(raw) -> list:
                   (bemfa_entity_triple(e) for e in (raw or [])))
 
 
+def _is_unified_devices(devices) -> bool:
+    """设备列表是不是"统一数组（A 形）"：任一项带 `is_primary` 键。
+
+    这个判据同时决定两件事：`handle_config_save` 要不要跳过 `ble:` 的通用合并、
+    `_apply_devices_payload` 按哪种形状解析。两处必须永远一致——所以只留一份实现。
+
+    非列表输入直接判 False：调用方在 `_apply_devices_payload` 里才会给出
+    "设备列表格式非法"的 400；这里若去迭代一个 int，会在校验之前抛 TypeError，
+    把 400 变成 500。
+    """
+    if not isinstance(devices, list):
+        return False
+    return any(isinstance(d, dict) and "is_primary" in d for d in devices)
+
+
+def _norm_mac(value) -> str:
+    """MAC 归一化（去分隔符 + 小写），与校验口径 / 前端 `normMac()` 保持一致。
+
+    只用于"按 MAC 认同一台设备"这类**匹配**：用户手填的 `AA:BB:...`、小米云给的
+    `aabbcc...`、以及模板占位符 `XX:XX:XX:XX:XX:XX`（X 不是十六进制字符 → 归一化
+    成空串，正好等价于"还没配"）都会落到同一个键上。
+    """
+    return "".join(ch for ch in str(value or "")
+                   if ch in "0123456789abcdefABCDEF").lower()
+
+
 class SSEEmitter:
     """SSE event broadcaster — push events to all connected browser clients."""
 
@@ -2172,23 +2198,7 @@ class Server:
         path = '/phone.html' if self.MOBILE_UA.search(ua) else '/index.html'
         entry = _static_cache.get(path)
         if entry:
-            accept_gzip = request.headers.get("Accept-Encoding", "").find("gzip") != -1
-            if accept_gzip and entry["gzipped"]:
-                body = entry["gzipped"]
-                headers = {
-                    "Content-Type": "text/html",
-                    "Content-Encoding": "gzip",
-                    "Content-Length": str(len(body)),
-                    "Cache-Control": "no-cache",
-                }
-            else:
-                body = entry["raw"]
-                headers = {
-                    "Content-Type": "text/html",
-                    "Content-Length": str(len(body)),
-                    "Cache-Control": "no-cache",
-                }
-            return web.Response(body=body, headers=headers)
+            return _static_response(request, entry, vary_user_agent=True)
         return web.FileResponse(WEB_DIR / path.lstrip('/'))
 
     # ── Charge Session API ──
@@ -2575,6 +2585,10 @@ class Server:
                 },
                 # 设备卡片数据源（§3.12 config.html）：primary 恒在第一位且
                 # `is_primary=True`（前端据此禁用删除按钮）。敏感字段照旧打码。
+                # `bemfa` 是 `bemfa_<port>:` 覆盖项（§3.11）：配置页只编辑
+                # `bemfa_ble`，其余端口原样透传——不下发的话，任意一次网页保存
+                # 都会把它们从 YAML 里抹掉，巴法云里的语音实体 id 回落成派生值，
+                # 用户配好的语音联动静默失效。
                 "devices": [{
                     "device_id": rt.device_id,
                     "name": rt.name,
@@ -2583,6 +2597,7 @@ class Server:
                     "ble_key": self._mask(rt.spec.ble_key),
                     "topic_prefix": rt.topics.prefix,
                     "is_primary": rt.device_id == PRIMARY_DEVICE_ID,
+                    "bemfa": dict(getattr(rt.spec, "bemfa_names", None) or {}),
                 } for rt in self.registry],
             },
         })
@@ -2605,16 +2620,27 @@ class Server:
                 with open(config_path) as f:
                     existing = yaml.safe_load(f) or {}
 
+            # ── 先判设备列表形状：统一数组（A 形）自己负责 `ble:` 节 ──
+            # A 形每一项都带 `is_primary`，token/ble_key 是打码值，必须先按 MAC 从
+            # **盘上的旧值**继承明文再落盘。所以通用合并不能先跑一遍 `ble:`：它会把
+            # 空串直接写进去（只跳过打码值），既抹掉"换主设备"时继承所需的旧凭据，
+            # 又让"清空主设备"退化成"什么都不做"。
+            devices_payload = config_data.get("devices")
+            unified_devices = _is_unified_devices(devices_payload)
+
             # Merge — skip masked placeholder values (****)
             SENSITIVE_KEYS = {"token", "ble_key", "password", "uid"}
             for section in ("ble", "mqtt", "bemfa", "server"):
-                if section in config_data:
-                    if section not in existing:
-                        existing[section] = {}
-                    for k, v in config_data[section].items():
-                        if k in SENSITIVE_KEYS and v and "****" in str(v):
-                            continue  # Skip masked values, keep original
-                        existing[section][k] = v
+                if section not in config_data:
+                    continue
+                if section == "ble" and unified_devices:
+                    continue          # A 形统一数组在 _apply_devices_payload 里落 ble:
+                if section not in existing:
+                    existing[section] = {}
+                for k, v in config_data[section].items():
+                    if k in SENSITIVE_KEYS and v and "****" in str(v):
+                        continue  # Skip masked values, keep original
+                    existing[section][k] = v
 
             # Validate server.log_level value (prevent config corruption from frontend)
             if "server" in existing and "log_level" in existing["server"]:
@@ -2627,7 +2653,6 @@ class Server:
                     existing["server"]["log_level"] = "info"
 
             # ── 设备列表（§3.10/§3.12）：前端发统一数组，后端决定文件结构 ──
-            devices_payload = config_data.get("devices")
             if devices_payload is not None:
                 error = self._apply_devices_payload(existing, devices_payload)
                 if error:
@@ -2732,40 +2757,99 @@ class Server:
 
         **两种形状都接受**（前端在演进，后端必须两种都吃得住）：
 
-        A) 统一数组：每项带 `is_primary` 标记 —— 存的是"一组设备卡片"，后端决定
-           文件结构（primary → `ble:` 节，其余 → `devices:` 节）；
-        B) 前端当前形状：primary 已在 `config.ble` 里（走通用合并逻辑），
+        A) 统一数组（新）：每项带 `is_primary` 标记 —— 存的是"一组设备卡片"，顺序
+           由前端决定，后端据此决定文件结构（primary → `ble:` 节，其余 → `devices:`）。
+           这也是**换主设备**（把某台附加设备提成主设备）的唯一入口：卡槽变了，但
+           每台设备的明文 token/ble_key 还躺在旧文件里，所以这里按 **MAC** 从旧配置
+           继承打码/空值（按 id 继承不够：id 会跟着卡槽一起换）。
+        B) 老页面的形状：primary 已在 `config.ble` 里（走通用合并逻辑），
            `config.devices` 只放附加设备 —— 这里只负责把附加设备落成 `devices:` 节。
 
         结构约束（§3.10）：primary **永远**展开回 `ble:` 节（老版本工具/脚本仍能读）；
-        primary 不可删除；写盘前用**生产校验规则**验一遍——多设备配错的代价是
-        "控制到错误的充电器"，不能落盘再说。
+        primary 不可删除，但可以"清空"（`clear_credentials` + 空字段，用于清理换机/
+        历史遗留的孤儿主设备）；写盘前用**生产校验规则**验一遍——多设备配错的代价
+        是"控制到错误的充电器"，不能落盘再说。
         """
         if devices is None:
             return None                      # 前端没提交设备列表：保持 YAML 原样
         if not isinstance(devices, list):
             return "配置错误：设备列表格式非法（应为数组）"
 
-        # ── 形状 A：统一数组（任一项带 `is_primary` 键即为 A 形；前端 B 形从不下发该键）──
-        if any(isinstance(d, dict) and "is_primary" in d for d in devices):
+        # ── 旧配置的凭据索引：按 **MAC**（不是 id）──
+        # 前端拿不到明文 token/ble_key（接口一律打码），所以"打码/空值"必须能找回
+        # 原来的明文。按 id 找回在换主设备时必然失败：primary 的 id 恒为 default，
+        # 被换下去的那台会拿到新 id，两台设备的 id 全变了；只有 MAC 还是设备身份。
+        old_creds: dict[str, dict] = {}
+        old_ble = existing.get("ble") or {}
+        for item in [old_ble, *(existing.get("devices") or [])]:
+            if not isinstance(item, dict):
+                continue
+            mac_key = _norm_mac(item.get("mac"))
+            if mac_key:
+                old_creds[mac_key] = {
+                    "token": str(item.get("token") or ""),
+                    "ble_key": str(item.get("ble_key") or ""),
+                    # `bemfa_<port>:` 覆盖项也按 MAC 记一份：换主设备/改 id 后
+                    # 页面仍拿得到它们（/api/devices 已下发），但旧页面不发，
+                    # 落盘时必须能找回来。
+                    **{k: v for k, v in item.items()
+                       if k.startswith("bemfa_") and v},
+                }
+
+        unified = _is_unified_devices(devices)
+        if unified:
             primaries = [d for d in devices if isinstance(d, dict) and d.get("is_primary")]
             if len(primaries) != 1:
                 return "配置错误：必须且只能有一台 primary 设备（primary 不可删除）"
             primary = primaries[0]
-            ble_section = dict(existing.get("ble") or {})
+            # 显式"清空主设备"：名称/MAC/Token/BLE Key 一起抹掉，让这台回到"待配置"。
+            # 只有没有任何附加设备时才可能通过下面的启动校验（附加设备必须挂在已配置的
+            # primary 下，§3.10）；这里不特判，交给同一套校验给出一致的报错。
+            clear_credentials = bool(primary.get("clear_credentials"))
+            ble_section = dict(old_ble)
+            if clear_credentials:
+                for key in ("mac", "name", "token", "ble_key"):
+                    ble_section.pop(key, None)
             for key in ("mac", "name", "token", "ble_key"):
                 val = primary.get(key)
                 if val is None:
                     continue
-                if key in ("token", "ble_key") and ("****" in str(val)
-                                                    or not str(val).strip()):
-                    # 打码值 = 用户没改；空串 = 用户清空了输入框（页面拿不到明文，
-                    # 清框是很容易的误操作）。两者都必须按 no-op 处理——凭证擦除
-                    # 是不可逆的，救回来只能手改 YAML。B 形的 extras 一直是这么判的。
+                if key in ("token", "ble_key"):
+                    text = str(val)
+                    if text.strip() and "****" not in text:
+                        ble_section[key] = text       # 用户重填了明文，以页面为准
+                        continue
+                    if clear_credentials:
+                        continue                      # 上面的清空已经处理过
+                    mac_key = _norm_mac(primary.get("mac"))
+                    if mac_key in old_creds:
+                        # 这台设备在旧配置里有记录（普通保存 / 换主设备）：按它的旧明文
+                        # 来。旧值是空就**清掉**——否则换主设备会把上一台的 token 带过来。
+                        old_value = old_creds[mac_key].get(key) or ""
+                        if old_value:
+                            ble_section[key] = old_value
+                        else:
+                            ble_section.pop(key, None)
+                    else:
+                        # MAC 在旧配置里查不到（新设备 / 手改了 MAC，不是换主设备）：
+                        # 宁可留空让校验或认证失败暴露，也不能把上一台的凭据挂到这台
+                        # 头上（§3.10.1）——那会让"认证失败"变成"用别人的 token"。
+                        ble_section.pop(key, None)
                     continue
-                if key == "name" and not str(val).strip():
-                    continue             # 清空名字按 no-op（宁可不变也不误删）
-                ble_section[key] = val
+                if key == "mac":
+                    mac = str(val).strip()
+                    if mac:
+                        ble_section["mac"] = mac
+                    else:
+                        ble_section.pop("mac", None)
+                    continue
+                # name：A 形是**权威**的 —— 空串 = 用户点了"清空"（孤儿名字只有这里
+                # 能抹掉）；老页面走 B 形，仍按"空 = 没改"处理，行为不变。
+                name = str(val).strip()
+                if name:
+                    ble_section["name"] = name
+                else:
+                    ble_section.pop("name", None)
             if "scan_timeout" in primary:
                 ble_section["scan_timeout"] = primary["scan_timeout"]
             existing["ble"] = ble_section
@@ -2785,24 +2869,78 @@ class Server:
             norm = dict(raw)
             if not norm.get("id") and norm.get("device_id"):
                 norm["id"] = norm["device_id"]      # 两种键名都收（见 DeviceConfig.from_mapping）
-            entry = {k: norm[k] for k in self._DEVICE_KEYS if norm.get(k) not in (None, "")}
+            entry = {}
+            for key in self._DEVICE_KEYS:
+                if key not in norm or norm[key] is None:
+                    continue
+                if key.startswith("bemfa_"):
+                    # `bemfa_*` 的空串是**显式解绑**（页面把用户清空的覆盖项
+                    # 原样发回），必须保留到继承之后；其他字段的空串仍是"没填"。
+                    entry[key] = str(norm[key]).strip()
+                elif norm[key] != "":
+                    entry[key] = norm[key]
             dev_id = str(entry.get("id") or "").strip()
             if dev_id:
                 entry["id"] = dev_id
                 prev = old_by_id.get(dev_id) or {}
+                # 按 id 继承只在 MAC 没变时成立：用户把这张卡的 MAC 改成了另一台设备
+                # 时，旧 token 属于**旧设备**，不能再挂上去（§3.10.1）。
+                same_mac = (not prev) or (_norm_mac(prev.get("mac")) == _norm_mac(entry.get("mac")))
+                # 再按 MAC 找：换主设备时降级下来的那台 id 变了，YAML 里没有这个 id
+                inherited = old_creds.get(_norm_mac(entry.get("mac")), {})
                 token = str(entry.get("token") or "")
                 if not token or "****" in token:
                     # 空/打码 = "没改"：沿用 YAML 里的旧 token（页面拿不到明文，
                     # 不这样处理就只能逼用户把 token 重填一遍）
-                    if prev.get("token"):
-                        entry["token"] = prev["token"]
+                    fallback = ((prev.get("token") or "") if same_mac else "") \
+                        or inherited.get("token")
+                    if fallback:
+                        entry["token"] = fallback
                     else:
                         entry.pop("token", None)
                 ble_key = str(entry.get("ble_key") or "")
-                if "****" in ble_key:
-                    entry["ble_key"] = prev.get("ble_key", "")
-                    if not entry["ble_key"]:
-                        entry.pop("ble_key")
+                if not ble_key or "****" in ble_key:
+                    # 空串**和**打码值都要继承：新页面根本不下发附加设备的 ble_key
+                    # （接口只给 primary 的掩码），旧代码只认 "****"，于是每次保存都
+                    # 把附加设备的 BLE Key 从 YAML 里抹掉——下次启动那台认证失败。
+                    fallback = ((prev.get("ble_key") or "") if same_mac else "") \
+                        or inherited.get("ble_key", "")
+                    if fallback:
+                        entry["ble_key"] = fallback
+                    else:
+                        entry.pop("ble_key", None)
+
+                # ── `bemfa_<port>:` 覆盖项：没带就沿用旧配置 ──
+                # 配置页只渲染 `bemfa_ble`，其余端口（c1/c2/c3/a）的覆盖项用户
+                # 看不见也编辑不了；旧页面甚至完全不发。若按"没带 = 清空"处理，
+                # 每次网页保存都会把用户钉死的巴法云实体 id 抹掉，语音联动静默失效。
+                # 先按 id（MAC 未变时）再按 MAC 找，与 token/ble_key 同一套规则。
+                for key in self._DEVICE_KEYS:
+                    if not key.startswith("bemfa_") or key in entry:
+                        continue
+                    fallback = (prev.get(key) if same_mac else "") \
+                        or inherited.get(key) or ""
+                    if fallback:
+                        entry[key] = str(fallback).strip()
+                # 显式解绑（页面发来的空串）落成"没有这个键"：运行期据此回落到
+                # 派生实体 id。空串若原样写进 YAML，`from_mapping` 会把它当作
+                # 无覆盖项，效果相同，但留着一个空键会让人误以为配过。
+                for key in [k for k, v in entry.items()
+                            if k.startswith("bemfa_") and not str(v).strip()]:
+                    entry.pop(key)
+
+                # ── 自动派生的前缀不要落成显式覆盖 ──
+                # 配置页拿到的 `topic_prefix` 是运行期解析值（`{base}/{id}`），
+                # 保存时会原样回传。把它当用户覆盖写进 YAML 的话，以后改
+                # `mqtt.topic_prefix` 时附加设备就不跟着走了（它被钉在旧 base 上），
+                # 而用户从没手动设置过这个值。
+                base_prefix = (os.environ.get("MQTT_TOPIC_PREFIX")
+                               or (existing.get("mqtt") or {}).get("topic_prefix")
+                               or "cuktech/charger")
+                base_prefix = str(base_prefix).strip().rstrip("/")
+                explicit_prefix = str(entry.get("topic_prefix") or "").strip().rstrip("/")
+                if explicit_prefix and explicit_prefix == f"{base_prefix}/{dev_id}":
+                    entry.pop("topic_prefix", None)
             extras.append(entry)
 
         # ── 必填项（与 `_parse_devices` 对齐）：缺了就明确报错，而不是写个半残 YAML ──
@@ -2822,7 +2960,14 @@ class Server:
         # 又带设备前缀时，旧基前缀会让"前缀撞车"校验判成通过，写盘后重启才被拒——
         # 那时服务已经重启，Web UI 也没了，用户只能手改 YAML（§3.10 最怕的形态）。
         try:
-            probe = self._effective_sections(existing)
+            if unified:
+                # A 形已经算好了权威的 `ble:` 节：直接用"要落盘的那份文件"试算。
+                # 不能用 _effective_sections()：它拿进程当前配置补缺项，会把刚被
+                # "清空"的 mac/token 又补回来 —— 校验通过、重启却起不来。
+                probe = {k: (dict(v) if isinstance(v, dict) else v)
+                         for k, v in existing.items()}
+            else:
+                probe = self._effective_sections(existing)
             probe["devices"] = extras       # 校验的是**本次要落盘**的形态
             config_from_mapping(probe)
         except ValueError as e:
@@ -3224,6 +3369,7 @@ def _cache_static_files():
             "raw": raw,
             "gzipped": gzipped,
             "content_type": ct,
+            "etag": _etag_of(raw),
         }
     # 根目录 HTML 文件也加入缓存
     for html_name in ("index.html", "phone.html", "config.html"):
@@ -3236,31 +3382,69 @@ def _cache_static_files():
                 "raw": raw,
                 "gzipped": gzipped,
                 "content_type": "text/html",
+                "etag": _etag_of(raw),
             }
 
 
+def _etag_of(raw: bytes) -> str:
+    """静态资源强 ETag（内容哈希）：缓存失效不再依赖手写 `?v=` 计数器。"""
+    return '"' + hashlib.sha1(raw).hexdigest() + '"'
+
+
+#: 可以放心长期缓存的内容类型（图片/字体）：它们不承载页面逻辑，改了也不该让
+#: 用户看到旧版行为。
+_LONG_CACHE_PREFIXES = ("image/", "font/")
+
+
+def _cache_control_for(entry) -> str:
+    """静态资源的缓存策略。
+
+    **JS/CSS/HTML 一律 `no-cache`（条件请求）**，靠 ETag 拿 304。以前给它们
+    `immutable, max-age=604800`：任何一次前端更新（尤其语言包**新增 i18n key**）
+    都会让老用户的浏览器拿着 7 天前的 JS 配新 HTML，页面把 `config.xxx` 这种
+    key 原样显示出来——"更新后按钮上写着 config.clearPrimary"就是这么来的。
+    `?v=` 计数器是同一件事的手工版，忘 bump 一次就复发；ETag 让它不再致命。
+    """
+    if str(entry.get("content_type", "")).startswith(_LONG_CACHE_PREFIXES):
+        return "public, max-age=604800, immutable"
+    return "no-cache"
+
+
+def _static_response(request, entry, *, vary_user_agent: bool = False):
+    """静态缓存的统一出口：ETag 条件请求（304）+ 缓存策略 + Vary。
+
+    同一个 URL 的表示会随请求头变化，缓存必须被告知：
+    · gzip 与未压缩共用同一个 ETag（内容相同）→ `Vary: Accept-Encoding`，
+      否则共享缓存可能把 gzip 体发给不支持 gzip 的客户端；
+    · 首页按 UA 分发 index.html / phone.html → `Vary: User-Agent`。
+    """
+    etag = entry.get("etag") or _etag_of(entry["raw"])
+    vary = []
+    if entry.get("gzipped"):
+        vary.append("Accept-Encoding")
+    if vary_user_agent:
+        vary.append("User-Agent")
+    common = {"ETag": etag, "Cache-Control": _cache_control_for(entry)}
+    if vary:
+        common["Vary"] = ", ".join(vary)
+    if request.headers.get("If-None-Match") == etag:
+        return web.Response(status=304, headers=common)
+    headers = {"Content-Type": entry["content_type"], **common}
+    body = entry["raw"]
+    if (request.headers.get("Accept-Encoding", "").find("gzip") != -1
+            and entry.get("gzipped")):
+        body = entry["gzipped"]
+        headers["Content-Encoding"] = "gzip"
+    headers["Content-Length"] = str(len(body))
+    return web.Response(body=body, headers=headers)
+
+
 async def handle_cached_static(request):
-    """从内存缓存响应静态文件，避免磁盘 I/O 和运行时 gzip。"""
+    """从内存缓存响应静态文件（含根目录 HTML），带 ETag 条件请求。"""
     entry = _static_cache.get(request.path)
     if entry is None:
         raise web.HTTPNotFound()
-    accept_gzip = request.headers.get("Accept-Encoding", "").find("gzip") != -1
-    if accept_gzip and entry["gzipped"]:
-        body = entry["gzipped"]
-        headers = {
-            "Content-Type": entry["content_type"],
-            "Content-Encoding": "gzip",
-            "Content-Length": str(len(body)),
-            "Cache-Control": ("no-cache" if entry["content_type"] == "text/html" else "public, max-age=604800, immutable"),
-        }
-    else:
-        body = entry["raw"]
-        headers = {
-            "Content-Type": entry["content_type"],
-            "Content-Length": str(len(body)),
-            "Cache-Control": ("no-cache" if entry["content_type"] == "text/html" else "public, max-age=604800, immutable"),
-        }
-    return web.Response(body=body, headers=headers)
+    return _static_response(request, entry)
 
 
 def get_server():
@@ -3369,11 +3553,13 @@ async def cache_middleware(request, handler):
     if response.headers.get("Cache-Control"):
         return response
     if request.path.startswith("/static/"):
-        if request.path.endswith((".js", ".css", ".png", ".ico", ".woff", ".woff2")):
-            if os.environ.get("CUKTECH_ENV") == "development":
-                response.headers["Cache-Control"] = "no-cache"
-            else:
-                response.headers["Cache-Control"] = "public, max-age=604800, immutable"
+        # 兜底策略：正常路径由 handle_cached_static 决定，这里只防"新增静态路由忘了
+        # 设头"。口径必须与 _cache_control_for 一致——JS/CSS 一律 no-cache（ETag
+        # 条件请求），只有图片/字体才 long-cache；否则又会回到"新 HTML + 一周前 JS"。
+        if request.path.endswith((".js", ".css")):
+            response.headers["Cache-Control"] = "no-cache"
+        elif request.path.endswith((".png", ".ico", ".webp", ".woff", ".woff2")):
+            response.headers["Cache-Control"] = "public, max-age=604800, immutable"
     return response
 
 

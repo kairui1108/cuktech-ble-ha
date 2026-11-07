@@ -49,20 +49,25 @@
     "step": {
       "init": {
         "title": "CUKTECH 充电器选项",
-        "description": "修改该条目的 MQTT 命名空间与显示标签。保存后条目会自动重新加载。",
+        "description": "修改该条目跟哪台充电器、它的 MQTT 命名空间与显示标签。保存后条目会自动重新加载。",
         "data": {
           "name": "集成名称（中枢标签）",
           "server_url": "BLE 服务地址",
           "topic_prefix": "MQTT 主题前缀",
-          "device_id": "服务器设备 ID（可选）"
+          "device_id": "充电器"
         },
         "data_description": {
           "name": "这里改的是集成条目/“中枢”那层的标签，不是设备名——设备名自动跟着服务端走（除非你在设备页手动改过，那种情况以你改的为准）。在这里改名会把它固定下来，自动同步不再动它；把这一栏清空保存，就交回自动同步。",
           "server_url": "本 entry 对接的 ble_server（或 ESP32）地址。",
-          "topic_prefix": "该条目订阅与发布所用的主题前缀，留空即 cuktech/charger。",
-          "device_id": "服务器不支持按设备寻址（ESP32、旧版服务器）时请留空。"
+          "topic_prefix": "仅当服务端无法上报设备表（ESP32 / 旧版服务端）时显示。留空即 cuktech/charger。",
+          "device_id": "从服务端上报的设备里选，对应的 MQTT 前缀会自动应用。服务端不支持设备发现（ESP32 / 旧版服务端）时，退回手填设备 ID。"
         }
       }
+    },
+    "error": {
+      "device_not_found": "选中的充电器已不在服务端列表里（请重新打开选项重选）",
+      "device_in_use": "另一个集成条目已经用了这台设备 / 这个 MQTT 前缀",
+      "discovery_failed": "无法从服务端读取设备列表，新的选择没有保存。请检查服务地址后重试。"
     }
   }
 }

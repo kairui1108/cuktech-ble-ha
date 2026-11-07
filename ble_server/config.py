@@ -378,7 +378,15 @@ def config_from_mapping(ycfg: dict) -> Config:
         settings_refresh_interval=server_cfg.get("settings_refresh_interval", 60.0),
         log_level=os.environ.get("CUKTECH_LOG_LEVEL", server_cfg.get("log_level", "info")),
         history_retention_days=history_retention,
-        history_db_path=os.environ.get("CUKTECH_HISTORY_DB_PATH", server_cfg.get("history_db_path", "port_history.db")),
+        # 空串 = 没配（config.yaml.example 里就是 ""）：回落默认路径。以前会原样传空串给
+        # `sqlite3.connect("")`，那是**临时库**——原生部署按 README `cp config.yaml.example`
+        # 起服务，历史重启即丢，`cuktech_ctl.sh clear-history` 也永远找不到文件。
+        # Docker 侧始终用 CUKTECH_HISTORY_DB_PATH=/data/port_history.db 覆盖，不受影响。
+        history_db_path=(
+            os.environ.get("CUKTECH_HISTORY_DB_PATH")
+            or server_cfg.get("history_db_path")
+            or "port_history.db"
+        ),
         reconnect_base_delay=reconnect_base_delay,
         reconnect_max_delay=reconnect_max_delay,
         startup_stagger_sec=float(server_cfg.get("startup_stagger_sec", 2.0)),

@@ -297,7 +297,8 @@
             bemfaPortC3: 'Port C3',
             bemfaPortA: 'USB-A',
             bemfaPortBle: 'Bluetooth',
-            bleStatusName: 'BLE Status Name',
+            bleStatusName: 'Bemfa entity ID',
+            bleStatusHint: 'Leave empty to derive "<device_id>_ble". Pins only the entity ID in Bemfa/XiaoAi — HA entity and device names are unaffected.',
             serverSection: 'Server',
             webPort: 'Web Port',
             retention: 'Data retention (days)',
@@ -350,6 +351,9 @@
             xiaomiImport: 'Import {{n}} selected',
             xiaomiImportEmpty: 'Select at least one device',
             xiaomiImporting: 'Importing...',
+            xiaomiImportAdoptedNote: '"{{name}}" went into the primary slot.',
+            xiaomiImportClosed: 'Filled {{n}} device(s) into the cards — not saved yet. Hit "Save & Restart" below.',
+            xiaomiImportAdopted: 'Wrote "{{name}}" into the primary slot ({{added}} added, {{updated}} updated). Remember to hit "Save & Restart"',
             xiaomiImportDone: 'Filled into the device cards: {{added}} added, {{updated}} updated. Remember to hit "Save & Restart"',
             xiaomiImportDoneWithFailed: 'Filled into the device cards: {{added}} added, {{updated}} updated, {{failed}} failed. Remember to hit "Save & Restart"',
             xiaomiImportFailed: 'Import failed',
@@ -378,7 +382,22 @@
             confirmRemoveDevice: 'Remove charger "{{name}}"? It takes effect after saving and restarting.',
             invalidDeviceId: '"{{name}}" has an invalid device ID: lowercase letters, digits, _ and - only, and it must start with a letter or digit',
             needMacToken: '"{{name}}" is missing a MAC or token',
-            deviceAdded: 'Charger added — fill in the MAC / token, then save'
+            deviceAdded: 'Charger added — fill in the MAC / token, then save',
+
+            // ── Primary lifecycle (promote / clear / first-run onboarding) ──
+            unconfiguredTag: 'Not set up',
+            primaryUnconfigured: 'Not set up yet — tap Edit to fill it in, or use "Fetch from Xiaomi Cloud" in the top-right',
+            primaryOnboarding: 'No primary charger yet: tap "Fetch from Xiaomi Cloud" in the top-right and scan, or fill in the MAC / Token / BLE key manually.',
+            promotePrimary: 'Make primary',
+            promoteHint: 'Use this when you replaced the charger or the primary no longer matches the hardware: it takes over the primary MQTT topics and history anchor, and the old primary is demoted to an extra device (removable).',
+            promoteConfirm: 'Make "{{name}}" the primary charger? It takes over the primary MQTT topics and history anchor; the old primary is demoted to an extra device with a new device ID (applies after save & restart).',
+            promoteNeedsCreds: '"{{name}}" is missing its MAC or Token — fill it in first',
+            promoted: '"{{name}}" is now the primary — remember to hit "Save & Restart"',
+            clearPrimary: 'Clear primary',
+            clearPrimaryHint: 'Use this when the primary charger is gone or unreachable: wipes name/MAC/token/BLE key so you can scan and import again.',
+            clearPrimaryConfirm: 'Clear the primary charger? Name/MAC/token/BLE key are wiped. You can scan to import again afterwards.',
+            primaryCleared: 'Primary cleared — hit "Save & Restart" to apply',
+            primaryNeedsCreds: '"{{name}}" is not configured: with extra devices present the primary needs a MAC and token. Either make an extra device the primary, or clear the primary and import again.'
         },
 
         // ── Device switcher（多设备共用，index.html / phone.html）──

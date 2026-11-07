@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title data-i18n="pageTitle.config">CUKTECH 配置</title>
 <link rel="icon" href="/static/favicon.ico">
-<script src="/static/locales/zh-CN.js?v=27"></script>
-<script src="/static/locales/en.js?v=27"></script>
+<script src="/static/locales/zh-CN.js?v=28"></script>
+<script src="/static/locales/en.js?v=28"></script>
 <script src="/static/i18n.js?v=6"></script>
 <link rel="stylesheet" href="static/phone.css?v=36">
 <style>
@@ -55,6 +55,12 @@ body.light .config-input {
 }
 .btn-save:active { transform: scale(0.97); opacity: 0.9; }
 .btn-save:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 扫码导入成功关窗后，把视线引到"保存"这一步：导入只是填了卡片，还没落盘 */
+.btn-save.is-attention { animation: save-attention 0.9s ease-in-out 2; }
+@keyframes save-attention {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
+    50% { box-shadow: 0 0 0 7px rgba(0, 122, 255, 0.30); }
+}
 .status-row {
     display: flex; align-items: center; gap: 8px;
     padding: 8px 0; font-size: 13px; color: var(--text-dim);
@@ -108,6 +114,29 @@ body.light .device-card-btn { background: rgba(0,0,0,0.04); border-color: rgba(0
 .device-card-body { padding: 0 12px 4px; }
 .device-card-body[hidden] { display: none; }
 .device-card-body .config-row:last-child { border-bottom: none; }
+/* 还没配置的设备卡（全新部署的 primary、刚点「添加」的空卡）：虚线 + "待配置"，
+   不能画成一台已经存在的设备——"凭空多出一台删不掉的主设备"就是那种观感。 */
+.device-card.is-unconfigured { border-style: dashed; }
+.device-tag-todo { background: rgba(255, 170, 0, 0.16); color: #E8A33D; }
+body.light .device-tag-todo { background: rgba(255, 150, 0, 0.14); color: #B36B00; }
+/* 设备级动作（设为主设备 / 清空主设备）放在**展开的编辑区底部**，而不是卡片头上：
+   卡片头在 390px 宽的手机上只剩 ~200px 给设备名，多一个按钮就把名字挤成
+   省略号；而"清空主设备"是不可逆操作，离手指远一点反而更安全。 */
+.device-card-actions {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 10px 0 6px; margin-top: 2px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+}
+body.light .device-card-actions { border-top-color: rgba(0,0,0,0.06); }
+.device-card-action-hint { font-size: 11px; line-height: 1.5; color: var(--text-dim); flex: 1 1 140px; }
+.device-card-btn { white-space: nowrap; }
+.device-onboarding {
+    font-size: 11px; line-height: 1.6; color: var(--text-dim);
+    padding: 8px 10px; margin: -2px 0 8px;
+    border: 1px dashed rgba(255,255,255,0.18); border-radius: 10px;
+}
+body.light .device-onboarding { border-color: rgba(0,0,0,0.14); }
+.device-onboarding[hidden] { display: none; }
 /* 折叠时整块不渲染：display:none 由 [hidden] 负责，避免和 flex/grid 样式打架 */
 .device-add-btn {
     width: 100%; margin-top: 4px; padding: 10px;
@@ -243,6 +272,9 @@ body.light .xm-options { background: rgba(0,0,0,0.02); }
             </div>
             <div class="config-hint device-list-hint" data-i18n="config.devicesHint">一台主机可同时连接多台充电器；保存后需重启生效</div>
             <div id="deviceList"></div>
+            <!-- 全新部署的引导：只说"有哪两条入口"（扫码导入 / 手动填），不复述
+                 "第一台会自动收编"这类实现细节——行为可能变，界面承诺不该跟着变。 -->
+            <div class="device-onboarding" id="deviceOnboardingHint" hidden></div>
             <button type="button" class="device-add-btn" onclick="addDevice()">
                 <span aria-hidden="true">+</span>
                 <span data-i18n="config.addDevice">添加充电器</span>
@@ -390,8 +422,35 @@ function emptyDevice(isPrimary) {
         id: isPrimary ? 'default' : '',
         name: '', mac: '', token: '', ble_key: '',
         topic_prefix: '', bemfa_ble: '',
-        is_primary: !!isPrimary, connected: false
+        is_primary: !!isPrimary, connected: false,
+        // 用户点过「清空主设备」：保存时显式告诉服务端"这是清空，不是没填"。
+        // 否则服务端会把打码/空值当成"没改"，孤儿主设备的凭据永远抹不掉。
+        clear_credentials: false,
+        // 这台设备的明文凭据在服务端（页面只有打码值或空串）：空 token 提交上去
+        // 表示"沿用旧值"，不是"缺凭据"。换主设备之后新 primary 就落在这个状态。
+        creds_from_server: false
     };
+}
+
+/** 这台设备"配好了没有"：只看 MAC。
+ *
+ *  primary 的 token 在页面上永远是打码值（`****1234`），拿它判断会把"已配置"
+ *  误判成"没配"；MAC 是唯一在页面上可信的身份字段。
+ */
+function isDeviceConfigured(d) {
+    return !!normMac(d && d.mac);
+}
+
+/** 这台设备能不能作为一张**能保存的**卡存在：MAC 是身份，凭据是可用性。
+ *
+ *  只看 MAC 不够：页面上的 token 要么是打码值、要么是空串；附加设备的空 token
+ *  由服务端按 MAC 继承（`creds_from_server`），而新卡的空 token 就是真的没有。
+ *  把"只有 MAC 没有 token"的卡提成主设备 / 降级成附加设备，都会在保存时被
+ *  `validateDevices`（或服务端）拦下，或者在重启后认证失败。
+ */
+function hasUsableCredentials(d) {
+    return isDeviceConfigured(d)
+        && (!!String((d && d.token) || '').trim() || !!(d && d.creds_from_server));
 }
 
 /** 设备 id 的规范形式（trim）。
@@ -430,7 +489,21 @@ function updateDeviceField(index, field, value) {
         const head = document.getElementById(`device-name-${index}`);
         const sub = document.getElementById(`device-sub-${index}`);
         if (head) head.textContent = deviceLabel(d);
-        if (sub) sub.textContent = d.mac || I18N.t('config.mac');
+        if (sub) {
+            sub.textContent = (d.is_primary && !isDeviceConfigured(d))
+                ? I18N.t('config.primaryUnconfigured')
+                : (d.mac || I18N.t('config.mac'));
+        }
+    }
+    // 填上/清掉 MAC 都会改变"待配置"状态：虚线框、副标题和标签要一起更新
+    // （不重画整块，否则正在输入的那个 input 会被替换掉、焦点丢失）
+    if (field === 'mac') {
+        const configured = isDeviceConfigured(d);
+        const card = document.getElementById(`device-card-${index}`);
+        if (card && card.classList) card.classList.toggle('is-unconfigured', !configured);
+        const badge = document.getElementById(`device-todo-${index}`);
+        if (badge) badge.hidden = configured;
+        updateDeviceOnboardingHint();
     }
 }
 
@@ -451,17 +524,23 @@ function renderDeviceList() {
     if (!host) return;
     host.innerHTML = _devices.map((d, i) => {
         const open = i === _editing;
-        const macText = d.mac || I18N.t('config.mac');
+        const configured = isDeviceConfigured(d);
+        // 全新部署的主设备只是一张"待配置"占位卡：这里必须说清楚"它还不是一台
+        // 设备"，否则用户只会看到一张删不掉、又连不上的卡（这正是那个 bug 的观感）
+        const subText = (d.is_primary && !configured)
+            ? I18N.t('config.primaryUnconfigured')
+            : (d.mac || I18N.t('config.mac'));
         return `
-        <div class="device-card${open ? ' is-editing' : ''}" id="device-card-${i}">
+        <div class="device-card${open ? ' is-editing' : ''}${configured ? '' : ' is-unconfigured'}" id="device-card-${i}">
             <div class="device-card-head" onclick="toggleDeviceEditor(${i})">
                 <span class="device-led${d.connected ? ' on' : ''}" aria-hidden="true"></span>
                 <div class="device-card-main">
                     <div class="device-card-name">
                         <span id="device-name-${i}">${escText(deviceLabel(d))}</span>
                         ${d.is_primary ? `<span class="device-tag">${escText(I18N.t('config.primaryTag'))}</span>` : ''}
+                        <span class="device-tag device-tag-todo" id="device-todo-${i}"${configured ? ' hidden' : ''}>${escText(I18N.t('config.unconfiguredTag'))}</span>
                     </div>
-                    <div class="device-card-sub" id="device-sub-${i}">${escText(macText)}</div>
+                    <div class="device-card-sub" id="device-sub-${i}">${escText(subText)}</div>
                 </div>
                 <button type="button" class="device-card-btn" onclick="event.stopPropagation();toggleDeviceEditor(${i})">${escText(I18N.t('config.editDevice'))}</button>
                 ${d.is_primary ? '' : `<button type="button" class="device-card-btn danger" onclick="event.stopPropagation();removeDevice(${i})">${escText(I18N.t('config.removeDevice'))}</button>`}
@@ -471,6 +550,21 @@ function renderDeviceList() {
             </div>
         </div>`;
     }).join('');
+    updateDeviceOnboardingHint();
+}
+
+/** 全新部署的引导条：只有"一张空的主设备卡"时才出现。
+ *
+ *  只给**入口**（扫码导入 / 手动填），不复述"第一台会自动收编"这类实现细节：
+ *  收编行为由 `applyXiaomiImport` 保证，界面文案不该把它当承诺（改行为时不用改文案）。
+ */
+function updateDeviceOnboardingHint() {
+    const el = document.getElementById('deviceOnboardingHint');
+    if (!el) return;
+    const p = _devices[0];
+    const show = _devices.length === 1 && !!p && p.is_primary && !isDeviceConfigured(p);
+    el.hidden = !show;
+    if (show) el.textContent = I18N.t('config.primaryOnboarding');
 }
 
 // 展开的编辑区：字段与顺序按 §3.12 的清单（name / mac / token / ble_key /
@@ -505,8 +599,24 @@ function deviceEditorHtml(d, i) {
     if (!d.is_primary) {
         html += row(I18N.t('config.topicPrefix'), I18N.t('config.topicAutoHint'),
             `<input class="config-input" ${attrs('topic_prefix')} placeholder="${escText(I18N.t('config.topicAuto'))}">`);
-        html += row(I18N.t('config.bleStatusName'), '',
-            `<input class="config-input" ${attrs('bemfa_ble')}>`);
+        // 这一格钉的是**巴法云实体 id**（`bemfa_ble`），不是显示名、更不是 HA 的东西；
+        // 留空由服务端按 `{device_id}_ble` 派生。label/hint 必须说清楚，否则用户
+        // 会把它当成"HA 实体名"来填。
+        html += row(I18N.t('config.bleStatusName'), I18N.t('config.bleStatusHint'),
+            `<input class="config-input" ${attrs('bemfa_ble')} placeholder="desk_ble">`);
+        // 换主设备：primary 不能删，所以换机/清不掉的历史配置只能靠"把真在用的那台
+        // 换上来"。放在编辑区而不是卡片头：卡片头在 390px 上只剩 ~200px 给设备名。
+        html += `<div class="device-card-actions">
+            <button type="button" class="device-card-btn" onclick="promoteDevice(${i})">${escText(I18N.t('config.promotePrimary'))}</button>
+            <span class="device-card-action-hint">${escText(I18N.t('config.promoteHint'))}</span>
+        </div>`;
+    } else {
+        // 清空主设备：孤儿主设备（换机、云上残留同名设备）唯一能清理的动作。
+        // 不可逆，所以放在编辑区里 + 二次确认，不摆在卡片头随手可点。
+        html += `<div class="device-card-actions">
+            <button type="button" class="device-card-btn danger" onclick="clearPrimary()">${escText(I18N.t('config.clearPrimary'))}</button>
+            <span class="device-card-action-hint">${escText(I18N.t('config.clearPrimaryHint'))}</span>
+        </div>`;
     }
     return html;
 }
@@ -537,6 +647,93 @@ function removeDevice(index) {
     _devices.splice(index, 1);
     _editing = -1;
     renderDeviceList();
+}
+
+/** 把一台附加设备提成主设备（"换主设备"）。
+ *
+ *  为什么需要这个动作：primary 就是配置文件里的 `ble:` 节，`device_id` 恒为
+ *  `default`（legacy MQTT 主题 / 历史分区 / HA unique_id 的锚点，§3.10），所以它
+ *  **不可删除**。换过机器、或者云上残留一台同名设备时，用户唯一的出路是把真正在
+ *  用的那台换上来——不支持换的话，那张孤儿主设备卡会永久占位，还连不上。
+ *
+ *  实现：两张卡的 `id`/`is_primary` 交换（`default` 是保留字，被换下去的那台要
+ *  重新生成一个合法 id），绑定在设备上的语音开关跟着**物理设备**重绑。明文
+ *  凭据不用在前端搬——服务端按 MAC 从旧配置里继承（`_apply_devices_payload`）。
+ */
+function promoteDevice(index) {
+    const target = _devices[index];
+    if (!target || target.is_primary) return;
+    if (!hasUsableCredentials(target)) {
+        // 只有 MAC、没有 token 的新卡当主设备会"保存成功、重启后认证失败"：
+        // 空槽 primary 的校验只看 MAC，这里必须自己先拦住。
+        showToast(I18N.t('config.promoteNeedsCreds', { name: deviceLabel(target) }));
+        if (_editing !== index) toggleDeviceEditor(index);
+        return;
+    }
+    if (!confirm(I18N.t('config.promoteConfirm', { name: deviceLabel(target) }))) return;
+    moveCardToPrimary(index);
+    showToast(I18N.t('config.promoted', { name: deviceLabel(target) }));
+}
+
+/** 把第 index 张卡换到主设备槽位（0 号卡降级或消失），不发确认、不弹提示。
+ *
+ *  两个调用方共用：用户点「设为主设备」（promoteDevice），以及**扫码导入收编**
+ *  （`applyXiaomiImport`：主设备为空、而导入的设备已经躺在附加卡里——这时只更新
+ *  那张附加卡会让主设备永远空着、保存被 §3.10 拦下）。所以这段"换卡槽 + 重绑语音
+ *  开关"的逻辑只能有一份实现。
+ */
+function moveCardToPrimary(index) {
+    const target = _devices[index];
+    if (!target || target.is_primary || index <= 0) return;
+    const old = _devices[0];
+    if (!old) return;
+
+    const promotedOldId = canonicalDeviceId(target);
+    // 空槽（未配置的主设备）没有身份可保留：换上去就等于"填进主设备"，不降级出
+    // 一张缺 MAC/Token 的残卡（那会让保存被校验拦下）。注意只看 name/MAC 不够：
+    // 只填了名字、或只填了 MAC 却没 Token 的"半成品主设备"降级后同样过不了
+    // `validateDevices`（附加设备必须有 MAC 且可继承凭据），整次保存都会被卡住。
+    const oldCanStay = hasUsableCredentials(old);
+    // 降级下来的那台必须有新 id：`default` 是保留字，且它原来的 id 正被换上去的那台
+    // 让出来给 default 用——所以先按名字/MAC 生成一个不撞车的。
+    const demotedId = oldCanStay ? suggestDeviceId(old) : '';
+    target.id = 'default';
+    target.is_primary = true;
+    target.topic_prefix = '';        // primary 恒用 mqtt.topic_prefix
+    target.clear_credentials = false;
+    old.id = demotedId;
+    old.is_primary = false;
+    old.topic_prefix = '';           // 附加设备：自动派生 {base}/{id}
+    old.clear_credentials = false;
+    _devices[0] = target;
+    _devices[index] = old;
+    if (oldCanStay) {
+        // 语音开关绑的是设备 id：跟着降级的那台设备走，不跟着卡槽走
+        remapBemfaDevice('default', demotedId);
+    } else {
+        _devices.splice(index, 1);   // 空槽直接消失
+    }
+    remapBemfaDevice(promotedOldId, 'default');
+    _editing = -1;
+    renderDeviceList();
+    renderBemfaEntities();
+}
+
+/** 清空主设备：名称/MAC/Token/BLE Key 一起抹掉，回到"待配置"。
+ *
+ *  primary 不能删除，所以"孤儿主设备"（换机、历史配置残留、云上同名设备）只有
+ *  这一条路能清理；清空后可以重新扫码导入。
+ *  服务端按 `clear_credentials` 显式清空，不会被"空值 = 没改"的规则救回来。
+ */
+function clearPrimary() {
+    const p = _devices[0];
+    if (!p || !p.is_primary) return;
+    if (!confirm(I18N.t('config.clearPrimaryConfirm'))) return;
+    p.name = ''; p.mac = ''; p.token = ''; p.ble_key = '';
+    p.clear_credentials = true;
+    _editing = 0;                    // 打开编辑区，让用户看到"确实空了"
+    renderDeviceList();
+    showToast(I18N.t('config.primaryCleared'), 4000);
 }
 
 // ── 巴法云语音开关（实体表，§3.11）──
@@ -788,7 +985,7 @@ function escText(v) {
  * 非 primary 设备的 token/ble_key 因此显示为空 —— 用户不重填就当"保持不变"，
  * 由服务端 YAML 合并保住原值（见保存时的 payload 说明）。
  */
-async function loadDeviceList(bleCfg) {
+async function loadDeviceList(bleCfg, configDevices) {
     let list = [];
     try {
         const res = await fetch(`${API}/api/devices`);
@@ -799,6 +996,14 @@ async function loadDeviceList(bleCfg) {
     }
     if (!list.length) list = [{ id: 'default', name: '', mac: bleCfg.mac || '', is_primary: true }];
 
+    // `/api/devices` 是运行期真值，不含 `bemfa_<port>:` 覆盖项；后者在
+    // `/api/config` 的 devices 里。按 MAC 关联（id 会随换主设备变，MAC 才稳定）。
+    const overridesByMac = {};
+    (configDevices || []).forEach(cd => {
+        const key = normMac(cd && cd.mac);
+        if (key) overridesByMac[key] = (cd && cd.bemfa) || {};
+    });
+
     _devices = list.map((d, idx) => {
         const isPrimary = idx === 0 || !!d.is_primary;
         const dev = emptyDevice(isPrimary);
@@ -807,10 +1012,26 @@ async function loadDeviceList(bleCfg) {
         dev.name = (d.name && d.name !== dev.id) ? d.name : '';
         dev.mac = d.mac || '';
         dev.topic_prefix = d.topic_prefix || '';
+        // `bemfa_<port>:` 覆盖项（§3.11）：页面只编辑 `bemfa_ble`，其余端口
+        // （c1/c2/c3/a）原样带回——不下发/不回传的话，任意一次网页保存都会把
+        // 用户钉死的巴法云实体 id 抹掉，语音联动静默失效。
+        const overrides = (d.bemfa && Object.keys(d.bemfa).length)
+            ? d.bemfa : (overridesByMac[normMac(dev.mac)] || {});
+        Object.keys(overrides).forEach(port => {
+            const value = overrides[port];
+            if (value) dev['bemfa_' + port] = String(value);
+        });
+        // 记住载入值：用户把 `bemfa_ble` 清空时据此发送显式"解绑"（空串），
+        // 服务端才能区分"没配过"和"配过、现在要回落派生 id"。
+        dev._bemfaBleLoaded = String(dev.bemfa_ble || '');
         dev.connected = !!d.connected;
         if (isPrimary) {
             dev.token = (bleCfg && bleCfg.token) || '';
             dev.ble_key = (bleCfg && bleCfg.ble_key) || '';
+        } else {
+            // 附加设备的明文 token/ble_key 不下发（接口一律打码/省略），但它确实
+            // 已经配好了：保存时空值等于"沿用旧值"（服务端按 id/MAC 继承）。
+            dev.creds_from_server = true;
         }
         return dev;
     });
@@ -836,7 +1057,8 @@ function showToast(msg, duration) {
     if (!t) {
         t = document.createElement('div');
         t.id = 'toast';
-        t.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:999;background:rgba(0,0,0,0.85);color:#fff;padding:10px 20px;border-radius:20px;font-size:14px;pointer-events:none;transition:opacity 0.3s;opacity:0;white-space:nowrap;';
+        // 允许换行：toast 里有"还没保存，点保存生效"这类长文案，nowrap 会顶出屏幕
+        t.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:999;background:rgba(0,0,0,0.85);color:#fff;padding:10px 16px;border-radius:16px;font-size:13px;line-height:1.5;text-align:center;pointer-events:none;transition:opacity 0.3s;opacity:0;max-width:82vw;white-space:normal;';
         document.body.appendChild(t);
     }
     t.textContent = msg;
@@ -851,8 +1073,9 @@ async function loadConfig() {
         if (!data.ok) throw new Error(data.error);
         const c = data.config;
 
-        // 传 ble: 节（不是整份 config）：primary 的凭据就从这里来
-        await loadDeviceList(c.ble);
+        // 传 ble: 节（不是整份 config）：primary 的凭据就从这里来；
+        // 再传 devices 供附加设备回填 `bemfa_*` 覆盖项。
+        await loadDeviceList(c.ble, c.devices);
 
         document.getElementById('mqtt_enabled').checked = c.mqtt.enabled;
         document.getElementById('mqtt_host').value = c.mqtt.host || '';
@@ -915,15 +1138,21 @@ function validateDevices() {
             return false;
         }
         seen[d.id.trim()] = true;
-        if (!d.mac.trim() || !d.token.trim()) {
+        // 空 token 有两种含义：新卡 = 缺凭据（拦下）；从服务端载入的卡 = 沿用旧值
+        // （保存时会按 id/MAC 继承，不能逼用户在每次保存前把 token 重敲一遍）。
+        if (!d.mac.trim() || (!d.token.trim() && !d.creds_from_server)) {
             showToast(I18N.t('config.needMacToken', { name: label }), 5000);
             toggleDeviceEditor(i);
             return false;
         }
     }
     // 有附加设备时 primary 必须配齐：它是 legacy topic/history 的锚点（§3.10）
-    if (_devices.length > 1 && (!primary.mac.trim() || !primary.token.trim())) {
-        showToast(I18N.t('config.needMacToken', { name: deviceLabel(primary) }), 5000);
+    if (_devices.length > 1
+            && (!primary.mac.trim()
+                || (!primary.token.trim() && !primary.creds_from_server))) {
+        // 这条报错以前只说"缺 MAC 或 Token"，用户只会去手填；现在多给两条出路：
+        // 把一台附加设备设为主设备，或清空主设备后重新扫码导入（导入会写进主设备）。
+        showToast(I18N.t('config.primaryNeedsCreds', { name: deviceLabel(primary) }), 7000);
         if (_editing !== 0) toggleDeviceEditor(0);
         return false;
     }
@@ -939,11 +1168,13 @@ async function saveConfig() {
     document.getElementById('btnSaveIcon').textContent = '⏳';
     document.getElementById('btnSaveText').textContent = I18N.t('common.saving');
 
-    // 第一台（primary）展开回 `ble:` 节：那是老版本工具/脚本唯一认识的形状，
-    // 也是 primary 的 id 恒为 default、legacy topic 不变的锚点（§3.10）。
-    // 其余设备写 `devices:` 节，字段名与 config.py 的 from_mapping 完全一致。
+    // 统一设备数组（A 形）：每项带 `is_primary`，落盘结构由服务端决定
+    // （primary → `ble:` 节，其余 → `devices:` 节，§3.10）。
+    // 为什么不再只发附加设备：换主设备（promoteDevice）之后"哪台是 primary"取决于
+    // 页面上的顺序，服务端必须能重排；token/ble_key 仍然是打码值，服务端按 MAC
+    // 从盘上的旧配置继承明文（见 _apply_devices_payload）。
     const primary = _devices[0] || emptyDevice(true);
-    const extras = _devices.slice(1).map(d => {
+    const devicesPayload = _devices.map((d, i) => {
         const item = {
             id: d.id.trim(),
             name: d.name.trim(),
@@ -951,9 +1182,23 @@ async function saveConfig() {
             token: d.token.trim(),
             ble_key: d.ble_key.trim(),
             topic_prefix: d.topic_prefix.trim(),
+            is_primary: i === 0,
         };
-        // 空的可选覆盖项不要写进 YAML：bemfa 实体名留空 = 用默认派生名
-        if (d.bemfa_ble.trim()) item.bemfa_ble = d.bemfa_ble.trim();
+        // `bemfa_<port>:` 覆盖项：页面能编辑的是 `bemfa_ble`，其余端口只做透传
+        // （见 loadDeviceList）。留空 = 不写进 YAML、由服务端派生实体 id；但
+        // **载入时本来有值、现在被清空**要显式发空串，否则服务端按"没带 = 没改"
+        // 继承旧值，用户永远解不开一个覆盖项。
+        Object.keys(d).forEach(key => {
+            if (!key.startsWith('bemfa_') || i === 0) return;
+            const value = String(d[key] || '').trim();
+            if (value) {
+                item[key] = value;
+            } else if (key === 'bemfa_ble' && d._bemfaBleLoaded) {
+                item[key] = '';
+            }
+        });
+        // 显式"清空主设备"：服务端据此跳过"打码/空 = 没改"的继承（否则清不掉）
+        if (i === 0 && d.clear_credentials) item.clear_credentials = true;
         return item;
     });
 
@@ -963,7 +1208,7 @@ async function saveConfig() {
             token: primary.token.trim(),
             ble_key: primary.ble_key.trim(),
         },
-        devices: extras,
+        devices: devicesPayload,
         mqtt: {
             enabled: document.getElementById('mqtt_enabled').checked,
             host: document.getElementById('mqtt_host').value.trim(),
@@ -994,8 +1239,8 @@ async function saveConfig() {
             history_retention_days: parseInt(document.getElementById('server_retention').value) || 2,
         },
     };
-    // 主设备名只在用户真的起了名时才写回：GET /api/config 不返回 ble.name，
-    // 空字符串会因为"说不清是没设置还是被清空"而误删已有名字。
+    // `ble:` 节照旧带一份（老服务端只认这个形状）。名字能不能被**清空**由 A 形的
+    // 权威 `name` 字段表达——这里不写空串，免得老服务端把它当成"没改"或"误删"。
     if (primary.name.trim()) config.ble.name = primary.name.trim();
 
     try {
@@ -1332,17 +1577,51 @@ function updateXiaomiImportBtn() {
 // 把云上的结果落到设备卡片：**按 MAC 匹配**（不是"写进某张选中卡片"）。
 // 这条规则是整个改动的核心——多设备后"先选目标卡片再点设备"一定会有人用错，
 // 而用错就是把这台的 token 覆盖到另一台上；按 MAC 匹配不存在这个可能。
+//
+// 但"按 MAC 匹配"有一个前提：主设备已经配好了。全新部署时 `ble:` 是空的（或
+// docker 模板里的 `XX:XX:XX:XX:XX:XX`），MAC 归一化后是空串，**永远匹配不到**
+// ——所以这里加了一个"收编"分支：主设备为空时，第一台导入的设备直接写进主设备。
+// 没有这个分支，首次扫码就会变成"空主设备 + 新卡"两张，而主设备删不掉、保存也
+// 被 §3.10 的校验拦下（正是那个"多出一台删不掉的主设备"的 bug）。
+function xiaomiPrimaryUnconfigured() {
+    const p = _devices[0];
+    return !!p && p.is_primary && !isDeviceConfigured(p);
+}
+
 function applyXiaomiImport(results, syncNames) {
-    let added = 0, updated = 0, failed = 0;
+    let added = 0, updated = 0, failed = 0, adopted = '';
     results.forEach(r => {
         if (r.error || !r.mac || !r.token) { failed++; return; }
         const idx = xiaomiConfiguredIndex(r.mac);
-        if (idx >= 0) {
+        if (idx >= 0 && idx !== 0 && xiaomiPrimaryUnconfigured()) {
+            // 主设备为空、而导入的这台已经躺在**附加卡**里（典型：用户先点了
+            // 「清空主设备」但没删掉那张卡）：只更新附加卡会让主设备永远空着，
+            // 保存又被 §3.10 拦下。正确动作是把它搬进主设备槽位。
             const d = _devices[idx];
             d.mac = r.mac;
             d.token = r.token;
             if (r.ble_key) d.ble_key = r.ble_key;
             if (syncNames && r.name && r.name !== d.name) d.name = r.name;
+            moveCardToPrimary(idx);
+            adopted = r.name || r.mac;
+            updated++;
+        } else if (idx >= 0) {
+            const d = _devices[idx];
+            d.mac = r.mac;
+            d.token = r.token;
+            if (r.ble_key) d.ble_key = r.ble_key;
+            if (syncNames && r.name && r.name !== d.name) d.name = r.name;
+            updated++;
+        } else if (xiaomiPrimaryUnconfigured()) {
+            // 收编：空主设备直接接管这一台（同名/换机后的"孤儿主设备"也走这里，
+            // 用户先点「清空」再来导入即可）。
+            const p = _devices[0];
+            p.mac = r.mac;
+            p.token = r.token;
+            p.ble_key = r.ble_key || '';
+            p.clear_credentials = false;   // 已经有真实凭据了，别再告诉服务端"清空"
+            if (r.name && (syncNames || !String(p.name || '').trim())) p.name = r.name;
+            adopted = r.name || r.mac;
             updated++;
         } else {
             const d = emptyDevice(false);
@@ -1357,7 +1636,7 @@ function applyXiaomiImport(results, syncNames) {
     });
     _editing = -1;
     renderDeviceList();
-    return { added, updated, failed };
+    return { added, updated, failed, adopted };
 }
 
 async function importXiaomiSelected() {
@@ -1390,23 +1669,67 @@ async function importXiaomiSelected() {
             return;
         }
         const sum = applyXiaomiImport(data.devices || [], syncNames);
-        // 两种文案都写死成字面量 t('...')：verify_i18n.py 靠字面量扫 key，
+        // 文案都写死成字面量 t('...')：verify_i18n.py 靠字面量扫 key，
         // 拼出来的 key（三元里再传参）会被当成"未使用"，也漏掉拼错的保护。
         const params = { added: sum.added, updated: sum.updated, failed: sum.failed };
-        status.textContent = sum.failed
-            ? I18N.t('config.xiaomiImportDoneWithFailed', params)
-            : I18N.t('config.xiaomiImportDone', params);
+        if (sum.failed) {
+            // 有失败项时不关窗（要能看到是哪台），但**收编**这件事仍要说：否则
+            // 用户不知道第一台已经写进主设备，重试时又会去猜。
+            status.textContent = I18N.t('config.xiaomiImportDoneWithFailed', params)
+                + (sum.adopted
+                    ? ' ' + I18N.t('config.xiaomiImportAdoptedNote', { name: sum.adopted })
+                    : '');
+        } else if (sum.adopted) {
+            // 首次导入直接写进主设备：必须说清楚"写进的是主设备"，否则用户会去
+            // 找那台"多出来的设备"（以前的 bug 就在这里）。
+            params.name = sum.adopted;
+            status.textContent = I18N.t('config.xiaomiImportAdopted', params);
+        } else {
+            status.textContent = I18N.t('config.xiaomiImportDone', params);
+        }
         status.style.color = sum.failed ? 'var(--danger)' : 'var(--success)';
         // 已配置的设备刷新一下标签（导入后它们不再是"未配置"）
         renderXiaomiDeviceList();
         _xiaomiSelected = new Set();
         updateXiaomiImportBtn();
-        // **不自动关窗**：导入只是"把凭据填进设备卡片"，还没落盘。自动关掉会让用户
-        // 以为已经保存好了，关掉页面就白干。文案里已经明说要点保存。
+        // 成功（没有失败项）就自动关窗——用户不必再点一次「取消」；但"导入 ≠ 已保存"
+        // 这件事必须由关窗后的 toast + 保存按钮高亮继续承担，否则用户以为已经生效、
+        // 关页面就白干（这是以前干脆不关窗的原因）。有失败项时**不关窗**：用户要看
+        // 得到是哪一台失败、能不能重试。
+        if (!sum.failed) {
+            const total = sum.added + sum.updated;
+            setTimeout(() => {
+                closeXiaomiModal();
+                showToast(I18N.t('config.xiaomiImportClosed', { n: total }), 6000);
+                focusSaveButton();
+            }, 1400);
+        }
     } catch (e) {
         status.textContent = I18N.t('config.bleKeyFailed', { msg: e.message });
         status.style.color = 'var(--danger)';
         updateXiaomiImportBtn();
+    }
+}
+
+/** 把"保存配置并重启"滚进视野并闪两下。
+ *
+ *  扫码导入成功后弹窗会自动关闭（少一次点击），但导入只是把凭据填进卡片、**没有
+ *  落盘**：关窗后如果用户看不到"下一步"，就会以为已经生效。toast 负责说、这里负责
+ *  把按钮指出来（手机上保存按钮可能在折叠区域外）。
+ */
+function focusSaveButton() {
+    const btn = document.getElementById('btnSave');
+    if (!btn) return;
+    if (typeof btn.scrollIntoView === 'function') {
+        try {
+            btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch (e) {
+            btn.scrollIntoView();
+        }
+    }
+    if (btn.classList) {
+        btn.classList.add('is-attention');
+        setTimeout(() => btn.classList.remove('is-attention'), 1900);
     }
 }
 

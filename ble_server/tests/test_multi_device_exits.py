@@ -371,14 +371,19 @@ class TestConfigDevicesApi:
         assert err and "primary" in err
 
     async def test_save_rejects_duplicate_mac(self, dual):
+        # primary 必须带 token：A 形的校验跑的是"要落盘的那份文件"（不可能从空
+        # existing 里继承明文），缺 token 会先被 §3.10 的 primary 校验拦下、
+        # 测不到 MAC 唯一性这条。
         err = dual.server._apply_devices_payload(
-            {}, [{"device_id": "default", "mac": "AA:BB:CC:DD:EE:01", "is_primary": True},
+            {}, [{"device_id": "default", "mac": "AA:BB:CC:DD:EE:01",
+                  "token": "00" * 16, "is_primary": True},
                  {"device_id": "desk", "mac": "AA:BB:CC:DD:EE:01", "token": "11" * 16}])
         assert err and "MAC" in err
 
     async def test_save_rejects_bad_device_id(self, dual):
         err = dual.server._apply_devices_payload(
-            {}, [{"device_id": "default", "mac": "AA:BB:CC:DD:EE:01", "is_primary": True},
+            {}, [{"device_id": "default", "mac": "AA:BB:CC:DD:EE:01",
+                  "token": "00" * 16, "is_primary": True},
                  {"device_id": "Desk Two!", "mac": "AA:BB:CC:DD:EE:02",
                   "token": "11" * 16}])
         assert err and "非法" in err

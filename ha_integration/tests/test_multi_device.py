@@ -24,6 +24,7 @@ from custom_components.cuktech_charger import CuktechMQTTCoordinator
 from custom_components.cuktech_charger.const import (
     API_DEVICES,
     CONF_DEVICE_ID,
+    CONF_NAME_SYNCED,
     CONF_SERVER_URL,
     CONF_TOPIC_PREFIX,
     LIMIT_BACKEND_LOCAL,
@@ -695,9 +696,281 @@ def _hass_with_entry_updates(hass):
             entry.options = kwargs["options"]
         if "title" in kwargs:
             entry.title = kwargs["title"]
+        if "unique_id" in kwargs:
+            entry.unique_id = kwargs["unique_id"]
 
     hass.config_entries.async_update_entry = MagicMock(side_effect=_update)
     return hass
+
+
+class TestOptionsFlowRediscovery:
+    """选项表单从服务端重新发现设备：换设备不必背 device_id / 前缀字符串。
+
+    表单打开时调一次 `/api/devices`：
+      * 有设备表 → 「设备」是一张下拉，选中后 `device_id` 与前缀**由服务端上报值
+        决定**（与配置流程同一条规则），用户只需选"是哪台"；
+      * 没有设备表（ESP32 / 旧 server）→ 退回原来的手填前缀 + 设备 ID。
+    另外两条硬约束：换 entry 的设备不能让两条 entry 撞同一个前缀/设备；用户固定过
+    的条目名不能被"换设备"顺手改掉。
+    """
+
+    DISCOVERY = "custom_components.cuktech_charger.config_flow.async_discover_devices"
+
+    @staticmethod
+    def _devices():
+        return [
+            _device("desk", "书桌充电器", prefix="cuktech/charger/desk"),
+            _device("bed", "卧室充电器", prefix="cuktech/charger/bed"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_form_offers_discovered_devices_as_dropdown(self, mock_hass):
+        entry = desk_entry()
+        flow = _options_flow(mock_hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(return_value=self._devices())):
+            form = await flow.async_step_init(None)
+
+        schema = form["data_schema"]
+        markers = {str(k): k for k in schema}
+        assert set(markers) == {CONF_NAME, CONF_SERVER_URL, CONF_DEVICE_ID}, \
+            "有设备表时前缀由服务端决定，不再让用户手填"
+        dev_marker = markers[CONF_DEVICE_ID]
+        assert dev_marker.default == "desk", "默认选中当前绑定的那台"
+        validator = schema[dev_marker]
+        assert validator[0] == "SelectSelector"
+        options = {o["value"] for o in validator[1]["options"]}
+        assert options == {"desk", "bed"}
+
+    @pytest.mark.asyncio
+    async def test_current_device_kept_when_server_no_longer_reports_it(self, mock_hass):
+        """当前绑定的设备不在列表里时，仍要留在下拉里（不能默认切到别的设备）。"""
+        entry = desk_entry(device_id="gone")
+        flow = _options_flow(mock_hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(return_value=self._devices())):
+            form = await flow.async_step_init(None)
+        validator = form["data_schema"][
+            next(k for k in form["data_schema"] if str(k) == CONF_DEVICE_ID)]
+        values = [o["value"] for o in validator[1]["options"]]
+        assert "gone" in values, values
+        assert validator[1]["options"][0]["value"] == "gone", "当前绑定排第一（默认值）"
+
+    @pytest.mark.asyncio
+    async def test_selecting_another_device_applies_its_prefix_and_name(self, mock_hass):
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        flow = _options_flow(hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(return_value=self._devices())):
+            await flow.async_step_init(None)          # 渲染表单 → 发现设备
+            await flow.async_step_init({
+                CONF_NAME: "书桌充电器",              # 没改
+                CONF_SERVER_URL: SERVER,
+                CONF_DEVICE_ID: "bed",
+            })
+
+        assert entry.data[CONF_DEVICE_ID] == "bed"
+        assert entry.data[CONF_TOPIC_PREFIX] == "cuktech/charger/bed", \
+            "前缀取服务端上报值，用户不用手填"
+        assert entry.title == "卧室充电器", "换设备且名称没动 → 标签跟着新设备名（仍归自动同步）"
+        assert entry.data.get("name_synced") == "卧室充电器"
+
+    @pytest.mark.asyncio
+    async def test_switching_device_keeps_a_pinned_title(self, mock_hass):
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        entry.data["name_pinned"] = True
+        flow = _options_flow(hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(return_value=self._devices())):
+            await flow.async_step_init(None)
+            await flow.async_step_init({
+                CONF_NAME: "书桌充电器", CONF_SERVER_URL: SERVER, CONF_DEVICE_ID: "bed",
+            })
+        assert entry.data[CONF_DEVICE_ID] == "bed"
+        assert entry.title == "书桌充电器", "用户固定过的名字，换设备也不动"
+
+    @pytest.mark.asyncio
+    async def test_switch_to_device_used_by_another_entry_is_rejected(self, mock_hass):
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        other = make_entry("entry_bed", {"server_url": SERVER, "device_id": "bed",
+                                         "topic_prefix": "cuktech/charger/bed"})
+        hass.config_entries.async_entries = MagicMock(return_value=[entry, other])
+        flow = _options_flow(hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(return_value=self._devices())):
+            await flow.async_step_init(None)
+            result = await flow.async_step_init({
+                CONF_NAME: "书桌充电器", CONF_SERVER_URL: SERVER, CONF_DEVICE_ID: "bed",
+            })
+        assert result["errors"] == {"base": "device_in_use"}
+        assert entry.data[CONF_DEVICE_ID] == "desk", "被拒时一个字节都不该改"
+
+    @pytest.mark.asyncio
+    async def test_renaming_with_a_legacy_duplicate_binding_still_saves(self, mock_hass):
+        """历史遗留的重复绑定不该连"改个名字"都拦下：只在绑定真的变时查冲突。"""
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        other = make_entry("entry_bed", {"server_url": SERVER, "device_id": "bed",
+                                         "topic_prefix": "cuktech/charger/bed"})
+        hass.config_entries.async_entries = MagicMock(return_value=[entry, other])
+        flow = _options_flow(hass, entry)
+        # 另一个 entry 恰好也绑在 desk 的这台设备上（历史遗留），但本次只改名字
+        other.data[CONF_DEVICE_ID] = "desk"
+        other.data[CONF_TOPIC_PREFIX] = "cuktech/charger/desk"
+        with patch(self.DISCOVERY, AsyncMock(return_value=self._devices())):
+            await flow.async_step_init(None)
+            result = await flow.async_step_init({
+                CONF_NAME: "书桌（改个名）", CONF_SERVER_URL: SERVER, CONF_DEVICE_ID: "desk",
+            })
+        assert "errors" not in result, result
+        assert entry.title == "书桌（改个名）"
+
+    @pytest.mark.asyncio
+    async def test_stale_selection_reports_device_not_found(self, mock_hass):
+        """表单渲染后设备表变了：重查一次，仍找不到就报错重选，不猜前缀。"""
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        flow = _options_flow(hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(side_effect=[
+                self._devices(), [self._devices()[0]]])):
+            await flow.async_step_init(None)
+            result = await flow.async_step_init({
+                CONF_NAME: "书桌充电器", CONF_SERVER_URL: SERVER, CONF_DEVICE_ID: "bed",
+            })
+        assert result["errors"] == {"base": "device_not_found"}
+        assert entry.data[CONF_DEVICE_ID] == "desk"
+
+    @pytest.mark.asyncio
+    async def test_discovery_failure_keeps_manual_fields(self, mock_hass):
+        """ESP32/旧 server（发现失败）→ 仍然是手填前缀 + 设备 ID。"""
+        entry = desk_entry()
+        flow = _options_flow(mock_hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(return_value=None)):
+            form = await flow.async_step_init(None)
+        assert set(str(k) for k in form["data_schema"]) == {
+            CONF_NAME, CONF_SERVER_URL, CONF_TOPIC_PREFIX, CONF_DEVICE_ID,
+        }
+
+    @pytest.mark.asyncio
+    async def test_discovery_failure_while_selecting_another_device_is_reported(self, mock_hass):
+        """提交时服务端不可达：不能把用户刚选的设备悄悄换成旧绑定。
+
+        以前这里会回退到"当前绑定"并照常保存——界面显示保存成功，实际还连着旧
+        充电器。改名/改地址可以容忍发现失败；**换设备**不行，必须让用户重试。
+        """
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        flow = _options_flow(hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(side_effect=[self._devices(), None])):
+            await flow.async_step_init(None)          # 表单渲染时发现成功
+            result = await flow.async_step_init({
+                CONF_NAME: "书桌充电器", CONF_SERVER_URL: SERVER, CONF_DEVICE_ID: "bed",
+            })
+        assert result["errors"] == {"base": "discovery_failed"}
+        assert entry.data[CONF_DEVICE_ID] == "desk", "被拒时一个字节都不该改"
+
+    @pytest.mark.asyncio
+    async def test_same_device_id_on_another_server_does_not_conflict(self, mock_hass):
+        """device_id 是服务端内的身份：两台独立 server 各有一台 `bed` 是合法的。
+
+        前缀不同（各自 broker 上的命名空间不同）时，按 device_id 全局比较会
+        把正常改绑误报成 `device_in_use`。
+        """
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        other = make_entry("entry_other", {
+            "server_url": "http://other-server:8199",
+            "device_id": "bed", "topic_prefix": "home/charger/bed",
+        })
+        hass.config_entries.async_entries = MagicMock(return_value=[entry, other])
+        flow = _options_flow(hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(return_value=self._devices())):
+            await flow.async_step_init(None)
+            result = await flow.async_step_init({
+                CONF_NAME: "书桌充电器", CONF_SERVER_URL: SERVER, CONF_DEVICE_ID: "bed",
+            })
+        assert "errors" not in result, result
+        assert entry.data[CONF_DEVICE_ID] == "bed"
+        assert entry.data[CONF_TOPIC_PREFIX] == "cuktech/charger/bed"
+
+    @pytest.mark.asyncio
+    async def test_same_prefix_on_another_server_still_conflicts(self, mock_hass):
+        """前缀是 broker 级命名空间：entry 看不到对端 broker，所以保持全局判重。"""
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        other = make_entry("entry_other", {
+            "server_url": "http://other-server:8199",
+            "device_id": "something-else",
+            "topic_prefix": "cuktech/charger/bed",
+        })
+        hass.config_entries.async_entries = MagicMock(return_value=[entry, other])
+        flow = _options_flow(hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(return_value=self._devices())):
+            await flow.async_step_init(None)
+            result = await flow.async_step_init({
+                CONF_NAME: "书桌充电器", CONF_SERVER_URL: SERVER, CONF_DEVICE_ID: "bed",
+            })
+        assert result["errors"] == {"base": "device_in_use"}
+        assert entry.data[CONF_DEVICE_ID] == "desk"
+
+    @pytest.mark.asyncio
+    async def test_rebinding_refreshes_unique_id(self, mock_hass):
+        """改绑后 unique_id 必须重算，否则 HA 的重复条目判断停留在旧身份上。"""
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        entry.unique_id = "cuktech_stale"
+        flow = _options_flow(hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(return_value=self._devices())):
+            await flow.async_step_init(None)
+            await flow.async_step_init({
+                CONF_NAME: "书桌充电器", CONF_SERVER_URL: SERVER, CONF_DEVICE_ID: "bed",
+            })
+        from custom_components.cuktech_charger.config_flow import generate_unique_id
+        assert entry.unique_id == generate_unique_id(
+            SERVER, "cuktech/charger/bed")
+
+    @pytest.mark.asyncio
+    async def test_rename_alone_does_not_touch_unique_id(self, mock_hass):
+        """只改名字不该重算 unique_id（老 entry 的 unique_id 是旧格式）。"""
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        entry.unique_id = "cuktech_legacy_format"
+        flow = _options_flow(hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(return_value=self._devices())):
+            await flow.async_step_init(None)
+            await flow.async_step_init({
+                CONF_NAME: "书桌（改名）", CONF_SERVER_URL: SERVER, CONF_DEVICE_ID: "desk",
+            })
+        assert entry.unique_id == "cuktech_legacy_format"
+
+    @pytest.mark.asyncio
+    async def test_switching_device_keeps_native_ha_rename(self, mock_hass):
+        """用户在 HA 原生入口改过名（没有 name_pinned）→ 换设备不能覆盖它。"""
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        entry.data[CONF_NAME] = "书桌充电器"     # 创建时的名字（老 entry 也有）
+        entry.title = "我自己的名字"              # HA 原生重命名后的 title
+        flow = _options_flow(hass, entry)
+        with patch(self.DISCOVERY, AsyncMock(return_value=self._devices())):
+            await flow.async_step_init(None)
+            await flow.async_step_init({
+                CONF_NAME: "我自己的名字", CONF_SERVER_URL: SERVER, CONF_DEVICE_ID: "bed",
+            })
+        assert entry.title == "我自己的名字"
+        assert CONF_NAME_SYNCED not in entry.data
+
+    @pytest.mark.asyncio
+    async def test_switching_to_unnamed_device_does_not_use_id_as_title(self, mock_hass):
+        """服务端没配 name（回填的是 id）→ 那是"没意见"，不能拿 id 当条目名。"""
+        hass = _hass_with_entry_updates(mock_hass)
+        entry = desk_entry()
+        flow = _options_flow(hass, entry)
+        unnamed = [{"id": "bed", "name": "bed", "mac": "", "connected": True,
+                    "topic_prefix": "cuktech/charger/bed"}]
+        with patch(self.DISCOVERY, AsyncMock(return_value=unnamed)):
+            await flow.async_step_init(None)
+            await flow.async_step_init({
+                CONF_NAME: "书桌充电器", CONF_SERVER_URL: SERVER, CONF_DEVICE_ID: "bed",
+            })
+        assert entry.title == "书桌充电器", "不能把裸 device_id 写进条目名"
 
 
 class TestOptionsFlow:

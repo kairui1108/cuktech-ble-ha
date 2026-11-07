@@ -378,6 +378,9 @@ class CuktechOptionsFlow(config_entries.OptionsFlow):
         """Initialize the options flow."""
         super().__init__()
         self._entry = config_entry
+        #: 打开表单时从服务端发现到的设备。非空 = 走"下拉选设备"，前缀由服务端
+        #: 上报值决定；空 = 服务端没有发现能力（ESP32 / 旧 server），退回手填。
+        self._devices: list[dict[str, Any]] = []
 
     @property
     def _config_entry(self):
@@ -386,77 +389,254 @@ class CuktechOptionsFlow(config_entries.OptionsFlow):
             return self._entry
         return self.config_entry
 
+    async def _async_discover(self, server_url: str) -> None:
+        """选项表单打开时重新发现设备（换设备/换 ID 不必让用户背字符串）。
+
+        发现失败绝不能挡住"改个名字"这种小事：失败 = 退回手填表单，与配置流程
+        同一原则（ESP32 / 旧 server 上本来就没有这个端点）。
+        """
+        try:
+            self._devices = await async_discover_devices(self.hass, server_url) or []
+        except Exception as err:                  # noqa: BLE001 - 退化为手填，不阻塞
+            _LOGGER.debug("Options-flow device discovery failed (%s)", err)
+            self._devices = []
+
+    def _options_schema(self, entry) -> vol.Schema:
+        """选项表单：有设备表就"下拉选设备"，没有就保持手填前缀/设备 ID。"""
+        name_field = vol.Optional(
+            # Optional 而不是 Required：这个字段的**清空**是一个有语义的操作
+            # （交回自动同步）。Required 在 HA 前端是必填框，空值提交会被界面挡住，
+            # 于是 `name_pinned` 一旦置位就再也解不开。
+            CONF_NAME,
+            default=(getattr(entry, "title", None) or DEFAULT_NAME),
+        )
+        server_field = vol.Required(
+            CONF_SERVER_URL,
+            default=entry_string(entry, CONF_SERVER_URL) or DEFAULT_SERVER_URL,
+        )
+
+        if self._devices:
+            current = entry_string(entry, CONF_DEVICE_ID) or ""
+            options = []
+            if current and not any(d["id"] == current for d in self._devices):
+                # 当前绑定的设备已经不在服务端列表里（改名/删设备/掉线）：保留成
+                # 一个可选项，避免表单默认值悄悄把绑定切到别的设备上。
+                options.append(selector.SelectOptionDict(
+                    value=current, label=f"{current}（服务端未上报）"))
+            options.extend(
+                selector.SelectOptionDict(value=d["id"], label=_device_label(d))
+                for d in self._devices
+            )
+            default = next((o["value"] for o in options if o["value"] == current),
+                           options[0]["value"])
+            return vol.Schema({
+                name_field: str,
+                server_field: str,
+                vol.Required(CONF_DEVICE_ID, default=default): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options, mode=selector.SelectSelectorMode.LIST)
+                ),
+            })
+
+        # ── 回退：服务端没有设备发现能力（ESP32 / 旧 server）──
+        return vol.Schema({
+            name_field: str,
+            server_field: str,
+            vol.Required(
+                CONF_TOPIC_PREFIX,
+                default=entry_string(entry, CONF_TOPIC_PREFIX) or TOPIC_PREFIX,
+            ): str,
+            vol.Optional(
+                CONF_DEVICE_ID,
+                default=entry_string(entry, CONF_DEVICE_ID) or "",
+            ): str,
+        })
+
+    @staticmethod
+    def _server_key(entry) -> str:
+        """entry 指向的服务端点（用于把"同一台服务器"的冲突判断隔离开）。"""
+        return (entry_string(entry, CONF_SERVER_URL) or DEFAULT_SERVER_URL).rstrip("/")
+
+    @staticmethod
+    def _entry_title_is_auto(entry) -> bool:
+        """entry.title 是否仍归自动同步掌管（与 `__init__` 的运行期实现同口径）。
+
+        换设备时"标签跟着新设备名走"只能发生在用户没动过标签的情况下。除了
+        `name_pinned`，还要认 HA 原生"重命名条目"（只写 title、不经过本 flow）
+        和升级上来的老 entry（title 与创建时的 `data[name]` 不同）——否则一次
+        换设备就会把用户亲自起的名字覆盖掉。
+        """
+        data = getattr(entry, "data", None) or {}
+        if data.get(CONF_NAME_PINNED):
+            return False
+        title = getattr(entry, "title", None)
+        synced = data.get(CONF_NAME_SYNCED)
+        if synced is not None:
+            return title == synced
+        created = data.get(CONF_NAME)
+        return not created or title == created
+
+    def _prefix_conflict(self, entry, server_url: str | None,
+                         topic_prefix: str, device_id: str) -> bool:
+        """目标前缀 / 设备是否已被**另一个** entry 占用。
+
+        两条判据的作用域不同：
+
+        * **前缀**是 MQTT 命名空间，天然是 broker 级的，而 entry 里看不到对端
+          broker 地址——两台独立 server 恰好连同一个 broker 时，同前缀照样会让
+          实体互相喂数据（A 的读数进 B）。所以前缀比较保持全局，宁可让"不同
+          broker 但同前缀"的多 server 用户改一个前缀，也不放行静默串台。
+        * **device_id** 是**单台服务端内**的设备身份。两台独立 ble_server 各自
+          都有一台 `desk` 完全合法，按 id 全局比较会把正常改绑误报成
+          `device_in_use`（用户从 UI 里走不完流程）。所以只和同一服务端的 entry
+          比较，且前缀相同时已经返回，不必再查。
+        """
+        try:
+            others = list(self.hass.config_entries.async_entries(DOMAIN))
+        except Exception:                          # noqa: BLE001 - 测试/精简 hass 没有该方法
+            return False
+        target_server = (server_url or DEFAULT_SERVER_URL).rstrip("/")
+        for other in others:
+            if getattr(other, "entry_id", None) == getattr(entry, "entry_id", None):
+                continue
+            if (entry_string(other, CONF_TOPIC_PREFIX) or TOPIC_PREFIX) == topic_prefix:
+                return True
+            if self._server_key(other) != target_server:
+                continue
+            other_id = entry_string(other, CONF_DEVICE_ID)
+            if device_id and other_id and other_id == device_id:
+                return True
+        return False
+
+    def _unique_id_taken(self, entry, unique_id: str) -> bool:
+        """这个 unique_id 是否已被另一个 entry 占用（改绑前避免制造重复）。"""
+        try:
+            others = list(self.hass.config_entries.async_entries(DOMAIN))
+        except Exception:                          # noqa: BLE001 - 测试/精简 hass 没有该方法
+            return False
+        return any(
+            getattr(other, "entry_id", None) != getattr(entry, "entry_id", None)
+            and getattr(other, "unique_id", None) == unique_id
+            for other in others
+        )
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle the options step."""
         entry = self._config_entry
 
-        if user_input is not None:
-            topic_prefix = (user_input.get(CONF_TOPIC_PREFIX) or "").strip()
-            device_id = (user_input.get(CONF_DEVICE_ID) or "").strip()
-            server_url = (user_input.get(CONF_SERVER_URL) or "").strip()
-            new_data = {
-                **dict(entry.data),
-                CONF_TOPIC_PREFIX: topic_prefix or TOPIC_PREFIX,
-            }
-            if server_url:
-                # 空值 = 没改（表单里这是必填项，默认值就是现值）。**绝不**在留空时
-                # 删键：那会把 entry 悄悄指向缺省地址，用户只会看到"集成连不上了"。
-                new_data[CONF_SERVER_URL] = server_url
-            if device_id:
-                new_data[CONF_DEVICE_ID] = device_id
+        if user_input is None:
+            await self._async_discover(
+                entry_string(entry, CONF_SERVER_URL) or DEFAULT_SERVER_URL)
+            return self.async_show_form(
+                step_id="init", data_schema=self._options_schema(entry), errors={})
+
+        topic_prefix = (user_input.get(CONF_TOPIC_PREFIX) or "").strip()
+        device_id = (user_input.get(CONF_DEVICE_ID) or "").strip()
+        server_url = (user_input.get(CONF_SERVER_URL) or "").strip()
+        old_server = entry_string(entry, CONF_SERVER_URL) or DEFAULT_SERVER_URL
+        target_server = server_url or old_server
+
+        # 提交的是哪种表单？下拉模式没有 topic_prefix 字段（手填模式必有）。
+        # 用标记判断而不是只看 self._devices：HA 重启后 flow 可能被恢复，
+        # 此时实例上的发现结果已经丢了，但仍应按下拉语义校验。
+        discovery_mode = bool(self._devices) or CONF_TOPIC_PREFIX not in user_input
+        picked = None
+        if discovery_mode:
+            # 提交时**重新发现一次**：表单渲染到点保存之间，服务端可能删了/改了设备。
+            await self._async_discover(target_server)
+            picked = next((d for d in self._devices if d["id"] == device_id), None)
+            if picked is None and self._devices:
+                # 服务端在线，但这台设备已经不在列表里：不猜前缀，请用户重选
+                return self.async_show_form(
+                    step_id="init", data_schema=self._options_schema(entry),
+                    errors={"base": "device_not_found"})
+            if picked is not None:
+                # 前缀与前缀绑定关系以服务端上报为准（与配置流程同一条规则）
+                topic_prefix = picked["topic_prefix"] or TOPIC_PREFIX
+                device_id = picked["id"]
             else:
-                # 留空 = 解除设备绑定（回到 ESP32/旧 server 的单设备寻址方式）
-                new_data.pop(CONF_DEVICE_ID, None)
+                # 服务端这次不可达。改个名字/换个地址不该被挡住，但如果用户**选了
+                # 另一台设备**，静默保留旧绑定等于骗他"保存成功"——必须报错重试。
+                current_id = entry_string(entry, CONF_DEVICE_ID) or ""
+                if device_id and device_id != current_id:
+                    return self.async_show_form(
+                        step_id="init", data_schema=self._options_schema(entry),
+                        errors={"base": "discovery_failed"})
+                topic_prefix = (entry_string(entry, CONF_TOPIC_PREFIX)
+                                or TOPIC_PREFIX)
+                device_id = current_id
+                _LOGGER.debug(
+                    "Discovery unavailable while saving options; keeping device "
+                    "binding %s (%s)", device_id or "<none>", topic_prefix)
 
-            updates: dict[str, Any] = {"data": new_data}
-            new_name = (user_input.get(CONF_NAME) or "").strip()
-            # 显示名单独走 title（§4.5）：改名字不该改动 data，也不该换 unique_id。
-            # 同时记下"这是用户起的名"：运行时的设备名自动同步遇到它就停手，否则
-            # 用户改完名字、下一次 reload 就被服务端的名字顶回去（安静地失效）。
-            if new_name and new_name != getattr(entry, "title", None):
-                updates["title"] = new_name
-                new_data[CONF_NAME_PINNED] = True
-                # 用户接管了这个标签，同步的账本作废（否则将来解除固定时会被旧账本误导）
-                new_data.pop(CONF_NAME_SYNCED, None)
-            elif not new_name:
-                # 清空名称 = 交回自动同步。把**当前** title 记成"上次同步写的"，
-                # 下一次同步就会认为它归自己管、用服务端名字覆盖它。
-                # （只删置位不记这一笔的话，同步会把这个改过的 title 当成"用户的选择"
-                #  永远不敢动，等于"交回"没生效。）
-                new_data.pop(CONF_NAME_PINNED, None)
-                current = getattr(entry, "title", None)
-                if current:
-                    new_data[CONF_NAME_SYNCED] = current
-            self.hass.config_entries.async_update_entry(entry, **updates)
-            await self.hass.config_entries.async_reload(entry.entry_id)
-            return self.async_create_entry(title="", data={})
+        target_prefix = topic_prefix or TOPIC_PREFIX
+        old_prefix = entry_string(entry, CONF_TOPIC_PREFIX) or TOPIC_PREFIX
+        old_device_id = entry_string(entry, CONF_DEVICE_ID) or ""
+        # 只在**绑定真变了**的时候查冲突：历史遗留的重复绑定不该连"改个名字"都保存不了。
+        binding_changed = (target_prefix != old_prefix) or (device_id != old_device_id)
+        if binding_changed and self._prefix_conflict(
+                entry, target_server, target_prefix, device_id):
+            return self.async_show_form(
+                step_id="init", data_schema=self._options_schema(entry),
+                errors={"base": "device_in_use"})
 
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    # Optional 而不是 Required：这个字段的**清空**是一个有语义的
-                    # 操作（交回自动同步）。Required 在 HA 前端是必填框，空值提交
-                    # 会被界面挡住，于是 `name_pinned` 一旦置位就再也解不开。
-                    vol.Optional(
-                        CONF_NAME,
-                        default=(getattr(entry, "title", None) or DEFAULT_NAME),
-                    ): str,
-                    vol.Required(
-                        CONF_SERVER_URL,
-                        default=entry_string(entry, CONF_SERVER_URL) or DEFAULT_SERVER_URL,
-                    ): str,
-                    vol.Required(
-                        CONF_TOPIC_PREFIX,
-                        default=entry_string(entry, CONF_TOPIC_PREFIX) or TOPIC_PREFIX,
-                    ): str,
-                    vol.Optional(
-                        CONF_DEVICE_ID,
-                        default=entry_string(entry, CONF_DEVICE_ID) or "",
-                    ): str,
-                }
-            ),
-            errors={},
-        )
+        device_changed = bool(picked and picked["id"] != old_device_id)
+
+        new_data = {**dict(entry.data), CONF_TOPIC_PREFIX: target_prefix}
+        if server_url:
+            # 空值 = 没改（表单里这是必填项，默认值就是现值）。**绝不**在留空时
+            # 删键：那会把 entry 悄悄指向缺省地址，用户只会看到"集成连不上了"。
+            new_data[CONF_SERVER_URL] = server_url
+        if device_id:
+            new_data[CONF_DEVICE_ID] = device_id
+        else:
+            # 留空 = 解除设备绑定（回到 ESP32/旧 server 的单设备寻址方式）
+            new_data.pop(CONF_DEVICE_ID, None)
+
+        updates: dict[str, Any] = {"data": new_data}
+        # 改绑（换设备/前缀/服务端）后 unique_id 必须跟着走：它编码的正是
+        # (server, prefix)，不刷新的话 HA 的重复条目判断还停留在旧身份上——
+        # 旧设备被"释放"了却仍被这个 entry 占着，而新设备可以被第二个 entry
+        # 再加一次，两边订阅同一组 topic。
+        # 绑定没变时不动：老 entry 的 unique_id 是旧格式，不能因为改个名字就重算。
+        server_changed = target_server.rstrip("/") != old_server.rstrip("/")
+        if binding_changed or server_changed:
+            desired_uid = generate_unique_id(target_server, target_prefix)
+            if (desired_uid != getattr(entry, "unique_id", None)
+                    and not self._unique_id_taken(entry, desired_uid)):
+                updates["unique_id"] = desired_uid
+        new_name = (user_input.get(CONF_NAME) or "").strip()
+        title = getattr(entry, "title", None)
+        # 显示名单独走 title（§4.5）：改名字不该改动 data，也不该换 unique_id。
+        # 同时记下"这是用户起的名"：运行时的设备名自动同步遇到它就停手，否则
+        # 用户改完名字、下一次 reload 就被服务端的名字顶回去（安静地失效）。
+        if new_name and new_name != title:
+            updates["title"] = new_name
+            new_data[CONF_NAME_PINNED] = True
+            # 用户接管了这个标签，同步的账本作废（否则将来解除固定时会被旧账本误导）
+            new_data.pop(CONF_NAME_SYNCED, None)
+        elif not new_name:
+            # 清空名称 = 交回自动同步。把**当前** title 记成"上次同步写的"，
+            # 下一次同步就会认为它归自己管、用服务端名字覆盖它。
+            # （只删置位不记这一笔的话，同步会把这个改过的 title 当成"用户的选择"
+            #  永远不敢动，等于"交回"没生效。）
+            new_data.pop(CONF_NAME_PINNED, None)
+            if title:
+                new_data[CONF_NAME_SYNCED] = title
+        elif device_changed and self._entry_title_is_auto(entry):
+            # 名称没动、但换了一台设备：标签跟着新设备名走（仍归自动同步托管）。
+            # 只有**确认标签仍归自动同步**时才动：用户在 HA 里原生改过名（title
+            # 与 name_synced/data[name] 对不上）就该保留他的选择。
+            # 服务端没给这台配 name 时 `_normalise_device` 回填的是 id——那是
+            # "没意见"，与运行时同步同一口径，不能把 id 变成条目名。
+            picked_name = (picked.get("name") or "").strip()
+            if (picked_name and picked_name != picked["id"]
+                    and picked_name != title):
+                updates["title"] = picked_name
+                new_data[CONF_NAME_SYNCED] = picked_name
+
+        self.hass.config_entries.async_update_entry(entry, **updates)
+        await self.hass.config_entries.async_reload(entry.entry_id)
+        return self.async_create_entry(title="", data={})
