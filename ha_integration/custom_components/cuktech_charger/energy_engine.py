@@ -54,12 +54,21 @@ END_REASON_USER_OFF = "port_off"      # 端口关闭（用户手动 / 限额触�
 END_REASON_UNPLUG = "unplug"          # 拔出负载（V=0, I=0）
 END_REASON_LOW_POWER = "low_power"    # 功率衰减/低电流自然结束（充满）
 END_REASON_LINK_LOSS = "link_loss"    # BLE 链路中断/重连（基础设施，会话可续）
+END_REASON_STALE = "data_stale"       # 端口数据过期（长时间没有任何真实样本）
 END_REASON_SHUTDOWN = "shutdown"      # Home Assistant 停止/重启
 END_REASON_UNKNOWN = "unknown"        # 未标注原因（保守：视为真实终止）
 
 # 这些原因不清零 once 限额：会话不是用户意图终止的，保留用户刚设的限制。
 # 否则一次 BLE 抖动或一次 HA 重启就会静默解除限制。
-END_REASONS_PRESERVING_LIMIT = frozenset({END_REASON_LINK_LOSS, END_REASON_SHUTDOWN})
+# data_stale 同理：遥测缺失不等于充电结束，此时消费限额会让用户在毫无察觉的
+# 情况下丢掉刚设的一次性上限（充电器可能还在充）。
+#
+# 注意：`data_stale` 是 HA 侧独有的原因——ble_server 的 energy.py 没有这条
+# （服务端有 1s 定时器 + 主动 GET 校验，不存在"静默到无法判断"的状态），
+# 因此两端的保留集合故意不同；不要把它透传给服务端的事件/记录路径。
+END_REASONS_PRESERVING_LIMIT = frozenset(
+    {END_REASON_LINK_LOSS, END_REASON_STALE, END_REASON_SHUTDOWN}
+)
 
 
 def limit_reached(session_wh: float, limit_wh: float) -> bool:
@@ -230,6 +239,13 @@ class ChargeLimitTracker:
     Pure logic — callers own persistence (HA `Store`) and actuation
     (MQTT port off). `ingest()` mutates state; `due_cutoffs()` returns the
     ports to switch off **now**, leaving the publish decision to the caller.
+
+    Feed invariant: callers must call `ingest()` at the device's nominal push
+    rate (~1 Hz) **including while nothing is being pushed**, synthesizing a
+    sample from the last known V/I (HA coordinator's energy tick does exactly
+    that; ble_server's `_port_timer` does it for the server). Every window and
+    debounce below counts frames, so a silent feed does not just under-meter —
+    it also freezes the session/open-cutoff state machine.
 
     Session start/end mirrors ble_server `_process_push_probe` exactly:
 

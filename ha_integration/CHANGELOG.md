@@ -1,5 +1,41 @@
 # Changelog
 
+## [2.0.1] - 2026-11-08
+
+### Fixed
+- **Metering through a silent port (ESP32 / `local` backend).** MQTT port frames only
+  exist when the charger pushes a BLE notification, and in CV/CC at a fixed output it
+  pushes nothing. The local engine was fed exclusively from those frames, which caused
+  three failures at once: `session_wh` froze for the whole steady phase; the first frame
+  after a >`MAX_GAP_SEC` hole was discarded, so that phase metered as **0 Wh** (the gap
+  guard is all-or-nothing, not a partial credit); and the frame-counted state machine
+  (300-frame low-current debounce, 300-frame end detector) never advanced — a finished
+  session stayed open and the next charge accumulated onto it, so a `once` Wh limit cut
+  early. The coordinator now runs a 1 Hz energy tick that synthesizes samples from the
+  last known V/I while a port is mid-session, the same mechanism `ble_server._port_timer`
+  has always had
+- **Stale telemetry is bounded.** After `ENERGY_HOLD_MAX_SEC` (5 min) without a live
+  frame, the cached reading can no longer be trusted in either direction (constant-power
+  silence vs. an unplug whose frame never came). The session is closed with a new
+  `data_stale` reason, which preserves `once` limits exactly like `link_loss`
+- **Retained frames are display-only.** Every subscribe — including each HA restart and
+  every MQTT resubscribe — replays the broker's retained port payload. It used to be
+  ingested as a fresh sample, opening a phantom session from a possibly hours-old reading
+  and integrating it forward; such frames now only refresh the displayed reading, and they
+  no longer touch the synthesis baseline either (a replayed "0 A / inactive" would
+  otherwise end a running session as `USER_OFF` and consume a `once` limit). The retain
+  flag is read with `bool()`, not `is True`: paho-mqtt 1.6.x (HA 2024.1–2025.2, inside the
+  range declared by `hacs.json`) sets it to **int 0/1**, so the identity check classified
+  every replay as a live frame. A duplicate `ts` (firmware v1.1.6+, uptime ms) is rejected
+  as a second line of defence
+- New `sample_age_sec` attribute on the session-energy sensor: seconds since the last
+  live frame, i.e. the signal that separates "the charger is not reporting" from "the
+  integration is stuck"
+- **Lifetime total is persisted on unload** (it used to be written only when the limit
+  config changed, so a restart lost everything since the last change), and a failed setup
+  now tears down the MQTT subscriptions and timers it had already created instead of
+  leaving them behind for the retried entry
+
 ## [2.0.0-Beta] - 2026-10-25
 
 ### Added

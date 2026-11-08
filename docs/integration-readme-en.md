@@ -170,18 +170,15 @@ On startup the integration probes `GET /api/charge-limits` to pick a backend:
 | Backend | Trigger | Config storage | Displayed figures | Applies to |
 |---------|---------|----------------|-------------------|------------|
 | `server` (delegated) | HTTP 200 | Python server (two-way sync with the Web UI) | Server snapshot (incl. `session_wh` / `is_charging`) | Python BLE server |
-| `local` (own metering) | HTTP 404 / unreachable | HA `Store` (local persistence) | HA's own integration of the 1Hz MQTT samples | ESP32 firmware, or when the server is offline |
+| `local` (own metering) | HTTP 404 / unreachable | HA `Store` (local persistence) | HA's own 1 Hz sampling, held over silent stretches | ESP32 firmware, or when the server is offline |
 
-**Metering and enforcement are separate concerns**: under either backend HA always
-integrates the 1Hz MQTT port samples locally, so the readout stays live and the
-feature survives the REST API going away. The backend only decides *who owns the
-config and who cuts the power*. In delegated mode the entities mirror the server
-snapshot, so they match the Web UI exactly.
+The ESP32 firmware does no energy accounting (it only pushes instantaneous V/I/P), so
+it **always** lands in `local`. 
 
-The ESP32 firmware does no energy accounting (it only pushes instantaneous
-V/I/P), so it **always** lands in `local`: HA does the integration. Since those
-samples are identical under both firmwares, accuracy matches the Python side. In
-short — the actuation channel is shared; only metering and decision moved to HA.
+> On subscribe (and on every HA restart) the broker replays the retained port payload.
+> Such frames are display-only — they never enter the integrator and never move the
+> synthesis baseline, otherwise a restart would open a phantom session from a reading
+> that may be hours old, or a replay could end a running session.
 
 To tell which backend is active, check the `backend` attribute on any charge-limit
 entity, or the startup log line `Charge limits delegated to BLE server (...)`

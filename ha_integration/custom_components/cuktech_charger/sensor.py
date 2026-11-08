@@ -230,4 +230,9 @@ class CuktechSessionEnergySensor(CuktechBaseEntity, SensorEntity):
             "total_wh": self.coordinator.total_energy_wh(self._port),
             "max_power_w": self.coordinator.session_max_power(self._port),
             "backend": self.coordinator.limit_backend,
+            # 距最后一条**实时**端口帧的秒数。充电器恒功率静默时这个值会变大，
+            # 而会话能量仍在（由合成采样）推进——两者一起看才能区分
+            # "设备不上报" 与 "集成卡住"。注意它统计的是 HA 本地收到的帧：
+            # 委派模式下 session_wh 来自服务端快照，两个数字的口径不同。
+            "sample_age_sec": self.coordinator.port_sample_age(self._port),
         }

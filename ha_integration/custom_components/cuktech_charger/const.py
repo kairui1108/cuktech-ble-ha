@@ -212,6 +212,21 @@ LIMIT_BACKEND_SERVER = "server"
 # 请求超时复用 HTTP_TIMEOUT —— 打的是同一个 server_url，没有理由两套。
 LIMIT_POLL_INTERVAL = timedelta(seconds=5)
 
+# ── 本地计量采样 (energy sampling) ──
+# 引擎里所有窗口/去抖都按"1Hz 连续样本"写成（LOW_CURRENT_N=300 帧≈5min、
+# ChargeEndDetector 的 300 帧窗口）。但 MQTT 上只有**设备推送**才有帧：
+# ESP32 收到 BLE notify 才发布，而充电器在恒压恒流固定功率阶段根本不上报——
+# 没有这条定时器，积分器和会话边界会一起卡死（>30s 的静默还会被
+# MAX_GAP_SEC 整段丢弃）。语义与 ble_server 的 _port_timer 一致：超过
+# ENERGY_SYNTH_AFTER_SEC 没有真帧，就用最后已知 V/I 合成一帧继续喂引擎。
+#
+# 合成上限有存在的必要：再久就分不清"恒功率静默"与"拔枪没推帧"，
+# 继续累计会凭空多出电量并误触发限额。超过 HOLD_MAX 以 link-loss 语义
+# 结束会话（once 限额保留），宁可少算也不要凭空虚增。
+ENERGY_TICK_INTERVAL = timedelta(seconds=1)   # 合成采样周期（与设备推送同频）
+ENERGY_SYNTH_AFTER_SEC = 2.0                  # 超过这么久没真帧才开始合成
+ENERGY_HOLD_MAX_SEC = 300.0                   # 合成采样的最长续期
+
 # ── 限额实体 (per-port number/select/sensor 三件套 × 4 端口) ──
 # port -> 显示标签，复用 PORT_NAMES（与同设备的 C1/A 电压电流功率传感器同风格）。
 # 各平台自行拼后缀（charge limit / charge limit mode / session energy），避免出现

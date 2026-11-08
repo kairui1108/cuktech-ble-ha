@@ -244,6 +244,7 @@ class TestPerEntryTopics:
         msg = MagicMock()
         msg.topic = "cuktech/charger/desk/port/c1"
         msg.payload = json.dumps({"voltage": 20.0, "current": 1.5, "active": True}).encode()
+        msg.retain = False
 
         desk._on_port_message(msg)
         assert desk.port_data["1"]["voltage"] == 20.0

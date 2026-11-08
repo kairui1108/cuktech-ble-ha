@@ -13,6 +13,7 @@ from custom_components.cuktech_charger.energy_engine import (  # noqa: E402
     END_REASON_LINK_LOSS,
     END_REASON_LOW_POWER,
     END_REASON_SHUTDOWN,
+    END_REASON_STALE,
     END_REASON_UNKNOWN,
     END_REASON_UNPLUG,
     END_REASON_USER_OFF,
@@ -393,6 +394,13 @@ class TestOnceVsAlways:
     def test_once_preserved_on_shutdown(self, tracker):
         tracker.set_limit("c1", 999, LIMIT_MODE_ONCE)
         tracker.end_session("c1", END_REASON_SHUTDOWN, 2000.0)
+        assert tracker.get_limit("c1").wh == 999.0
+
+    def test_once_preserved_on_stale_data(self, tracker):
+        """Missing telemetry is not a charge end: the charger may still be
+        running, so a `once` limit must survive the data gap."""
+        tracker.set_limit("c1", 999, LIMIT_MODE_ONCE)
+        tracker.end_session("c1", END_REASON_STALE, 2000.0)
         assert tracker.get_limit("c1").wh == 999.0
 
     def test_always_survives_session_end(self, tracker):

@@ -62,6 +62,9 @@ def _msg(port, **kw):
     msg = MagicMock()
     msg.topic = f"cuktech/charger/port/{port}"
     msg.payload = _mqtt_payload(port, **kw)
+    # 默认是实时帧。不显式赋值的话 MagicMock 的 retain 属性是真值，
+    # 会被 bool() 判成 retained（见 TestSilentPortSampling 的 paho int 用例）。
+    msg.retain = False
     return msg
 
 
@@ -192,6 +195,198 @@ class TestLocalMeasurement:
 
     def test_junk_values_do_not_raise(self, coordinator):
         coordinator._async_ingest_port(1, {"voltage": "abc", "current": None, "active": True})
+
+
+class TestSilentPortSampling:
+    """The charger stops notifying while it holds a constant output.
+
+    MQTT port frames therefore cannot be the only feed for the energy engine:
+    its windows count frames (300 ≈ 5 min at 1 Hz) and MAX_GAP_SEC discards a
+    >30 s hole entirely. The coordinator's 1 Hz energy tick synthesizes samples
+    from the last known V/I so the integral and the session state machine keep
+    running through a silent CV/CC phase.
+    """
+
+    def _payload(self):
+        return json.loads(_mqtt_payload("c1"))
+
+    def test_silent_tick_keeps_metering(self, coordinator):
+        coordinator.hass.loop.time.return_value = 1000.0
+        coordinator._async_ingest_port(1, self._payload())      # 60 W live frame
+        assert coordinator.charge_limit_charging("c1") is True
+
+        # 62 s of silence: 60 W × 62 s ≈ 1.033 Wh, all from synthetic samples
+        for i in range(1, 63):
+            coordinator.hass.loop.time.return_value = 1000.0 + i
+            coordinator._async_energy_tick()
+
+        assert coordinator.charge_limit_charging("c1") is True
+        assert coordinator.session_energy_wh("c1") == pytest.approx(1.033, abs=0.02)
+
+    def test_ticks_and_live_frames_do_not_double_count(self, coordinator):
+        """Synthetic samples start where the last real one ended — the
+        integrator's dt carries over, so the two feeds are continuous."""
+        coordinator.hass.loop.time.return_value = 1000.0
+        coordinator._async_ingest_port(1, self._payload())
+        for i in range(1, 121):                                  # 120 s
+            coordinator.hass.loop.time.return_value = 1000.0 + i
+            if i % 4 == 0:                                       # heartbeat every 4 s
+                coordinator._async_ingest_port(1, self._payload())
+            else:
+                coordinator._async_energy_tick()
+        assert coordinator.session_energy_wh("c1") == pytest.approx(2.0, abs=0.05)
+
+    def test_ticks_never_start_a_session_on_their_own(self, coordinator):
+        """A port that is not mid-session must not be invented from cache."""
+        coordinator.hass.loop.time.return_value = 1000.0
+        coordinator._async_ingest_port(1, self._payload(), retained=True)
+        for i in range(1, 30):
+            coordinator.hass.loop.time.return_value = 1000.0 + i
+            coordinator._async_energy_tick()
+        assert coordinator.charge_limit_charging("c1") is False
+        assert coordinator.session_energy_wh("c1") == 0.0
+
+    def test_heartbeat_firmware_meters_full_silent_phase(self, coordinator):
+        """Firmware v1.1.6 publishes an active port every ~4 s: a 10-minute
+        constant-power phase meters in full (the original bug metered 0 Wh)."""
+        coordinator.hass.loop.time.return_value = 1000.0
+        coordinator._async_ingest_port(1, self._payload())
+        for i in range(1, 601):
+            coordinator.hass.loop.time.return_value = 1000.0 + i
+            if i % 4 == 0:
+                coordinator._async_ingest_port(1, self._payload())
+            else:
+                coordinator._async_energy_tick()
+        assert coordinator.session_energy_wh("c1") == pytest.approx(10.0, abs=0.05)
+
+    def test_hold_window_bounds_the_credit(self, coordinator):
+        """Older firmware (no heartbeat): at most ENERGY_HOLD_MAX_SEC of a
+        silent stretch is credited, then the session closes. Better than
+        losing the whole phase, and it never invents energy indefinitely."""
+        coordinator.hass.loop.time.return_value = 1000.0
+        coordinator._async_ingest_port(1, self._payload())
+        for i in range(1, 601):
+            coordinator.hass.loop.time.return_value = 1000.0 + i
+            coordinator._async_energy_tick()
+        assert coordinator.charge_limit_charging("c1") is False
+        assert coordinator.session_energy_wh("c1") == pytest.approx(5.0, abs=0.2)
+
+    def test_stale_data_closes_session_and_preserves_limit(self, coordinator):
+        """Past the hold window the cached reading is untrustworthy in either
+        direction; close the session (link-loss semantics) instead of
+        integrating phantom energy."""
+        coordinator._charge_limits.set_limit("c1", 30, LIMIT_MODE_ONCE)
+        coordinator.hass.loop.time.return_value = 1000.0
+        coordinator._async_ingest_port(1, self._payload())
+
+        for i in range(1, 320):
+            coordinator.hass.loop.time.return_value = 1000.0 + i
+            coordinator._async_energy_tick()
+
+        assert coordinator.charge_limit_charging("c1") is False
+        assert coordinator.charge_limit_wh("c1") == 30.0, "stale data ate the limit"
+
+        frozen = coordinator.session_energy_wh("c1")
+        for i in range(320, 340):
+            coordinator.hass.loop.time.return_value = 1000.0 + i
+            coordinator._async_energy_tick()
+        assert coordinator.session_energy_wh("c1") == frozen, "session kept growing"
+
+    def test_retained_frame_does_not_start_session(self, coordinator):
+        """Broker replay on subscribe (or after an HA restart) is display-only."""
+        msg = _msg("c1")
+        msg.retain = True
+        coordinator._on_port_message(msg)
+        assert coordinator.charge_limit_charging("c1") is False
+        assert coordinator.session_energy_wh("c1") == 0.0
+
+    @pytest.mark.parametrize("flag,charging", [(1, False), (0, True)])
+    def test_paho_1x_int_retain_flag(self, coordinator, flag, charging):
+        """paho-mqtt 1.6.x (HA 2024.1–2025.2, the floor declared in hacs.json)
+        sets `retain` to **int 0/1**, so `msg.retain is True` classified every
+        retained replay as a live frame. bool() is what makes both paho
+        generations work."""
+        msg = _msg("c1")
+        msg.retain = flag
+        coordinator._on_port_message(msg)
+        assert coordinator.charge_limit_charging("c1") is charging
+
+    def test_retained_inactive_frame_cannot_end_a_session(self, coordinator):
+        """A replayed old '0 A / inactive' frame must not be taken for an
+        unplug — that used to close the session and consume a `once` limit."""
+        coordinator._charge_limits.set_limit("c1", 30, LIMIT_MODE_ONCE)
+        coordinator.hass.loop.time.return_value = 1000.0
+        coordinator._async_ingest_port(1, self._payload())          # live 60 W
+        stale = _msg("c1", voltage=0.0, current=0.0, active=False)
+        stale.retain = True
+        coordinator.hass.loop.time.return_value = 1001.0
+        coordinator._on_port_message(stale)
+
+        assert coordinator.charge_limit_charging("c1") is True
+        assert coordinator.charge_limit_wh("c1") == 30.0, "replay ate the limit"
+
+        # the synthesis baseline must still be the live 60 W reading, not the
+        # replayed zero — otherwise the silent stretch stops metering
+        before = coordinator.session_energy_wh("c1")
+        for i in range(2, 12):
+            coordinator.hass.loop.time.return_value = 1000.0 + i
+            coordinator._async_energy_tick()
+        assert coordinator.charge_limit_charging("c1") is True
+        assert coordinator.session_energy_wh("c1") > before
+
+    def test_live_frame_after_retained_starts_session(self, coordinator):
+        """The retained frame must not block the next real sample either."""
+        retained = _msg("c1")
+        retained.retain = True
+        coordinator._on_port_message(retained)
+        live = _msg("c1")
+        live.retain = False
+        coordinator._on_port_message(live)
+        assert coordinator.charge_limit_charging("c1") is True
+
+    def test_sample_age_tracks_live_frames_only(self, coordinator):
+        assert coordinator.port_sample_age("c1") is None
+        coordinator.hass.loop.time.return_value = 1000.0
+        coordinator._async_ingest_port(1, self._payload())
+        coordinator.hass.loop.time.return_value = 1007.5
+        assert coordinator.port_sample_age("c1") == 7.5
+        # synthetic samples must not reset the age — it is the staleness signal
+        coordinator._async_energy_tick()
+        assert coordinator.port_sample_age("c1") == 7.5
+
+    def test_ble_disconnect_drops_synthesis_baseline(self, coordinator):
+        coordinator.hass.loop.time.return_value = 1000.0
+        coordinator._async_ingest_port(1, self._payload())
+        coordinator._ble_connected = True
+        coordinator._sync_ble_state(False)
+        assert coordinator._last_port_sample == {}
+        assert coordinator._last_live_sample_ts == {}
+        assert coordinator._last_port_ts == {}
+
+    def test_duplicate_ts_is_not_metered(self, coordinator):
+        """Firmware v1.1.6 stamps each frame with uptime-ms. A replayed message
+        carries the same stamp, so it is a second line of defence behind the
+        retain flag (which paho 1.6.x encodes as an int)."""
+        coordinator.hass.loop.time.return_value = 1000.0
+        payload = self._payload()
+        payload["ts"] = 123456
+        coordinator._async_ingest_port(1, payload)
+        coordinator.hass.loop.time.return_value = 1002.0
+        coordinator._async_ingest_port(1, payload)          # same ts → replay
+        assert coordinator._last_live_sample_ts["c1"] == 1000.0
+
+        # the next genuine frame must be integrated from t=1000 (3 s), which
+        # only holds if the duplicate did not move last_time
+        coordinator.hass.loop.time.return_value = 1003.0
+        coordinator._async_ingest_port(1, {**payload, "ts": 123457})
+        assert coordinator.session_energy_wh("c1") == pytest.approx(0.05, abs=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_unload_cancels_energy_tick(self, coordinator):
+        unsub = MagicMock()
+        coordinator._energy_tick_unsub = unsub
+        await coordinator.async_unload()
+        unsub.assert_called_once()
 
 
 class TestCutoff:
@@ -666,6 +861,33 @@ class TestShutdown:
         # session closed, but the user's once-limit survived the restart
         assert coordinator.charge_limit_charging("c1") is False
         assert coordinator.charge_limit_wh("c1") == 30.0
+
+    @pytest.mark.asyncio
+    async def test_unload_persists_totals(self, real_task_hass, mock_entry):
+        """`total_wh` is otherwise only saved when the limits change; a graceful
+        shutdown must not lose the accumulated figure."""
+        coord = CuktechMQTTCoordinator(real_task_hass, mock_entry)
+        coord._limits_loaded = True
+        coord._limits_store.async_save = AsyncMock()
+        real_task_hass.loop.time.return_value = 1000.0
+        coord._async_ingest_port(1, {"voltage": 20.0, "current": 3.0, "active": True})
+        real_task_hass.loop.time.return_value = 1010.0
+        coord._async_ingest_port(1, {"voltage": 20.0, "current": 3.0, "active": True})
+
+        await coord.async_unload()
+
+        coord._limits_store.async_save.assert_awaited()
+        saved = coord._limits_store.async_save.await_args[0][0]
+        assert saved["totals"]["c1"] == pytest.approx(60 * 10 / 3600)   # 60 W × 10 s
+
+    @pytest.mark.asyncio
+    async def test_unload_does_not_clobber_store_before_load(self, coordinator):
+        """A setup failure must not overwrite the user's saved limits with
+        defaults (the unload path runs before the Store was ever loaded)."""
+        coordinator._limits_loaded = False
+        coordinator._limits_store.async_save = AsyncMock()
+        await coordinator.async_unload()
+        assert not coordinator._limits_store.async_save.called
 
 
 class TestLinkLoss:

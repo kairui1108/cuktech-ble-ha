@@ -35,6 +35,9 @@ from .const import (
     BLE_OPERATION_TIMEOUT,
     CHARGE_EVENT_BUFFER,
     STATUS_STALE_SECONDS,
+    ENERGY_TICK_INTERVAL,
+    ENERGY_SYNTH_AFTER_SEC,
+    ENERGY_HOLD_MAX_SEC,
     LIMIT_STORE_VERSION,
     LIMIT_BACKEND_LOCAL,
     LIMIT_BACKEND_SERVER,
@@ -47,6 +50,7 @@ from .energy_engine import (
     ChargeLimitTracker,
     END_REASON_LINK_LOSS,
     END_REASON_SHUTDOWN,
+    END_REASON_STALE,
 )
 from .protocol_codec import (
     decode_protocol_switches,
@@ -70,6 +74,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise
     except Exception as err:
         _LOGGER.exception("Failed to set up coordinator")
+        # async_setup 可能已经建好 MQTT 订阅和定时器（计量心跳、名字同步、健康
+        # 检查），直接抛会把它们留在这条 entry 上：HA 重试 setup 时再建一份，
+        # 旧回调仍然会触发（重复计量/重复请求）。这里主动回收。
+        await coordinator.async_unload()
         raise ConfigEntryNotReady from err
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -167,6 +175,18 @@ class CuktechMQTTCoordinator:
         # 最近一次落盘的限额快照：用于发现"非用户操作导致的限额变化"
         # （once 限额被消费发生在引擎内部，见 _persist_limits_if_changed）
         self._saved_limits: dict | None = None
+
+        # ── 本地计量采样（engine feed） ──
+        # 引擎按 1Hz 连续样本写窗口/去抖，而 MQTT 上只有设备推送才有帧。
+        # 定时器在静默期用最后已知 V/I 合成样本（见 _async_energy_tick）。
+        self._energy_tick_unsub = None
+        # port -> (voltage, current, active)：最后一条**任意**端口帧的读数
+        # （含 retained，供显示外的合成基线用）
+        self._last_port_sample: dict[str, tuple[float, float, bool]] = {}
+        # port -> 最后一条**实时**（非 retained）端口帧的 loop 时间
+        self._last_live_sample_ts: dict[str, float] = {}
+        # port -> 最后一条实时帧的 payload ts（ESP32 v1.1.6+），用于识别重放
+        self._last_port_ts: dict[str, float] = {}
 
     @property
     def available(self) -> bool:
@@ -459,6 +479,12 @@ class CuktechMQTTCoordinator:
 
         self._last_status_time = self.hass.loop.time()
 
+        # 计量心跳：静默期把最后已知 V/I 合成成 1Hz 样本喂引擎。
+        # 必须在订阅之后启动：合成基线只由真实端口帧填充，早启动没有意义。
+        self._energy_tick_unsub = async_track_time_interval(
+            self.hass, self._async_energy_tick, ENERGY_TICK_INTERVAL
+        )
+
         # Start HTTP health check as fallback
         self._health_check_unsub = async_track_time_interval(
             self.hass, self._async_health_check, HEALTH_CHECK_INTERVAL
@@ -499,10 +525,18 @@ class CuktechMQTTCoordinator:
         if self._name_sync_unsub:
             self._name_sync_unsub()
         self._name_sync_unsub = None
+        if self._energy_tick_unsub:
+            self._energy_tick_unsub()
+        self._energy_tick_unsub = None
         # HA 停止不是用户意图终止充电：结束会话但保留 once 限额
         # （否则一次 HA 重启就静默解除用户刚设的限制，见 END_REASONS_PRESERVING_LIMIT）
         self._charge_limits.end_session_all(
             END_REASON_SHUTDOWN, self.hass.loop.time())
+        # 关机前落一次盘：total_wh 平时只在限额变化时被顺带保存，正常充电期间不写盘，
+        # 不补这一次的话重启会丢掉上次保存之后的累计。只在 Store 已成功加载过时写，
+        # 否则会拿默认值覆盖用户已保存的限额（setup 早期失败会走到这里）。
+        if self._limits_loaded:
+            await self._async_save_limits()
         if self._limit_poll_unsub:
             self._limit_poll_unsub()
             self._limit_poll_unsub = None
@@ -548,6 +582,10 @@ class CuktechMQTTCoordinator:
         if prev_connected and not connected:
             # 设备断开：清空端口数据，避免实体展示陈旧读数（设置等保留，重连后由服务器重新发布）
             self._port_data = {}
+            # 合成采样的基线一并清掉：断开期间没有可信读数，重连前不该再喂引擎。
+            self._last_port_sample.clear()
+            self._last_live_sample_ts.clear()
+            self._last_port_ts.clear()
             # 以 link_loss 结束会话（对齐 ble_manager.py:900 断连时的处理）。
             # 链路中断属基础设施故障、会话可续，因此"保留" once 限额——否则重连
             # 之后端口报 inactive，会被判成 USER_OFF 而把用户刚设的一次性限额吃掉。
@@ -594,8 +632,20 @@ class CuktechMQTTCoordinator:
                 self._port_data[str(piid)] = payload
                 # 喂给本地限额引擎：V×I 梯形积分 + 会话边界判定。
                 # 无论后端是 Python server 还是 ESP32，这个 topic 承载的都是同一份
-                # 1Hz 设备推送，所以两种后端都能用同一套本地计量。
-                self._async_ingest_port(piid, payload)
+                # 设备推送，所以两种后端都能用同一套本地计量。
+                #
+                # retained 帧必须区分出来：订阅（含每次 HA 重启）时 broker 会重放
+                # 最后一条 retained 消息，它可能是几小时前拔枪时的读数。把它当新
+                # 样本会凭空开出一个会话并立刻开始累计（见 _async_ingest_port）。
+                #
+                # 必须用 bool() 而不是 `is True`：paho-mqtt 1.6.x（HA 2024.1–2025.2
+                # 的依赖，本仓 hacs.json 声明的最低版本 2024.1.0 正在其中）在
+                # _handle_publish 里写的是 `message.retain = (header & 0x01)` ——
+                # **int 0/1**，`1 is True` 为 False，retained 重放会被误当成实时帧。
+                # paho 2.x 才改成 bool；bool() 对两种类型都成立。
+                self._async_ingest_port(
+                    piid, payload, retained=bool(getattr(msg, "retain", False))
+                )
                 self._notify_callbacks(self._port_callbacks)
         except json.JSONDecodeError as err:
             _LOGGER.debug("Port JSON parse error: %s", err)
@@ -702,7 +752,8 @@ class CuktechMQTTCoordinator:
         """Return the active charge-limit backend ("local" / "server")."""
         return self._limit_backend
 
-    def _async_ingest_port(self, piid: int, payload: dict) -> None:
+    def _async_ingest_port(self, piid: int, payload: dict,
+                           retained: bool = False) -> None:
         """Feed one port sample into the local energy engine and act on cutoff.
 
         Always meters, under BOTH backends: the ESP32 has no energy accounting
@@ -710,6 +761,13 @@ class CuktechMQTTCoordinator:
         session-energy readout live and what keeps us functional if the REST
         API later goes away. Only *enforcement* is backend-specific (the server
         owns accumulation and cutoff when delegated), never accumulation.
+
+        `retained` marks a broker replay (subscribe / HA restart), not a fresh
+        device sample. Such a frame is display-only: it must not enter the
+        engine (a retained "3 A / 20 V" from hours ago would open a session and
+        integrate phantom energy), and it must not move the synthesis baseline
+        either (a replayed "0 A / inactive" would otherwise end a running
+        session as USER_OFF and consume a `once` limit).
         """
         try:
             voltage = float(payload.get("voltage") or 0.0)
@@ -720,9 +778,90 @@ class CuktechMQTTCoordinator:
         port = PIID_TO_PORT.get(piid)
         if port is None:
             return
-        self._charge_limits.ingest(port, voltage, current, active, self.hass.loop.time())
+        now = self.hass.loop.time()
+        # `ts`（ESP32 v1.1.6+ 的 payload 字段，开机毫秒）只用来识别"同一条消息被
+        # 重放"：MQTT 重订阅会再投递一次 retained，若 retain 标志因为 paho 版本
+        # 差异没被认出来，相同的 ts 就是第二道闸。只比较**相等**、不比较大小——
+        # 设备重启后 ts 归零，按大小判断会把重启后的所有帧当陈旧样本丢掉。
+        ts = payload.get("ts")
+        ts_value = None
+        if ts is not None:
+            try:
+                ts_value = float(ts)
+            except (TypeError, ValueError):
+                ts_value = None
+        if ts_value is not None and ts_value == self._last_port_ts.get(port):
+            _LOGGER.debug("Port %s: duplicate sample (ts=%s) ignored", port, ts_value)
+            return
+        if retained:
+            # 只更新显示（_port_data 已在上层写入），**不碰**合成基线：
+            # 重连重放的可能是几小时前的 inactive 帧，写进基线后下一个 tick
+            # 就会拿它把正在进行的会话判成 USER_OFF（并消费 once 限额）；
+            # 反过来一条旧的 3 A 帧会让合成采样凭空累计。基线只信实时帧。
+            _LOGGER.debug(
+                "Port %s: retained frame (%.1fV %.2fA) — display only, not metered",
+                port, voltage, current)
+            return
+        self._last_port_ts[port] = ts_value
+        self._last_port_sample[port] = (voltage, current, active)
+        self._last_live_sample_ts[port] = now
+        self._charge_limits.ingest(port, voltage, current, active, now)
         self._persist_limits_if_changed()
         self._async_enforce_limits()
+
+    @callback
+    def _async_energy_tick(self, _now=None) -> None:
+        """Keep the energy engine fed at ~1 Hz while MQTT port frames are silent.
+
+        Why this exists: the engine's windows/debounces count frames (300 frames
+        ≈ 5 min at 1 Hz), and `MAX_GAP_SEC` drops a >30 s hole **entirely** —
+        not partially. The charger stops sending BLE notifications while it
+        holds a constant output (CV/CC at fixed power), so with a purely
+        event-driven feed both the integration and the session state machine
+        stall, and the whole steady phase is metered as 0 Wh. ble_server has
+        the same mechanism in `_port_timer`.
+
+        Synthetic samples are only produced for a port that is already
+        mid-session: starting one from cached values would invent a charge that
+        may not exist. After `ENERGY_HOLD_MAX_SEC` the cached reading is too old
+        to be trusted either way (constant-power silence vs. an unplug whose
+        frame never came), so the session is closed with link-loss semantics —
+        the energy in the gap is unknown, but a `once` limit survives.
+        """
+        now = self.hass.loop.time()
+        fed = False
+        for port in PORT_MAP:
+            sample = self._last_port_sample.get(port)
+            last_live = self._last_live_sample_ts.get(port)
+            if sample is None or last_live is None:
+                continue
+            age = now - last_live
+            if age <= ENERGY_SYNTH_AFTER_SEC:
+                continue  # real frames are flowing; nothing to synthesize
+            if not self._charge_limits.is_charging(port):
+                continue
+            if age > ENERGY_HOLD_MAX_SEC:
+                _LOGGER.warning(
+                    "Port %s: no live sample for %.0fs (limit %ss) — closing "
+                    "session, energy in the gap is unknown, limit preserved",
+                    port, age, int(ENERGY_HOLD_MAX_SEC))
+                self._charge_limits.end_session(port, END_REASON_STALE, now)
+                self._notify_callbacks(self._port_callbacks)
+                continue
+            voltage, current, active = sample
+            self._charge_limits.ingest(port, voltage, current, active, now)
+            fed = True
+        if fed:
+            # 合成样本同样推进 session_wh，必须通知实体一次，否则静默期里
+            # 数值在引擎里涨、界面停在最后一帧（与服务端每秒 SSE 更新同频）。
+            self._notify_callbacks(self._port_callbacks)
+            self._persist_limits_if_changed()
+            # 限额判定**故意**也跑在合成样本上：设备只在读数变化时推送，所以
+            # "没有新帧"恰恰意味着功率没变，按最后读数续算是这个特性的前提；
+            # 而限额的价值就在于恒功率阶段必须按时断电。代价是"拔枪但没推帧"
+            # 时可能凭最后读数提前关断——此时端口本来就是空的，关断无副作用。
+            # 服务端 `_port_timer` 同样按缓存值计量并判定，语义一致。
+            self._async_enforce_limits()
 
     def _persist_limits_if_changed(self) -> None:
         """Persist limits that changed on their own, without a user action.
@@ -1171,6 +1310,18 @@ class CuktechMQTTCoordinator:
     def session_max_power(self, port: str) -> float:
         """Peak power observed in the current session."""
         return round(self._charge_limits.max_power(port), 2)
+
+    def port_sample_age(self, port: str) -> float | None:
+        """Seconds since the last *live* MQTT sample for this port.
+
+        None when no live frame has arrived since setup. Exposed on the session
+        energy sensor: it is the only way to tell "the charger is holding a
+        constant output and not pushing" from "the integration is stuck".
+        """
+        ts = self._last_live_sample_ts.get(port)
+        if ts is None:
+            return None
+        return round(self.hass.loop.time() - ts, 1)
 
     # --- BLE control ---
 

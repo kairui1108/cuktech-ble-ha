@@ -130,6 +130,7 @@ class TestCuktechMQTTCoordinator:
         msg = MagicMock()
         msg.topic = "cuktech/charger/port/c1"
         msg.payload = json.dumps({"voltage": 20.0, "current": 2.0, "power": 40.0}).encode()
+        msg.retain = False          # live frame, not a broker replay
 
         coordinator._on_port_message(msg)
         assert coordinator._port_data["1"]["voltage"] == 20.0
