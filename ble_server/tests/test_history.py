@@ -321,14 +321,17 @@ class TestSessionCleanup:
     """会话清理（H5）：闭环会话过期回收 + 崩溃孤儿会话启动回收。"""
 
     def test_cleanup_removes_expired_closed_sessions(self, history):
-        """过期闭环会话及其采样点应被清理（此前 charge_sessions 永不删除）。"""
+        """过期闭环会话及其采样点应被清理（记录期默认 30 天）。"""
         sid = history.start_session(1, protocol="PD")
         history.record_charge_point(sid, 20.0, 2.5, 50.0, "PD")
         history.end_session(sid, 1.0, 50.0, 20.0, 2.5, 600)
-        # 把该会话的 end_time 改到保留期之外
+        # 把该会话与采样点一起挪到记录期之外（40 天 > 默认 30 天）
+        old = time.time() - 40 * 86400
         history._conn.execute(
-            "UPDATE charge_sessions SET end_time = ? WHERE id = ?",
-            (time.time() - 200000, sid))
+            "UPDATE charge_sessions SET start_time = ?, end_time = ? WHERE id = ?",
+            (old, old, sid))
+        history._conn.execute(
+            "UPDATE charge_points SET timestamp = ? WHERE session_id = ?", (old, sid))
         history._conn.commit()
 
         history._cleanup_old_data()
@@ -344,6 +347,55 @@ class TestSessionCleanup:
         history._cleanup_old_data()
         sessions, _ = history.get_sessions(port=1, period="all")
         assert any(s["id"] == sid for s in sessions)
+
+    def test_cleanup_keeps_session_but_drops_old_detail_curve(self, history):
+        """记录留 30 天、详情曲线只留 7 天：10 天前的会话留下，但点被删。"""
+        sid = history.start_session(1, protocol="PD")
+        history.record_charge_point(sid, 20.0, 2.5, 50.0, "PD")
+        history.end_session(sid, 1.0, 50.0, 20.0, 2.5, 600)
+        old = time.time() - 10 * 86400
+        history._conn.execute(
+            "UPDATE charge_sessions SET start_time = ?, end_time = ? WHERE id = ?",
+            (old, old, sid))
+        history._conn.execute(
+            "UPDATE charge_points SET timestamp = ? WHERE session_id = ?", (old, sid))
+        history._conn.commit()
+
+        history._cleanup_old_data()
+
+        assert history.get_session(sid) is not None
+        assert history.get_session_points(sid) == []
+
+    def test_cleanup_keeps_points_of_open_session(self, history):
+        """未闭环会话的旧点必须留下：close_stale_sessions 要靠它们补算能量。"""
+        sid = history.start_session(1, protocol="PD")
+        old = time.time() - 10 * 86400
+        history._conn.execute(
+            "UPDATE charge_sessions SET start_time = ? WHERE id = ?", (old, sid))
+        history._conn.execute(
+            """INSERT INTO charge_points
+               (session_id, timestamp, voltage, current, power, protocol)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (sid, old, 20.0, 1.0, 20.0, "PD"))
+        history._conn.commit()
+
+        history._cleanup_old_data()
+
+        assert history.get_session_points(sid) != []
+
+    def test_cleanup_prunes_daily_energy_beyond_one_year(self, history):
+        """daily_energy 只保留最近一年，超期日被裁掉。"""
+        with history._db_lock:
+            history._conn.execute(
+                """INSERT INTO daily_energy
+                   (day, device_id, port, wh, session_count, duration_sec,
+                    peak_power_w, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                ("2000-01-01", "default", 1, 5.0, 1, 60, 10.0, time.time()))
+            history._conn.commit()
+        history._cleanup_old_data()
+        assert history._conn.execute(
+            "SELECT COUNT(*) FROM daily_energy").fetchone()[0] == 0
 
     def test_connect_closes_orphan_sessions(self, temp_db):
         """崩溃遗留的未结束会话（end_time IS NULL）在下次启动 connect 时收尾。

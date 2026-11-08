@@ -231,6 +231,33 @@ for (const [theme, card, rgb, wash, inkName] of [
     check(c >= TEXT_MIN, `${theme} action 按钮文字 ${inkName} / 淡染底 ${surface} → ${f(c)}:1`, `需要 ≥${TEXT_MIN}`);
 }
 
+console.log('\n-- 热力图五档：两套主题都必须完整、互不相同且单调过渡 --');
+const HEAT = ['--heat-0', '--heat-1', '--heat-2', '--heat-3', '--heat-4'];
+for (const [theme, block] of [['dark', dark], ['light', light]]) {
+    for (const name of HEAT) {
+        check(block[name] !== undefined, `${theme} ${name} 已定义`, '缺少会让格子变成透明');
+    }
+}
+for (const [theme, block, bg] of [
+    ['dark', dark, dark['--card-bg'] || '#000000'],
+    ['light', light, CARD],
+]) {
+    const lums = HEAT.map(k => luminance(block[k]));
+    check(new Set(lums.map(v => v.toFixed(4))).size === 5,
+          `${theme} 五档亮度互不相同`, lums.map(f).join(', '));
+    const ascending = lums.every((v, i) => i === 0 || v > lums[i - 1]);
+    const descending = lums.every((v, i) => i === 0 || v < lums[i - 1]);
+    // 深色主题 lv0→lv4 越来越亮，浅色反过来；只要单调，色阶就不会"跳档"。
+    check(ascending || descending, `${theme} 五档亮度单调（${ascending ? '递增' : '递减'}）`,
+          lums.map(f).join(', '));
+    check(HEAT.slice(1).every((k, i) => Math.abs(lums[i + 1] - lums[i]) > 0.02),
+          `${theme} 相邻档位亮度差 >0.02（肉眼可分）`, lums.map(f).join(', '));
+    // lv0 是"空槽"，必须能从卡面上分辨出来，不能和背景同色。
+    check(contrast(block['--heat-0'], bg) >= 1.05,
+          `${theme} --heat-0 对卡面可辨 ${f(contrast(block['--heat-0'], bg))}:1`,
+          `--heat-0 ${block['--heat-0']} / 卡面 ${bg}`);
+}
+
 console.log('\n-- 端口色本身不许被浅色主题覆盖（两套主题共用同一批值） --');
 for (const p of ['c1', 'c2', 'c3', 'a']) {
     check(light['--port-' + p] === undefined, `浅色主题未覆盖 --port-${p}`);

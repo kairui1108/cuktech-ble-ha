@@ -42,6 +42,20 @@ class TestChargeSessions:
         assert points[0]["voltage"] == 20.0
         assert points[1]["voltage"] == 20.1
 
+    def test_get_sessions_reports_whether_points_exist(self, history):
+        """列表要能标出"曲线已被保留期清掉"的会话（has_points）。"""
+        with_points = history.start_session(1)
+        history.record_charge_point(with_points, 20.0, 2.5, 50.0, "PD")
+        history.end_session(with_points, 1.0, 50.0, 20.0, 2.5, 600)
+
+        without_points = history.start_session(2)
+        history.end_session(without_points, 2.0, 30.0, 20.0, 1.5, 600)
+
+        sessions, _ = history.get_sessions(period="all")
+        by_id = {s["id"]: s for s in sessions}
+        assert by_id[with_points]["has_points"] == 1
+        assert by_id[without_points]["has_points"] == 0
+
     def test_record_charge_point_no_session_id(self, history):
         """record_charge_point with session_id=0 is silently ignored."""
         history.record_charge_point(0, 20.0, 2.5, 50.0, "PD")

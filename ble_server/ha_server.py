@@ -20,6 +20,7 @@ import time
 from collections import OrderedDict
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from aiohttp import web
 
@@ -65,7 +66,7 @@ def _setup_logging() -> None:
     """根 logger：按大小轮转的文件处理器 + 控制台。
 
     文件处理器是主日志（cuktech_ctl.sh log 读的就是它），按 LOG_MAX_BYTES 切割、
-    保留 LOG_BACKUP_COUNT 份，避免长期运行无限增长（info 级别下约 9 MB/天）。
+    保留 LOG_BACKUP_COUNT 份，避免长期运行无限增长（访问日志默认关闭后约 5 MB/天）。
     控制台输出由 ctl 重定向到 *.console.log，用于保留"日志系统就绪前"的启动期
     异常（导入错误、解释器告警等）。
     """
@@ -73,6 +74,17 @@ def _setup_logging() -> None:
                             "%Y-%m-%d %H:%M:%S")
     root = logging.getLogger()
     root.setLevel(logging.INFO)
+    # aiohttp 的访问日志是固定的 INFO、每请求一行（实测占日志行数 ~2/3、约 8MB/天），
+    # 而每个请求本身已经有业务日志兜底。默认关到 WARNING —— aiohttp 只在 INFO 发它，
+    # 等于关闭；需要排查请求时 `CUKTECH_ACCESS_LOG=1` 临时开回 INFO。
+    # 注意这是子 logger 的显式级别：`/api/log-level` 调 root 到 DEBUG 也不会把它带回来。
+    access_level = (
+        logging.INFO
+        if os.environ.get("CUKTECH_ACCESS_LOG", "").strip().lower()
+        in ("1", "true", "yes", "info")
+        else logging.WARNING
+    )
+    logging.getLogger("aiohttp.access").setLevel(access_level)
     if not any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers):
         try:
             fh = logging.handlers.RotatingFileHandler(
@@ -149,6 +161,38 @@ def _chart_cache_bytes(cache) -> int:
         except (TypeError, IndexError):
             continue
     return total
+
+
+def _compute_heat_levels(values) -> list:
+    """把非零电量映射成 3 个分档阈值（严格递增），对应前端的 lv1..lv4。
+
+    4 个绿色档位需要 3 个上界：≤P25 → lv1、≤P50 → lv2、≤P75 → lv3、其余 → lv4。
+    不能再给 P90：`classify` 是 `min(4, 1 + #{v > t})`，第 4 个阈值永远不会生效。
+    用分位数而不是绝对阈值/线性缩放：电量分布长尾（多数天 5~30 Wh，偶尔一次
+    200 Wh），写死阈值会让"每天 5 Wh 的耳机用户"整张图全灰。样本太少或全部
+    相等时阈值会塌缩 → 回落到最大值的比例分档。前端只做 `wh > levels[i]`，
+    保证前后端不会各算一套。
+    """
+    vals = sorted(float(v) for v in values if v and v > 0)
+    if not vals:
+        return []
+
+    def _rank(p: float) -> float:
+        idx = int(round(p * (len(vals) - 1)))
+        return vals[max(0, min(len(vals) - 1, idx))]
+
+    levels = [_rank(0.25), _rank(0.50), _rank(0.75)]
+    if len(set(levels)) < 3:
+        mx = vals[-1]
+        levels = [mx * 0.25, mx * 0.50, mx * 0.75]
+    out = []
+    prev = -1.0
+    for t in levels:
+        if t <= prev:
+            t = prev + max(abs(prev) * 1e-6, 1e-9)
+        out.append(round(t, 6))
+        prev = t
+    return out
 
 
 def _bemfa_entity_signature(raw) -> list:
@@ -566,6 +610,7 @@ class Server:
         self._history_store = PortHistory(
             db_path=self.config.server.history_db_path,
             retention_days=self.config.server.history_retention_days,
+            session_retention_days=self.config.server.session_retention_days,
         )
         self.registry = DeviceRegistry()
         for spec in self.config.device_specs():
@@ -2198,7 +2243,7 @@ class Server:
         path = '/phone.html' if self.MOBILE_UA.search(ua) else '/index.html'
         entry = _static_cache.get(path)
         if entry:
-            return _static_response(request, entry, vary_user_agent=True)
+            return await _static_response(request, entry, vary_user_agent=True)
         return web.FileResponse(WEB_DIR / path.lstrip('/'))
 
     # ── Charge Session API ──
@@ -2426,6 +2471,53 @@ class Server:
 
         return web.json_response(stats)
 
+    async def handle_heatmap(self, request):
+        """GET /api/energy/heatmap — 最近一年的每日充电量（GitHub 贡献图风格）。
+
+        固定近 365 天，不带参数；设备归属走已有的 `?device=` / 路径式寻址
+        （`device_middleware` 已把未知设备挡成 404）。返回裸对象，与
+        `energy/stats`、`energy/protocols`、`sessions` 三兄弟一致。
+        """
+        loop = asyncio.get_running_loop()
+        raw = await loop.run_in_executor(None, self.history.get_daily_energy)
+        days = raw.get("days") or []
+        data_since = raw.get("data_since")
+
+        total_wh = round(sum(d["wh"] for d in days), 2)
+        session_count = sum(int(d["sessions"] or 0) for d in days)
+        peak = max(days, key=lambda d: d["wh"]) if days else None
+        levels = _compute_heat_levels([d["wh"] for d in days])
+
+        now_dt = datetime.now()
+        payload = {
+            "range": {
+                "start": (now_dt - timedelta(days=364)).strftime("%Y-%m-%d"),
+                "end": now_dt.strftime("%Y-%m-%d"),
+            },
+            "data_since": data_since,
+            "unit": "Wh",
+            "total_wh": total_wh,
+            "active_days": len([d for d in days if d["wh"] > 0]),
+            "session_count": session_count,
+            "peak": ({"date": peak["date"], "wh": peak["wh"]} if peak else None),
+            "levels": levels,
+            "days": days,
+        }
+        body = json.dumps(payload, ensure_ascii=False,
+                          separators=(",", ":")).encode("utf-8")
+        etag = hashlib.sha256(body).hexdigest()
+        if request.headers.get("If-None-Match") == etag:
+            # RFC 7232: 304 也要带 ETag（缓存据此更新元数据）。
+            return web.Response(
+                status=304,
+                headers={"ETag": etag, "Cache-Control": "no-cache"},
+            )
+        return web.Response(
+            body=body,
+            content_type="application/json",
+            headers={"ETag": etag, "Cache-Control": "no-cache"},
+        )
+
     async def handle_energy_protocols(self, request):
         """GET /api/energy/protocols?period=today
 
@@ -2582,6 +2674,7 @@ class Server:
                     "port": cfg.server.port,
                     "log_level": cfg.server.log_level,
                     "history_retention_days": cfg.server.history_retention_days,
+                    "session_retention_days": cfg.server.session_retention_days,
                 },
                 # 设备卡片数据源（§3.12 config.html）：primary 恒在第一位且
                 # `is_primary=True`（前端据此禁用删除按钮）。敏感字段照旧打码。
@@ -3320,6 +3413,12 @@ _server = None
 # ── 静态文件缓存（启动时预加载 + 预压缩） ──
 _static_cache = {}
 _GZIP_TYPES = (".js", ".css", ".html", ".svg", ".json", ".txt")
+#: 图片/字体本身已是压缩格式，gzip 无收益，但体积大（本仓库 plugin_imgs 约 2MB）。
+#: 这些文件**不进内存**：只缓存路径/ETag/Content-Type，请求时按需从磁盘读
+#: （页缓存命中，几十微秒；它们又是长缓存，实际请求很少）。
+#: 阈值以下的小图标（favicon、状态小图）仍常驻，避免每次页面加载都碰磁盘。
+_LAZY_TYPES = (".png", ".jpg", ".jpeg", ".webp", ".ico", ".woff", ".woff2")
+_LAZY_MIN_BYTES = 16 * 1024
 
 
 def _static_cache_key(static_dir, fpath) -> str:
@@ -3359,6 +3458,15 @@ def _cache_static_files():
             ".webp": "image/webp",
         }
         ct = mime_map.get(ext, "application/octet-stream")
+        etag = _etag_of(raw)
+        # 大图片/字体：ETag 要读一次算出来，算完就把 raw 丢掉，请求时再读磁盘。
+        if ext in _LAZY_TYPES and len(raw) >= _LAZY_MIN_BYTES:
+            _static_cache[key] = {
+                "path": str(fpath),
+                "etag": etag,
+                "content_type": ct,
+            }
+            continue
         # 预计算 gzip 版本
         gzipped = None
         if ext in _GZIP_TYPES and len(raw) >= 1024:
@@ -3369,7 +3477,7 @@ def _cache_static_files():
             "raw": raw,
             "gzipped": gzipped,
             "content_type": ct,
-            "etag": _etag_of(raw),
+            "etag": etag,
         }
     # 根目录 HTML 文件也加入缓存
     for html_name in ("index.html", "phone.html", "config.html"):
@@ -3410,13 +3518,16 @@ def _cache_control_for(entry) -> str:
     return "no-cache"
 
 
-def _static_response(request, entry, *, vary_user_agent: bool = False):
+async def _static_response(request, entry, *, vary_user_agent: bool = False):
     """静态缓存的统一出口：ETag 条件请求（304）+ 缓存策略 + Vary。
 
     同一个 URL 的表示会随请求头变化，缓存必须被告知：
     · gzip 与未压缩共用同一个 ETag（内容相同）→ `Vary: Accept-Encoding`，
       否则共享缓存可能把 gzip 体发给不支持 gzip 的客户端；
     · 首页按 UA 分发 index.html / phone.html → `Vary: User-Agent`。
+
+    图片/字体的惰性条目没有 `raw`：304 分支不碰磁盘，只有真要发 body 时才读文件
+    （放到线程里，避免慢盘阻塞事件循环）。
     """
     etag = entry.get("etag") or _etag_of(entry["raw"])
     vary = []
@@ -3430,7 +3541,13 @@ def _static_response(request, entry, *, vary_user_agent: bool = False):
     if request.headers.get("If-None-Match") == etag:
         return web.Response(status=304, headers=common)
     headers = {"Content-Type": entry["content_type"], **common}
-    body = entry["raw"]
+    body = entry.get("raw")
+    if body is None:
+        try:
+            body = await asyncio.to_thread(Path(entry["path"]).read_bytes)
+        except OSError:
+            # 启动后被删/被替换的文件：缓存元信息已过期，回 404 而不是 500。
+            raise web.HTTPNotFound()
     if (request.headers.get("Accept-Encoding", "").find("gzip") != -1
             and entry.get("gzipped")):
         body = entry["gzipped"]
@@ -3444,7 +3561,7 @@ async def handle_cached_static(request):
     entry = _static_cache.get(request.path)
     if entry is None:
         raise web.HTTPNotFound()
-    return _static_response(request, entry)
+    return await _static_response(request, entry)
 
 
 def get_server():
@@ -3625,6 +3742,7 @@ app.router.add_get("/api/sessions/{id}/points", lambda r: get_server().handle_se
 app.router.add_get("/api/sessions/{id}/export", lambda r: get_server().handle_session_export(r))
 app.router.add_get("/api/energy/stats", lambda r: get_server().handle_energy_stats(r))
 app.router.add_get("/api/energy/protocols", lambda r: get_server().handle_energy_protocols(r))
+app.router.add_get("/api/energy/heatmap", lambda r: get_server().handle_heatmap(r))
 app.router.add_get("/api/events", lambda r: get_server().handle_sse(r))
 app.router.add_get("/api/config", lambda r: get_server().handle_config_get(r))
 app.router.add_post("/api/config", lambda r: get_server().handle_config_save(r))
@@ -3660,6 +3778,7 @@ _DEVICE_SCOPED_ROUTES = (
     ("GET", "/sessions/{id}/export", "handle_session_export"),
     ("GET", "/energy/stats", "handle_energy_stats"),
     ("GET", "/energy/protocols", "handle_energy_protocols"),
+    ("GET", "/energy/heatmap", "handle_heatmap"),
 )
 
 for _method, _path, _handler_name in _DEVICE_SCOPED_ROUTES:
@@ -3671,10 +3790,14 @@ for _method, _path, _handler_name in _DEVICE_SCOPED_ROUTES:
 
 async def on_startup(app_):
     _cache_static_files()
-    _LOGGER.info("Static files cached: %d files (%.1f KB raw / %.1f KB gzip)",
-                 len(_static_cache),
-                 sum(len(v["raw"]) for v in _static_cache.values()) / 1024,
-                 sum(len(v["gzipped"] or v["raw"]) for v in _static_cache.values()) / 1024)
+    resident = [v for v in _static_cache.values() if "raw" in v]
+    _LOGGER.info(
+        "Static files cached: %d files (%d in memory, %.1f KB raw / %.1f KB gzip; "
+        "%d large images/fonts read from disk on demand)",
+        len(_static_cache), len(resident),
+        sum(len(v["raw"]) for v in resident) / 1024,
+        sum(len(v["gzipped"] or v["raw"]) for v in resident) / 1024,
+        len(_static_cache) - len(resident))
     s = get_server()
     async with s._start_lock:
         s.loop = asyncio.get_running_loop()

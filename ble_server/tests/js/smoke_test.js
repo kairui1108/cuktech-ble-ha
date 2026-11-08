@@ -203,12 +203,13 @@ function indexChain() {
         fs.readFileSync(path.join(STATIC, 'device-store.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'device-bench.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'charge_history.js'), 'utf8'),
+        fs.readFileSync(path.join(STATIC, 'heatmap.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'charge_limit.js'), 'utf8'),
         fs.readFileSync(path.join(STATIC, 'app.js'), 'utf8'),
     ].join('\n;\n');
 }
 
-check('index.html chain: chart-config + chart-loader + device-store + device-bench + charge_history + charge_limit + app', () => {
+check('index.html chain: chart-config + chart-loader + device-store + device-bench + charge_history + heatmap + charge_limit + app', () => {
     const ctx = load(indexChain());
     flipLocales(ctx); // exercises app.js rerenderDynamic + charge_history refresh
 });

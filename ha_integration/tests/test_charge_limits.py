@@ -658,6 +658,7 @@ class TestPersistence:
         old value and the next restart silently re-armed a one-shot limit.
         """
         coord = CuktechMQTTCoordinator(real_task_hass, mock_entry)
+        coord._limits_loaded = True
         await coord.async_set_charge_limit("c1", 0.1, LIMIT_MODE_ONCE)
         assert coord._limits_store._data["limits"]["c1"]["wh"] == 0.1
 
@@ -690,6 +691,7 @@ class TestPersistence:
         settings — without an explicit notify they'd keep showing the old limit
         until the next settings frame (20-90s on ESP32)."""
         coord = CuktechMQTTCoordinator(real_task_hass, mock_entry)
+        coord._limits_loaded = True
         settings_cb = MagicMock()
         coord.register_settings_callback(settings_cb)
         await coord.async_set_charge_limit("c1", 0.1, LIMIT_MODE_ONCE)
@@ -713,6 +715,7 @@ class TestPersistence:
     async def test_no_notify_when_nothing_changes(self, real_task_hass, mock_entry):
         """The 1Hz sample path must not spam entity refreshes."""
         coord = CuktechMQTTCoordinator(real_task_hass, mock_entry)
+        coord._limits_loaded = True
         await coord.async_set_charge_limit("c1", 500.0, LIMIT_MODE_ALWAYS)
         settings_cb = MagicMock()
         coord.register_settings_callback(settings_cb)
@@ -741,6 +744,7 @@ class TestPersistence:
     async def test_unchanged_limits_are_not_rewritten(self, real_task_hass, mock_entry):
         """The change-detector must not hit the disk on every 1Hz sample."""
         coord = CuktechMQTTCoordinator(real_task_hass, mock_entry)
+        coord._limits_loaded = True
         await coord.async_set_charge_limit("c1", 500.0, LIMIT_MODE_ALWAYS)
         coord._limits_store.async_save = AsyncMock()
         t = 1000.0
@@ -879,6 +883,19 @@ class TestShutdown:
         coord._limits_store.async_save.assert_awaited()
         saved = coord._limits_store.async_save.await_args[0][0]
         assert saved["totals"]["c1"] == pytest.approx(60 * 10 / 3600)   # 60 W × 10 s
+
+    @pytest.mark.asyncio
+    async def test_live_frame_before_load_does_not_persist_defaults(self, real_task_hass, mock_entry):
+        """MQTT subscriptions start before `_async_load_limits()`: a live frame
+        in that window must not save the in-memory defaults over the Store."""
+        coord = CuktechMQTTCoordinator(real_task_hass, mock_entry)
+        coord._limits_store.async_save = AsyncMock()
+        real_task_hass.loop.time.return_value = 1000.0
+        coord._async_ingest_port(
+            1, {"voltage": 20.0, "current": 1.0, "active": True})
+        await drain_tasks(real_task_hass, real_task_hass._captured)
+        assert coord._saved_limits is None
+        assert not coord._limits_store.async_save.called
 
     @pytest.mark.asyncio
     async def test_unload_does_not_clobber_store_before_load(self, coordinator):

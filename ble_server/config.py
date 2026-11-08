@@ -186,7 +186,8 @@ class ServerConfig:
     command_timeout: float = 10.0
     settings_refresh_interval: float = 10.0
     log_level: str = "info"
-    history_retention_days: int = 2
+    history_retention_days: int = 2          # 功率曲线（port_history）保留天数
+    session_retention_days: int = 30         # 充电记录（charge_sessions）保留天数
     history_db_path: str = "port_history.db"
     reconnect_base_delay: float = 1.0
     reconnect_max_delay: float = 300.0
@@ -363,6 +364,17 @@ def config_from_mapping(ycfg: dict) -> Config:
     except (ValueError, TypeError) as e:
         raise ValueError(f"History retention days must be an integer: {e}")
     try:
+        session_retention = int(os.environ.get(
+            "CUKTECH_SESSION_RETENTION_DAYS",
+            server_cfg.get("session_retention_days", 30)))
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Session retention days must be an integer: {e}")
+    # 上限 3650 天：再大就失去意义，也防止一个手滑的数值把清理变成"永不清理"。
+    # 刻度是"天"，所以下限是 1（0 会让清理把当天刚写的记录也删掉）。
+    if not 1 <= session_retention <= 3650:
+        raise ValueError(
+            f"Session retention days must be between 1 and 3650, got {session_retention}")
+    try:
         reconnect_base_delay = float(server_cfg.get("reconnect_base_delay", 1.0))
     except (ValueError, TypeError) as e:
         raise ValueError(f"Reconnect base delay must be a number: {e}")
@@ -378,6 +390,7 @@ def config_from_mapping(ycfg: dict) -> Config:
         settings_refresh_interval=server_cfg.get("settings_refresh_interval", 60.0),
         log_level=os.environ.get("CUKTECH_LOG_LEVEL", server_cfg.get("log_level", "info")),
         history_retention_days=history_retention,
+        session_retention_days=session_retention,
         # 空串 = 没配（config.yaml.example 里就是 ""）：回落默认路径。以前会原样传空串给
         # `sqlite3.connect("")`，那是**临时库**——原生部署按 README `cp config.yaml.example`
         # 起服务，历史重启即丢，`cuktech_ctl.sh clear-history` 也永远找不到文件。

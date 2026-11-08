@@ -1387,6 +1387,70 @@ class TestSessionRecording:
         mgr._history.delete_session.assert_called_once_with(100)
 
 
+class TestDailyEnergyDelta:
+    """日汇总增量：差值口径 + 记录开关的"跳过写入但不跳过基线"。"""
+
+    def test_skips_writes_when_recording_off_but_advances_baseline(self):
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = mgr._energy_states[1]
+        es.total_wh = 10.0
+        mgr.record_sessions = False
+
+        mgr._flush_daily_delta(1, 1000.0)
+
+        mgr._history.add_energy_delta.assert_not_called()
+        assert mgr._daily_last_total[1] == 10.0   # 基线必须先推进
+
+        mgr.record_sessions = True
+        es.total_wh = 12.0                        # 重开之后只结算新的 2 Wh
+        mgr._flush_daily_delta(1, 1001.0)
+
+        mgr._history.add_energy_delta.assert_called_once_with(1, 2.0, 1001.0)
+        assert mgr._daily_last_total[1] == 12.0
+
+    def test_ignores_non_positive_delta(self):
+        """total_wh 被会话回填写回旧值时会短暂变小，不能记成负能量。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        es = mgr._energy_states[1]
+        es.total_wh = 5.0
+        mgr._daily_last_total[1] = 5.0
+
+        es.total_wh = 4.0
+        mgr._flush_daily_delta(1, 1000.0)
+
+        mgr._history.add_energy_delta.assert_not_called()
+        assert mgr._daily_last_total[1] == 4.0
+
+    def test_cross_midnight_uses_each_frame_time(self):
+        """常供端口跨零点：两天的增量分别按各自帧时间入账，不会整段算到第二天。"""
+        mgr = make_manager()
+        mgr._history = MagicMock()
+        mgr.permanent_ports = {1}
+        es = mgr._energy_states[1]
+        midnight = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+
+        es.total_wh = 10.0
+        mgr._flush_daily_delta(1, midnight - 30)     # 第一天 10 Wh
+        es.total_wh = 20.0
+        mgr._flush_daily_delta(1, midnight + 30)     # 第二天只结新增的 10 Wh
+
+        calls = mgr._history.add_energy_delta.call_args_list
+        assert [(c.args[1], c.args[2]) for c in calls] == [
+            (10.0, midnight - 30), (10.0, midnight + 30)]
+
+    def test_set_history_resets_baseline(self):
+        """绑库之前累计的能量不归日汇总（否则整段旧累计会记到今天）。"""
+        mgr = make_manager()
+        mgr._energy_states[1].total_wh = 7.5
+        mgr.set_history(MagicMock())
+
+        assert mgr._daily_last_total[1] == 7.5
+        mgr._flush_daily_delta(1, 1000.0)
+        mgr._history.add_energy_delta.assert_not_called()
+
+
 class TestChargeLimitWiring:
     """判定确实挂在两条数据路径上（push 帧 + 1s timer）。"""
 

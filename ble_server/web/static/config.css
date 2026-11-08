@@ -618,7 +618,10 @@ body.light .btn-save:hover { background: #0e6fb8; }
     .cfg-sec { --sec-pad: 22px; }
     .cfg-savebar {
         max-width: var(--cfg-max); margin: 0 auto;
-        padding: 12px 24px calc(12px + env(safe-area-inset-bottom, 0px)) calc(var(--rail-w) + 48px);
+        /* 状态文字贴条带最左边（= 分节目录那一列的左沿，24px 与右内距对称），
+           保存按钮仍在最右边与卡片右沿对齐：条带左右各留 24px，
+           中间那 236px 不再让文字浮在半空 */
+        padding: 12px 24px calc(12px + env(safe-area-inset-bottom, 0px)) 24px;
         border-radius: 0; border: 0; border-top: 1px solid var(--cfg-line);
     }
     .device-card-body .config-input { width: 300px; }

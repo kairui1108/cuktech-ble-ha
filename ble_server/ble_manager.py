@@ -243,6 +243,9 @@ class BLEManager:
                             ChargeSessionDetector, SessionStartGate)
         self._energy_integrator = AdaptiveEnergyIntegrator()
         self._energy_states = {i: PortEnergyState() for i in range(1, 5)}
+        # 日汇总基线：每口上一次已结算的 total_wh。差值法见 _flush_daily_delta；
+        # 基线必须**无条件推进**，否则记录关闭期间的能量会在重开时被补记。
+        self._daily_last_total = {i: 0.0 for i in range(1, 5)}
         # 会话边界判定（时间窗+功率）与开始门限（功率+持续+静默期）
         self._session_dets = {i: ChargeSessionDetector() for i in range(1, 5)}
         self._start_gates = {i: SessionStartGate() for i in range(1, 5)}
@@ -355,6 +358,27 @@ class BLEManager:
 
     def set_history(self, history):
         self._history = history
+        # 绑库之前累计的能量不归日汇总：BLEManager 可能在本进程已经采样之后
+        # 才绑库（重配 / 测试装配），这时 total_wh 已大于 0，不重置基线就会
+        # 把"绑库前"的整段累计一次性记到今天。
+        self._daily_last_total = {
+            i: es.total_wh for i, es in self._energy_states.items()}
+
+    def _flush_daily_delta(self, piid: int, ts: float) -> None:
+        """把本帧积分出来的能量增量交给日汇总。
+
+        用「单调总量差值」而不是「积分前后对比」：会话开始回填那段会把
+        total_wh 存回原值（见 _start_session 的注释），前后对比会双计。
+        """
+        es = self._energy_states[piid]
+        prev = self._daily_last_total[piid]
+        delta = es.total_wh - prev
+        # 基线必须无条件推进：记录关闭期间的 delta 不能留到重新打开时补记
+        # （那等于绕过用户的"别记我的数据"）。只跳过写入，不跳过基线。
+        self._daily_last_total[piid] = es.total_wh
+        if delta <= 0 or self._history is None or not self.record_sessions:
+            return
+        self._history.add_energy_delta(piid, delta, ts)   # 纯内存，不取 DB 锁
 
     @property
     def is_running(self) -> bool:
@@ -2091,6 +2115,8 @@ class BLEManager:
                             piid, ps.to_dict())
                         task.add_done_callback(
                             lambda t: self.log.error("Timer record_port_data failed: %s", t.exception()) if t.exception() else None)
+                    # 帧末结算：定时器路径也要更新日汇总（C3/USB-A 没有推送，全靠它）
+                    self._flush_daily_delta(piid, now)
                 except Exception as e:
                     self.log.error("Port timer error for piid %d: %s", piid, e, exc_info=True)
 
@@ -2581,6 +2607,9 @@ class BLEManager:
                     task = loop.run_in_executor(None, self._history.record_port_data, piid, port_info)
                     task.add_done_callback(
                         lambda t: self.log.error("History write failed: %s", t.exception()) if t.exception() else None)
+
+                # 帧末结算：本帧积分出来的能量交给日汇总（纯内存，不取 DB 锁）
+                self._flush_daily_delta(piid, timestamp)
 
     async def _handle_multiframe(self, data):
         """多帧数据：拼接子帧后整体解密一次。

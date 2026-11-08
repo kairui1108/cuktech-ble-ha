@@ -19,6 +19,7 @@
 - **电量积分 (Wh)**：基于梯形积分实时累积端口充电能量
 - **充电量限额**：为每个端口设置"充到指定 Wh 自动关断"（`once` 一次性 / `always` 长期有效），index/phone 页卡片直接设置
 - **SQLite 历史数据**：端口数据持久化存储，支持统计和导出
+- **年度用电热力图**：用电统计卡片的「日历」tab 展示最近一年的每日充电量（GitHub 贡献图风格，保留 365 天）
 - **BLE 连接质量评估**：实时评分（0-100），包含解密率、通知响应、连接稳定性等指标
 - **充电完成通知**：通过 MQTT 推送充电完成事件，支持 HA 自动化
 - **环境检查**：`check_env.sh` 一键检查系统兼容性
@@ -263,6 +264,52 @@ curl http://localhost:8199/api/charge-limits
 ——否则用户以为设了限额、实际被禁用，属于危险的静默降级。`wh=0` 表示关闭该端口限额。
 （HA 集成的 number 实体上限与此一致：`0 ~ 1000`。）
 
+## 数据保留与热力图
+
+历史库按用途分层保留，各层保留期互相独立（配置项 `server.history_retention_days`
+与 `server.session_retention_days`，也可用同名环境变量覆盖）：
+
+| 表 | 内容 | 默认保留 | 可配置 |
+|---|---|---|---|
+| `port_history` | 功率曲线采样点（最占空间） | 2 天 | `history_retention_days` |
+| `charge_sessions` | 充电会话记录（列表 / 详情） | 30 天 | `session_retention_days`（1–3650） |
+| `charge_points` | 会话内明细曲线 | 7 天 | 否（`min(session_retention_days, 7)`） |
+| `daily_energy` | 每日电量汇总（热力图） | 365 天 | 否 |
+
+Web UI 的「用电统计 → 日历」用 `daily_energy` 画最近一年的 GitHub 风格热力图。
+这张表由两条写入路径共同维护：
+
+- **在线增量**：BLE 帧的能量差按帧时间累加到当天，门槛以下的小充电也会计入；
+- **会话闭合**：写入当日会话数 / 时长 / 峰值功率（`wh` 仍来自增量，避免双计）。
+
+跨零点的会话（包括长期供电端口）不需要特殊拆分：每条帧的能量差按该帧发生的
+本地日入账，第一天、第二天各得各自的部分（误差上限是 1s 定时器节拍）；会话
+次数/时长/峰值记在会话开始日。只有**重建**（首次启动回填或 `daily_stats
+backfill`）没有帧级数据，会把整段会话记在开始日——这是唯一会跨天合并的场景。
+常供端口不写 `charge_points`（曲线存内存窗口），但日汇总照常按增量累计。
+
+因此"有电但没会话"的日子也会出现在图上；`data_since`（该设备全量最早一天）之前
+的格子显示为空心，而不是 0。
+
+首次升级启动时会从 `charge_sessions` 自动回填一次（标记在 meta 的
+`daily_stats_version`）。服务跑过之后再手动重建会丢掉"纯增量日"，所以脚本默认
+拒绝写非空表：
+
+```bash
+./cuktech_ctl.sh stop
+sqlite3 data/port_history.db "VACUUM INTO 'history.backup.db'"
+python scripts/daily_stats.py --db data/port_history.db backfill --dry-run
+python scripts/daily_stats.py --db data/port_history.db backfill --force --replace
+python scripts/daily_stats.py --db data/port_history.db audit   # 日汇总 vs 会话对账
+```
+
+`--force` 只补缺失的日期，`--force --replace` 才清空重建（`--replace` 单独使用
+会被拒绝）；回填成功后会写入 `daily_stats_version`，因此从备份恢复的数据不会
+在下次启动时被自动回填清掉。`remap OLD NEW` 用于设备重扫码后合并两台设备的
+历史（日汇总、会话、采样与 meta），`purge --before` 与 `export` 分别是裁剪和 CSV 导出；`--from-backup DB`
+从备份库读 `charge_sessions` 重建当前库。**写操作必须在服务停止后执行**，否则
+会和在线增量抢同一天的行。
+
 ## 服务管理
 
 ```bash
@@ -273,12 +320,16 @@ curl http://localhost:8199/api/charge-limits
 ./cuktech_ctl.sh log [n]       # 查看日志
 ./cuktech_ctl.sh clear-log     # 清空日志
 ./cuktech_ctl.sh clear-history # 清空历史数据库
+./cuktech_ctl.sh daily-stats audit  # daily_energy 对账（热力图数据源）
 ```
+
+访问日志（`aiohttp.access`，每请求一行）默认关闭，日志只保留业务事件。排查请求时
+用 `CUKTECH_ACCESS_LOG=1 ./cuktech_ctl.sh restart` 临时打开（重启后失效）。
 
 ## 测试
 
 ```bash
-.venv/bin/python -m pytest tests/ -v  # 240+ tests
+.venv/bin/python -m pytest tests/ -v  # 880+ tests
 ```
 
 ## 致谢

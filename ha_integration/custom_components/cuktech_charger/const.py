@@ -224,7 +224,8 @@ LIMIT_POLL_INTERVAL = timedelta(seconds=5)
 # 继续累计会凭空多出电量并误触发限额。超过 HOLD_MAX 以 link-loss 语义
 # 结束会话（once 限额保留），宁可少算也不要凭空虚增。
 ENERGY_TICK_INTERVAL = timedelta(seconds=1)   # 合成采样周期（与设备推送同频）
-ENERGY_SYNTH_AFTER_SEC = 2.0                  # 超过这么久没真帧才开始合成
+ENERGY_SYNTH_AFTER_SEC = 1.0                  # 距最后一帧 >=1 tick 才开始合成
+ENERGY_NATIVE_RATE_SEC = 1.5                  # 真帧间隔小于它 → 设备本身已够密，不再合成
 ENERGY_HOLD_MAX_SEC = 300.0                   # 合成采样的最长续期
 
 # ── 限额实体 (per-port number/select/sensor 三件套 × 4 端口) ──

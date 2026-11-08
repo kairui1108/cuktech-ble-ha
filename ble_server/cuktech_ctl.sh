@@ -228,6 +228,10 @@ do_start() {
     # 这里只把 stdout/stderr 落到 console 文件，用于保留"日志系统就绪前"的
     # 启动期异常（导入错误、解释器告警等）。
     export CUKTECH_LOG_FILE="$LOG_FILE"
+    # glibc 每个线程最多注册一个 64MB 虚拟 arena，7 个线程下匿名映射里会留下
+    # 数 MB "已释放但不归还"的页。压到 2 个 arena（实测 RSS 降约 3-5MB；1Hz
+    # 的采样负载没有争用风险）。外部显式设置时尊重外部值。
+    export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
     nohup "$PYTHON" -u "$SERVER" >> "$CONSOLE_LOG" 2>&1 &
     local pid=$!
     echo $pid > "$PID_FILE"
@@ -363,6 +367,23 @@ do_history_down() {
     "$PYTHON" "$SCRIPT_DIR/scripts/history_down.py" --db "$db" "$@"
 }
 
+do_daily_stats() {
+    # daily_energy（热力图数据源）维护，见 scripts/daily_stats.py 与设计文档 §4.6。
+    # 读子命令（audit/orphans/export）可以热跑；写子命令要求先 stop：
+    # 在线增量与脚本整表重建会同时写同一天的行，造成双计。
+    case "${1:-}" in
+        backfill|remap|purge)
+            if pid=$(get_pid); then
+                echo "Server is running (PID: $pid) — 先 stop 再改 daily_energy，否则会和在线增量抢同一天的行"
+                return 1
+            fi
+            ;;
+    esac
+    local db
+    db="$(resolve_history_db)"
+    "$PYTHON" "$SCRIPT_DIR/scripts/daily_stats.py" --db "$db" "$@"
+}
+
 do_clean_retained() {
     # 回滚用（§6.1）：清掉非 primary 设备的 retained 消息，否则 broker 里留着
     # "幽灵设备"。前缀按配置推导（不硬编码 cuktech/#）。
@@ -378,9 +399,10 @@ case "${1:-help}" in
     clear-log)    do_clear_log ;;
     clear-history) do_clear_history ;;
     history-down) shift; do_history_down "$@" ;;
+    daily-stats)  shift; do_daily_stats "$@" ;;
     clean-retained) shift; do_clean_retained "$@" ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|log [lines]|clear-log|clear-history|history-down|clean-retained}"
+        echo "Usage: $0 {start|stop|restart|status|log [lines]|clear-log|clear-history|history-down|daily-stats|clean-retained}"
         echo ""
         echo "Commands:"
         echo "  start         - Start the BLE server"
@@ -391,6 +413,7 @@ case "${1:-help}" in
         echo "  clear-log     - Clear service log file"
         echo "  clear-history - Clear history database"
         echo "  history-down  - 回滚前归档非 primary 设备的历史（幂等，先自动备份）"
+        echo "  daily-stats   - daily_energy 维护：backfill/audit/orphans/remap/purge/export"
         echo "  clean-retained- 清理非 primary 设备的 retained MQTT 消息（回滚用）"
         exit 1
         ;;

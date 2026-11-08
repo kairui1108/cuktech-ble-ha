@@ -97,6 +97,14 @@ class TestArchive:
         archived = _rows(db, "SELECT voltage, current FROM charge_points_archive")
         assert [(p["voltage"], p["current"]) for p in archived] == [(9.0, 2.0)]
 
+    def test_daily_energy_archived_for_non_primary(self, db):
+        """重新升级后，已归档设备的日汇总不能复活到主库。"""
+        history_down.archive_non_primary(db)
+        assert [r["device_id"] for r in _rows(
+            db, "SELECT device_id FROM daily_energy")] == ["default"]
+        archived = _rows(db, "SELECT device_id FROM daily_energy_archive")
+        assert [r["device_id"] for r in archived] == ["desk"]
+
     def test_meta_namespace_keys_archived_and_primary_kept(self, db):
         history_down.archive_non_primary(db)
         keys = {r["key"] for r in _rows(db, "SELECT key FROM meta")}
@@ -111,7 +119,7 @@ class TestArchive:
                     for t in ("port_history", "charge_sessions", "charge_points", "meta")}
         again = history_down.archive_non_primary(db)
         assert again == {"charge_points": 0, "charge_sessions": 0,
-                         "port_history": 0, "meta": 0}
+                         "port_history": 0, "daily_energy": 0, "meta": 0}
         after = {t: _rows(db, f"SELECT * FROM {t} ORDER BY 1") for t in snapshot}
         assert after == snapshot
         # 归档表也没有出现重复（原 id 是主键 + INSERT OR IGNORE）

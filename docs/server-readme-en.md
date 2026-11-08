@@ -20,6 +20,7 @@ Standalone BLE server for connecting CUKTECH chargers and pushing real-time data
 - **Energy Integration (Wh)**: Real-time trapezoidal energy accumulation per port
 - **Charge Limit**: Per-port "switch off after N Wh" (`once` one-shot / `always` persistent), configurable from the index/phone UI cards
 - **SQLite History**: Persistent port data with statistics and CSV export
+- **Annual charging heatmap**: GitHub-contribution-style daily energy for the last year (365-day retention) in the energy card's Calendar tab
 - **BLE Connection Quality**: Real-time scoring (0-100) with decrypt rate, notification response, stability metrics
 - **Environment Check**: `check_env.sh` for system compatibility
 
@@ -195,6 +196,59 @@ cp config.yaml.example config.yaml
 ./cuktech_ctl.sh start
 ```
 
+## Data Retention & Heatmap
+
+History is retained in independent layers (`server.history_retention_days` /
+`server.session_retention_days`, overridable by the same environment variables):
+
+| Table | Content | Default | Configurable |
+|---|---|---|---|
+| `port_history` | Power-curve samples (largest) | 2 days | `history_retention_days` |
+| `charge_sessions` | Session records (list / detail) | 30 days | `session_retention_days` (1–3650) |
+| `charge_points` | Per-session detail curve | 7 days | no (`min(session_retention_days, 7)`) |
+| `daily_energy` | Daily energy rollup (heatmap) | 365 days | no |
+
+The "Calendar" tab in the energy card draws a GitHub-style year heatmap from
+`daily_energy`. Two paths write it:
+
+- **Live deltas** — each BLE frame's energy difference is added to its local day, so
+  charging below the session threshold still counts;
+- **Session close** — adds that day's session count / duration / peak power (`wh`
+  still comes from the deltas, to avoid double counting).
+
+Sessions that cross midnight (including permanent-power ports) need no special
+splitting: every frame's energy delta is booked to that frame's local day, so day
+one and day two each get their own share (bounded by the 1 s timer tick); session
+count/duration/peak are booked to the start day. Only a **rebuild** (startup
+backfill or `daily_stats backfill`) lacks frame data and books the whole session to
+its start day — the one case that merges across days. Permanent ports write no
+`charge_points` (their curve lives in a memory window), but their daily energy is
+still accumulated from deltas.
+
+So a day with energy but no session still shows up; cells before `data_since` (the
+device's earliest day) render as empty rather than zero.
+
+The first start after upgrading backfills `daily_energy` from `charge_sessions` once
+(marker: `daily_stats_version` in the meta table). Rebuilding by hand after the
+server has run would drop delta-only days, so the script refuses a non-empty table:
+
+```bash
+./cuktech_ctl.sh stop
+sqlite3 data/port_history.db "VACUUM INTO 'history.backup.db'"
+python scripts/daily_stats.py --db data/port_history.db backfill --dry-run
+python scripts/daily_stats.py --db data/port_history.db backfill --force --replace
+python scripts/daily_stats.py --db data/port_history.db audit   # rollup vs sessions
+```
+
+`--force` fills only missing days, `--force --replace` wipes and rebuilds (`--replace`
+alone is refused). A successful backfill writes `daily_stats_version`, so data
+restored from a backup is not wiped by the automatic backfill on the next start.
+`remap OLD NEW` merges a re-paired device's full history (rollup, sessions,
+samples and meta), `purge --before` and `export`
+prune and dump CSV, and `--from-backup DB` rebuilds from a backup copy's
+`charge_sessions`. **Mutating commands require the server to be stopped**, otherwise
+they race the live deltas for the same day.
+
 ## Service Management
 
 ```bash
@@ -205,7 +259,12 @@ cp config.yaml.example config.yaml
 ./cuktech_ctl.sh log [n]       # Last n log lines
 ./cuktech_ctl.sh clear-log     # Clear log
 ./cuktech_ctl.sh clear-history # Clear history DB
+./cuktech_ctl.sh daily-stats audit  # daily_energy reconciliation
 ```
+
+Access logging (`aiohttp.access`, one line per request) is off by default so the log
+keeps only business events. To debug requests:
+`CUKTECH_ACCESS_LOG=1 ./cuktech_ctl.sh restart` (cleared by the next restart).
 
 ## Web UI
 

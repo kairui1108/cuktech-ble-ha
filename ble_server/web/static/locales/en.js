@@ -202,6 +202,8 @@
             peakPower: 'Peak Power (W)',
             noRecords: 'No charge records yet',
             inProgress: 'Live',
+            noCurveBadge: 'No chart',
+            noCurveHint: 'Detailed curve is kept for the last 7 days',
             energy: 'Energy: {{wh}} Wh',
             powerTooltip: 'Power: {{power}} W',
             protocolTooltip: 'Protocol: {{protocol}}',
@@ -231,11 +233,29 @@
             tabShare: 'Breakdown',
             tabHourly: 'Hourly',
             tabProtocols: 'Protocols',
+            tabCalendar: 'Heatmap',
             total: '{{period}} · {{wh}} Wh total',
             count: '{{count}}×',
             unknown: 'Unknown',
             noData: 'No data for this period',
             hourlyAria: 'Hourly energy consumption over the last 24 hours'
+        },
+
+        // ── Contribution-style calendar heatmap ──
+        heatmap: {
+            total: '{{wh}} Wh in the last year',
+            peak: 'Peak {{date}} · {{wh}}',
+            less: 'Less',
+            more: 'More',
+            tipSessions: '{{count}} sessions',
+            tipEmpty: 'No charging',
+            tipNoStats: 'Not tracked yet',
+            empty: 'No charging records yet',
+            aria: 'Daily charging energy over the last year, peak {{wh}} on {{date}}',
+            ariaShort: 'Daily charging energy over the last year',
+            months: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+            weekdays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
         },
 
         // ── Phone page ──
@@ -316,7 +336,10 @@
             bleStatusHint: 'Leave empty to derive "<device_id>_ble". Pins only the entity ID in Bemfa/XiaoAi — HA entity and device names are unaffected.',
             serverSection: 'Server',
             webPort: 'Web Port',
-            retention: 'Data retention (days)',
+            retention: 'Curve retention (days)',
+            retentionSessions: 'Charge record retention (days)',
+            retentionSessionsHint: 'Session detail curves are kept for 7 days',
+            retentionInvalid: 'Charge record retention must be an integer between 1 and 3650',
             webLanguage: 'Interface Language',
             webLanguageHint: 'Applies immediately, no restart needed; all pages stay in sync',
             langAuto: 'Follow System',

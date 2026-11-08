@@ -119,6 +119,22 @@
        注意：这个变量以前只在 .energy-pane 里被 var() 引用、全仓从未赋值，
        等于永远吃 var() 的默认值——现在显式定在这里。 */
     --energy-pane-h: 159px;
+    /* 充电热力图：GitHub Contribution Graph 的绿色五档（暗色版）。
+       0 = 无电量底槽，1..4 = 分档；颜色与 github.com 暗色主题一致。 */
+    --heat-0: #161b22;
+    --heat-1: #0e4429;
+    --heat-2: #006d32;
+    --heat-3: #26a641;
+    --heat-4: #39d353;
+    /* 悬停气泡：跟主题走的玻璃卡（深色=近黑底 / 浅色=白底，见下面 html[data-appearance]）。
+       材质对齐 easyui Activity Heatmap 的 tooltip：12px、两行、1px 极淡描边、大投影。 */
+    --hm-tip-bg: rgba(37, 38, 43, 0.94);
+    --hm-tip-fg: #f4f4f6;
+    --hm-tip-sub: rgba(244, 244, 246, 0.62);
+    --hm-tip-border: rgba(255, 255, 255, 0.12);
+    --hm-tip-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+    /* 悬停 / 键盘游标的描边：比格子亮一档，10px 的小方块也看得出"点到了" */
+    --hm-ring: rgba(255, 255, 255, 0.55);
     --chart-grid: rgba(255, 255, 255, 0.05);
     --dot-off: #666;
     --pval-color: #FFF;
@@ -190,6 +206,19 @@ html[data-appearance="light"] {
     /* 品牌青：取满饱和度又刚好过 AA 的那一档（#00838f 白底 4.52:1），
        原来的 #0d7c8a 偏灰，整页看上去没颜色。 */
     --accent: #00838f;
+    /* 热力图浅色档位：GitHub Contribution Graph 的绿色五档（浅色版） */
+    --heat-0: #ebedf0;
+    --heat-1: #9be9a8;
+    --heat-2: #40c463;
+    --heat-3: #30a14e;
+    --heat-4: #216e39;
+    /* 热力图悬停气泡（浅色）：白玻璃 + 极淡描边，与深色主题同一套材质 */
+    --hm-tip-bg: rgba(255, 255, 255, 0.94);
+    --hm-tip-fg: #17181b;
+    --hm-tip-sub: #6a6c73;
+    --hm-tip-border: rgba(16, 24, 40, 0.08);
+    --hm-tip-shadow: 0 10px 28px rgba(16, 24, 40, 0.16);
+    --hm-ring: rgba(16, 24, 40, 0.42);
     --accent-rgb: 0, 131, 143;
     --accent-ink: #006c77;   /* 文字用：白底 5.25:1，20% 淡染底 4.71:1 */
     --action-ink: #0f6ba8;   /* 淡蓝(20%)底上 4.85:1、白底 5.69:1 */
@@ -1600,6 +1629,12 @@ html[data-appearance="light"] .session-card:hover {
     color: var(--success); background: rgba(var(--success-rgb), 0.14);
 }
 .session-live i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: sessionPulse 1.6s ease-in-out infinite; }
+/* 曲线只保留 7 天：第 8~30 天的会话详情是空图，列表上先标出来 */
+.session-nocurve {
+    flex: none; padding: 1px 7px; border-radius: var(--r-pill);
+    font-size: 10px; font-weight: 500; cursor: help;
+    color: var(--text-dim); background: rgba(127, 127, 127, 0.12);
+}
 @keyframes sessionPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 /* 电量：右列的大数，与左上的端口名同一基线 */
 .session-card-energy {
@@ -1681,6 +1716,162 @@ html[data-appearance="light"] .session-card:hover {
     .energy-group-body { min-height: 96px; }
 }
 
+/* ══════════════════════════════════════════════════════════════
+   充电热力图（用电统计 → 热力图）
+   · 尺寸跟着卡片走：heatmap.js 量出面板可用宽度，算出 --hm-cell（格边）、
+     --hm-gap（缝）、--hm-r（圆角）、--hm-cols（列数），格子正好铺满整行——
+     右侧不再空出 80px 没人要的地板。宽屏再按"7 行 × 面板高度"回退，
+     回退到 8px 以下才横向滚动（手机上滚，不缩成看不见的点）。
+   · 悬停气泡自绘：原生 title 有 ~1s 延迟、样式不可控、还会和自绘气泡同时出现。
+     颜色跟主题走——深色近黑玻璃、浅色白玻璃，两套都是 12px 两行。
+   ══════════════════════════════════════════════════════════════ */
+.energy-pane.is-active.energy-pane--calendar {
+    gap: 4px;
+    /* 内容高度由 JS 算出的格子决定，居中而不是顶部对齐，底部不留空档 */
+    justify-content: center;
+}
+/* 摘要行：只有峰值一句，靠右贴住网格右边缘（"统计数据自…"已去掉，
+   那件事交给每格的气泡说）。空态时翻转成居中显示提示文案。 */
+.heatmap-summary {
+    display: flex; align-items: baseline; justify-content: flex-end; gap: 12px;
+    height: 18px; flex: none;
+    font-size: 11px; color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden;
+}
+#heatmapPeak { font-size: 12px; color: var(--text-sub); }
+.heatmap-no-data {
+    color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis;
+}
+/* 卡内不出滚动条（既不要滚动条，也不要被裁掉一列）：格子尺寸由 JS 反算，
+   53 列一定塞得下；这里 overflow:hidden 只是挡住亚像素取整那半px。 */
+.heatmap-scroll {
+    flex: none; min-width: 0;
+    overflow: hidden;
+}
+/* 居中只在"格子被高度封顶、宽度还有富余"时生效（宽屏断点），其余时候
+   max-content 正好等于卡宽，看不出这一段。 */
+.heatmap-fit { width: max-content; margin-inline: auto; }
+.heatmap-months {
+    display: grid;
+    grid-template-columns: repeat(var(--hm-cols, 53), var(--hm-cell, 10px));
+    column-gap: var(--hm-gap, 2px);
+    height: 15px; line-height: 15px;
+    margin-left: 24px;                 /* 星期列 20px + 主区 gap 4px */
+    font-size: 10.5px; color: var(--text-dim);
+}
+/* 月份标签比一格宽：首枚左对齐（向右溢出到空白列上），末枚贴住网格右边缘，
+   否则会顶出卡片。 */
+.heatmap-month { white-space: nowrap; }
+.heatmap-month.is-last { justify-self: end; }
+/* 很窄的窗口里格子会小到 5px 上下，星期列的字（9.5px）比格子还高、直接叠成一坨：
+   整列藏掉，省下的缩进还给格子（JS 会同时把 24px 的 gutter 从宽度预算里退掉）。 */
+.energy-pane--calendar.is-tiny .heatmap-weekdays { display: none; }
+.energy-pane--calendar.is-tiny .heatmap-months { margin-left: 0; }
+.heatmap-main { display: flex; gap: 4px; }
+.heatmap-weekdays {
+    display: grid;
+    grid-template-rows: repeat(7, var(--hm-cell, 10px));
+    row-gap: var(--hm-gap, 2px);
+    width: 20px; flex: none;
+    font-size: 9.5px; line-height: var(--hm-cell, 10px);
+    color: var(--text-dim); text-align: right;
+}
+.heatmap-grid {
+    display: grid; grid-auto-flow: column;
+    grid-template-columns: repeat(var(--hm-cols, 53), var(--hm-cell, 10px));
+    grid-template-rows: repeat(7, var(--hm-cell, 10px));
+    gap: var(--hm-gap, 2px);
+    width: max-content;
+    outline: none;
+}
+/* 键盘进来时整块给一圈柔和的焦点环，具体读到哪一天由 .is-cursor 点出来 */
+.heatmap-grid:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 5px;
+    border-radius: 6px;
+}
+.hm-cell {
+    width: var(--hm-cell, 10px); height: var(--hm-cell, 10px);
+    border-radius: var(--hm-r, 2px);
+    background: var(--heat-0);
+}
+.hm-cell.lv1 { background: var(--heat-1); }
+.hm-cell.lv2 { background: var(--heat-2); }
+.hm-cell.lv3 { background: var(--heat-3); }
+.hm-cell.lv4 { background: var(--heat-4); }
+.hm-cell--void { background: transparent; }
+/* 悬停 / 键盘游标：只描一圈亮边，不放大不换色——格子只有 10px，
+   一放大就把邻格压住了，整个矩阵会抖 */
+.hm-cell[data-d]:hover,
+.hm-cell.is-cursor { box-shadow: 0 0 0 1px var(--hm-ring); }
+.heatmap-legend {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    height: 16px; flex: none;
+    font-size: 10.5px; color: var(--text-dim);
+}
+/* 图例方块的缝必须等于格子之间的缝（--hm-gap 的基准值），不然它读起来
+   不像同一张矩阵的缩略，所以这里不用 4px 栅格值 */
+.heatmap-legend-swatches { display: flex; gap: 3px; }
+.heatmap-legend .hm-cell { width: 10px; height: 10px; border-radius: 3px; }
+/* 悬停气泡：主题玻璃卡（白玻璃 / 黑玻璃），两行 —— 数值在上、日期在下 */
+.hm-tip {
+    position: fixed; z-index: 999; pointer-events: none;
+    display: flex; flex-direction: column; gap: 1px;
+    min-width: 112px; padding: 8px 12px;
+    border-radius: 10px;
+    background: var(--hm-tip-bg); color: var(--hm-tip-fg);
+    border: 1px solid var(--hm-tip-border);
+    box-shadow: var(--hm-tip-shadow);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    font-size: 12px; line-height: 1.45; white-space: nowrap;
+}
+.hm-tip[hidden] { display: none; }
+.hm-tip-val {
+    font-size: 12.5px; font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+.hm-tip-val i {
+    font-style: normal; font-weight: 400;
+    color: var(--hm-tip-sub);
+}
+.hm-tip-val.is-muted { font-weight: 500; color: var(--hm-tip-sub); }
+.hm-tip-date {
+    font-size: 11px; color: var(--hm-tip-sub);
+    font-variant-numeric: tabular-nums;
+}
+/* 入场动效只在"第一次拿到数据"那一屏演一次（heatmap.js 只给首帧的格子挂
+   .hm-cell--in）：之后轮询重绘不再抖，符合全站"入场一次、更新不演"的取向 */
+@media (prefers-reduced-motion: no-preference) {
+    .hm-cell--in {
+        animation: hmCellIn 420ms cubic-bezier(0.23, 1, 0.32, 1) both;
+        animation-delay: var(--d, 0s);
+    }
+    .hm-tip { animation: hmTipIn 120ms var(--ease) both; }
+}
+@keyframes hmCellIn {
+    from { opacity: 0; transform: scale(0.4); }
+    to { opacity: 1; transform: none; }
+}
+@keyframes hmTipIn {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: none; }
+}
+/* 读屏器播报（键盘游标移到哪一格），视觉上不占位 */
+.hm-live {
+    position: absolute; width: 1px; height: 1px; margin: -1px;
+    padding: 0; overflow: hidden; clip-path: inset(50%);
+    white-space: nowrap; border: 0;
+}
+.energy-pane--calendar.is-empty .heatmap-scroll,
+.energy-pane--calendar.is-empty .heatmap-legend { display: none; }
+.energy-pane--calendar.is-empty .heatmap-summary { justify-content: center; }
+@media (max-width: 1023px) {
+    .energy-pane.is-active.energy-pane--calendar { height: auto; }
+}
+
 /* 切 tab 时面板淡入上浮一点，与滑块滑动同一条时间线 */
 @keyframes paneIn {
     from { opacity: 0; transform: translateY(4px); }
@@ -1750,12 +1941,16 @@ html[data-appearance="light"] #modalTitle::before { box-shadow: inset 0 0 0 1px 
     align-items: center;
     justify-content: center;
     padding: 24px;
-    background: rgba(0, 0, 0, 0.68);
-    -webkit-backdrop-filter: blur(8px);
-    backdrop-filter: blur(8px);
+    /* 遮罩只做"压暗"，不用 backdrop-filter。
+       实测（1440×900@2x，Chromium，与机器无关的量级差）：全屏 blur(8px) 会让打开弹层
+       后的整页帧率从 60fps 掉到 ~20fps（p50 帧间隔 16.7ms → 50ms），因为遮罩后面的
+       仪表盘每秒都在重绘（实时功率图），每帧都要把 5.2M 像素重新模糊一遍；
+       把 blur 去掉后翻回 60fps，弹层的入场动画也不再丢帧（图表本身 600 点也只占 1 帧）。
+       所以这里把压暗补偿深一点，把"玻璃"交给弹窗自己的阴影（--shadow-pop）。 */
+    background: rgba(0, 0, 0, 0.74);
     animation: fadeIn var(--dur) var(--ease) both;
 }
-html[data-appearance="light"] .session-detail.is-open { background: rgba(28, 36, 52, 0.34); }
+html[data-appearance="light"] .session-detail.is-open { background: rgba(24, 32, 46, 0.46); }
 .sd-sheet {
     width: min(680px, 100%);
     max-height: 86vh;
@@ -1791,11 +1986,10 @@ html[data-appearance="light"] .session-detail.is-open { background: rgba(28, 36,
     align-items: center;
     justify-content: center;
     padding: 20px;
-    background: rgba(0, 0, 0, 0.68);
-    -webkit-backdrop-filter: blur(8px);
-    backdrop-filter: blur(8px);
+    /* 同 .session-detail：全屏 backdrop-filter 会让整页掉到 ~20fps，遮罩只压暗 */
+    background: rgba(0, 0, 0, 0.74);
 }
-html[data-appearance="light"] .settings-overlay { background: rgba(28, 36, 52, 0.34); }
+html[data-appearance="light"] .settings-overlay { background: rgba(24, 32, 46, 0.46); }
 .settings-overlay.is-open { display: flex; animation: fadeIn var(--dur) var(--ease) both; }
 .settings-overlay .modal { max-width: 640px; }
 
@@ -1811,11 +2005,10 @@ html[data-appearance="light"] .settings-overlay { background: rgba(28, 36, 52, 0
     align-items: center;
     justify-content: center;
     padding: 20px;
-    background: rgba(0, 0, 0, 0.68);
-    -webkit-backdrop-filter: blur(8px);
-    backdrop-filter: blur(8px);
+    /* 同上：全屏 blur 是这一页最容易掉帧的地方，遮罩只压暗 */
+    background: rgba(0, 0, 0, 0.74);
 }
-html[data-appearance="light"] .modal-overlay { background: rgba(28, 36, 52, 0.34); }
+html[data-appearance="light"] .modal-overlay { background: rgba(24, 32, 46, 0.46); }
 .modal-overlay.show { display: flex; animation: fadeIn var(--dur) var(--ease) both; }
 .modal {
     width: 100%;

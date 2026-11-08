@@ -929,6 +929,12 @@ body.light .session-card:hover {
     color: #34C759; background: rgba(52, 199, 89, 0.14);
 }
 .session-live i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: sessionPulse 1.6s ease-in-out infinite; }
+/* 曲线只保留 7 天：第 8~30 天的会话详情是空图，列表上先标出来 */
+.session-nocurve {
+    flex: none; padding: 1px 7px; border-radius: 999px;
+    font-size: 10px; font-weight: 500; cursor: help;
+    color: var(--text-dim); background: rgba(127, 127, 127, 0.12);
+}
 @keyframes sessionPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .session-card-energy {
     justify-self: end;

@@ -14,6 +14,8 @@
   仍能画出别人的曲线）；
 - `charge_sessions_archive` ← 非 primary 会话；
 - `port_history_archive` ← 非 primary 采样；
+- `daily_energy_archive` ← 非 primary 的日汇总（重新升级后不会把已归档设备的热力图
+  数据"复活"到主库里）；
 - `meta_archive` ← 非 primary 的 `{id}:{key}` 运行时键（旧代码根本不读，挪走只为
   让主库"看起来就是旧库"）。
 
@@ -50,6 +52,25 @@ from history import DEFAULT_DB_PATH, DEFAULT_DEVICE_ID  # noqa: E402
 #: device_id 列，归属只能靠 `session_id IN (SELECT ... FROM charge_sessions)` 推出来，
 #: 先删会话就等于把判据删掉了（点会留在主表里，旧代码照样画出别人的曲线）。
 TABLES = ("charge_points", "charge_sessions", "port_history")
+
+#: daily_energy 是 WITHOUT ROWID + 复合主键，不能用 `_ensure_archive`（它假定
+#: 主键是自增 id），单独建同构归档表，复合主键天然提供幂等。
+_DAILY_ARCHIVE_SQL = """
+    CREATE TABLE IF NOT EXISTS daily_energy_archive (
+        day           TEXT    NOT NULL,
+        device_id     TEXT    NOT NULL DEFAULT 'default',
+        port          INTEGER NOT NULL,
+        wh            REAL    NOT NULL DEFAULT 0,
+        session_count INTEGER NOT NULL DEFAULT 0,
+        duration_sec  INTEGER NOT NULL DEFAULT 0,
+        peak_power_w  REAL    NOT NULL DEFAULT 0,
+        updated_at    REAL    NOT NULL,
+        archived_at   REAL    NOT NULL,
+        PRIMARY KEY (device_id, day, port)
+    ) WITHOUT ROWID
+"""
+_DAILY_COLS = ("day, device_id, port, wh, session_count, duration_sec, "
+               "peak_power_w, updated_at")
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -123,6 +144,11 @@ def archive_non_primary(db_path: str, *, dry_run: bool = False,
         stats["port_history"] = conn.execute(
             "SELECT COUNT(*) FROM port_history WHERE device_id != ?",
             (device_id,)).fetchone()[0]
+        # ③b 日汇总（热力图数据源；旧代码不读，但重新升级后会复活已归档设备）
+        if _table_exists(conn, "daily_energy"):
+            stats["daily_energy"] = conn.execute(
+                "SELECT COUNT(*) FROM daily_energy WHERE device_id != ?",
+                (device_id,)).fetchone()[0]
         # ④ 命名空间 meta 键（`{id}:{key}` 形如 `desk:charge_limit_wh`）。
         # primary 用的是**裸键**（见 PortHistory.meta_key），所以"属于具名设备"
         # 的判据是"键里带冒号"；这里再排除本次保留的 device_id 前缀，参数化一次、
@@ -158,6 +184,16 @@ def archive_non_primary(db_path: str, *, dry_run: bool = False,
                 params)
             conn.execute(f"DELETE FROM {table} WHERE {where}", params)
 
+        if stats.get("daily_energy"):
+            conn.execute(_DAILY_ARCHIVE_SQL)
+            conn.execute(
+                f"INSERT OR IGNORE INTO daily_energy_archive "
+                f"({_DAILY_COLS}, archived_at) "
+                f"SELECT {_DAILY_COLS}, strftime('%s','now') FROM daily_energy "
+                f"WHERE device_id != ?", (device_id,))
+            conn.execute("DELETE FROM daily_energy WHERE device_id != ?",
+                         (device_id,))
+
         if stats["meta"]:
             if not _table_exists(conn, "meta_archive"):
                 conn.execute(
@@ -183,8 +219,12 @@ def remaining_devices(db_path: str) -> list[str]:
             return []
         if "device_id" not in _columns(conn, "charge_sessions"):
             return [DEFAULT_DEVICE_ID]
-        return sorted({r[0] for r in conn.execute(
-            "SELECT DISTINCT device_id FROM charge_sessions").fetchall()})
+        devices = {r[0] for r in conn.execute(
+            "SELECT DISTINCT device_id FROM charge_sessions").fetchall()}
+        if _table_exists(conn, "daily_energy"):
+            devices |= {r[0] for r in conn.execute(
+                "SELECT DISTINCT device_id FROM daily_energy").fetchall()}
+        return sorted(devices)
     finally:
         conn.close()
 

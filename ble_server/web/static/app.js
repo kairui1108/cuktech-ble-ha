@@ -169,6 +169,7 @@
             _energySeq++;                  // 让在途的旧设备响应作废（它可能后到）
             energyStats = null;
             energyProto = null;
+            if (window.Heatmap) Heatmap.reset();   // 热力图同理：先清空，避免 A 的格子残影
             renderEnergy();
             refreshEnergyCard();
             if (energyHourlyLoaded) {
@@ -917,7 +918,7 @@
         // ══════════════════════════════════════════════════════════
         // 占比视图把"按端口"与"快充协议"合并成一屏左右两块，所以旧的三个 tab 现在只有两个。
         // 'ports' / 'protocols' 是历史 localStorage 里可能残留的值，见 initEnergyCard 的迁移。
-        const ENERGY_TABS = ['share', 'hourly'];
+        const ENERGY_TABS = ['share', 'hourly', 'calendar'];
         const ENERGY_PORTS = [
             { id: 1, key: 'c1', label: 'C1' },
             { id: 2, key: 'c2', label: 'C2' },
@@ -958,9 +959,14 @@
             renderEnergy();
             // 小时视图的 canvas 在隐藏时量到的尺寸是 0，所以首次可见时才建图
             if (tab === 'hourly') fetchEnergyHourly();
+            // 日历视图同理：首次切进来才拉数据（与 refreshEnergyCard 的单飞去重）
+            if (tab === 'calendar' && window.Heatmap) Heatmap.ensure();
         }
 
         async function refreshEnergyCard(period) {
+            // fleet 视图把 col-main 整列藏起来了：60s 轮询不必再为空卡片发请求
+            // （退出 fleet 时由 DeviceBench 的 onMode 补一次）。
+            if (document.body.classList.contains('fleet-mode')) return;
             if (period) energyPeriod = period;
             const seq = ++_energySeq;
             try {
@@ -976,6 +982,9 @@
                 energyProto = proto;
             } catch (e) { console.error('Energy protocol error:', e); }
             renderEnergy();
+            // 热力图只在这一屏可见时发请求；其它 tab 零额外流量。
+            // 单飞由 heatmap.js 内部保证（切 tab / 切设备 / 轮询同时触发也只发一路）。
+            if (energyTab === 'calendar' && window.Heatmap) Heatmap.refresh();
             if (energyHourlyLoaded) fetchEnergyHourly();
         }
 
@@ -1026,17 +1035,28 @@
             </svg>`;
         }
 
-        function renderEnergy() {
+        function renderEnergyHeader() {
             const label = document.getElementById('energyTotal');
-            const total = energyStats ? (energyStats.total_wh || 0) : null;
-            if (label) {
-                label.textContent = (total === null)
-                    ? I18N.t('charge.' + energyPeriod)
-                    : I18N.t('energy.total', {
-                        period: I18N.t('charge.' + energyPeriod),
-                        wh: total.toFixed(1),
-                    });
+            if (!label) return;
+            // 日历 tab 的卡头是"近一年合计"，数据由 heatmap.js 自己拉；
+            // 它还没回来时退回本卡原有口径，不要让卡头空着。
+            if (energyTab === 'calendar' && window.Heatmap && Heatmap.hasData()) {
+                label.textContent = I18N.t('heatmap.total', {
+                    wh: Heatmap.totalWh().toFixed(1),
+                });
+                return;
             }
+            const total = energyStats ? (energyStats.total_wh || 0) : null;
+            label.textContent = (total === null)
+                ? I18N.t('charge.' + energyPeriod)
+                : I18N.t('energy.total', {
+                    period: I18N.t('charge.' + energyPeriod),
+                    wh: total.toFixed(1),
+                });
+        }
+
+        function renderEnergy() {
+            renderEnergyHeader();
 
             const byPort = (energyStats && energyStats.by_port) || {};
             const portItems = ENERGY_PORTS.map(p => {
@@ -1781,6 +1801,10 @@
             });
             // 换设备 = 换一整套用电数据：不立刻重拉的话，卡片会继续显示上一台的数字
             DeviceStore.onChange(() => refreshEnergyCard(energyPeriod));
+            // 热力图数据晚于 renderEnergy 到达：它渲染完发这个事件，卡头再更新一次
+            document.addEventListener('heatmap-rendered', () => {
+                if (energyTab === 'calendar') renderEnergyHeader();
+            });
         }
 
         // ── SSE (Server-Sent Events) — replaces 2s polling ──
@@ -2162,6 +2186,8 @@
                 fetchEnergy: benchFetchEnergy,
                 // 选中设备后：单设备视图重放由 DeviceStore 自己触发，
                 // 这里只把图表拉回该设备（切设备时 replay 已经拉过一次，避免重复请求）
-                onPick: () => { DeviceStore.renderSwitcher(); }
+                onPick: () => { DeviceStore.renderSwitcher(); },
+                // 退出 fleet 时补一次用电统计（fleet 期间轮询被跳过）
+                onMode: (fleet) => { if (!fleet) refreshEnergyCard(); }
             });
         }

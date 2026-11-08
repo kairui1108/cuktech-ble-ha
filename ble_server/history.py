@@ -3,10 +3,11 @@ import csv
 import io
 import json
 import logging
+import math
 import sqlite3
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +24,14 @@ except ImportError:
 _LOGGER = logging.getLogger("cuktech_history")
 
 DEFAULT_RETENTION_DAYS = 2
+# 充电记录（charge_sessions）的保留期：会话行很便宜（一年 ~1.5 MB），
+# 单独给用户一个旋钮，让"近 30 天/全部"两个 tab 真正有内容。
+DEFAULT_SESSION_RETENTION_DAYS = 30
+# 会话详情曲线（charge_points）独立短保留：它是秒级数据里最贵的那层，
+# 用户看详情曲线多半只看最近几次，不跟记录期一起放大。
+POINTS_RETENTION_DAYS = 7
+# 每日电量（daily_energy）保留期：热力图固定看最近一年，多留无意义。
+DAILY_RETENTION_DAYS = 365
 DEFAULT_DB_PATH = "port_history.db"
 # primary 设备的存储身份（§3.10：history/meta/legacy topic 的兼容都锚定在这个 id 上）。
 # 老库升级后所有既有行都归它，因此它同时是"未指定设备"的含义 —— 单设备部署下
@@ -49,10 +58,16 @@ class PortHistory:
     # 均压/均流重算时的采样断档上限（秒）：超过它的区间不参与加权，避免把中间的空载
     # 挂载段（v>0/i=0）或掉线空档计入均值。
     AVG_VI_GAP_CAP_SEC = 1800
+    #: 日汇总缓冲的 key 上限（一年 × 4 口 × 若干设备远低于它）。
+    #: DB 持续写失败时内存不能无限涨；超限丢弃新增并告警，flush 成功后恢复。
+    DAILY_MAX_KEYS = 4096
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH, retention_days: int = DEFAULT_RETENTION_DAYS):
+    def __init__(self, db_path: str = DEFAULT_DB_PATH,
+                 retention_days: int = DEFAULT_RETENTION_DAYS,
+                 session_retention_days: int = DEFAULT_SESSION_RETENTION_DAYS):
         self.db_path = db_path
         self.retention_days = retention_days
+        self.session_retention_days = session_retention_days
         self._conn: Optional[sqlite3.Connection] = None
         self._db_lock = threading.Lock()  # 保护所有读写操作
         self._last_cleanup = 0
@@ -60,6 +75,15 @@ class PortHistory:
         self._pending: list[tuple] = []   # 待批量写入的 port_history 行
         self._pending_points: list[tuple] = []  # 待批量写入的 charge_points 行
         self._last_commit = 0.0
+        # 日汇总的内存缓冲：{(day, device_id, port): wh}。
+        # 只存电量：会话次数/时长/峰值由 end_session 的 SQL 直写，走不到这里。
+        # 独立小锁，事件循环里的 add_energy_delta 只拿它、绝不碰 _db_lock。
+        self._daily: dict[tuple, float] = {}
+        # 已交给 executemany、但还没 commit 的那一批；失败时用来原样放回，
+        # 否则一次 SQLITE_BUSY / 磁盘错误就永久丢掉一段能量（基线已前移）。
+        self._daily_inflight: dict[tuple, float] | None = None
+        self._daily_overflow_warned = False
+        self._daily_lock = threading.Lock()
 
     def connect(self):
         """Open database connection and create tables."""
@@ -81,6 +105,9 @@ class PortHistory:
             self.close_stale_sessions()
         except Exception as e:      # 兜底遗留失败不该拖垮整个启动
             _LOGGER.error("Failed to close stale sessions on startup: %s", e)
+        # 日汇总回填必须早于清理：清理会按新 cutoff 删旧会话，删了就没得回填。
+        # 首次升级时 daily_energy 必然为空，整表重建是空操作；之后靠 meta 版本号跳过。
+        self._backfill_daily_if_needed()
         self._cleanup_old_data()
         # 以连接时刻为提交基准：否则 _last_commit=0 会让启动后的第一个采样点
         # 立刻触发一次 flush（无谓的一次提交）。
@@ -188,6 +215,21 @@ class PortHistory:
                 ON port_history(device_id, port, timestamp);
             CREATE INDEX IF NOT EXISTS idx_charge_sessions_device
                 ON charge_sessions(device_id, start_time);
+
+            -- 每日电量（热力图数据源）。物理上"每天每设备每口最多一行"，
+            -- 逻辑上就是需求的"每天一条"（查询时 SUM）。不受采样保留期约束，
+            -- 只由 _cleanup_old_data 按 DAILY_RETENTION_DAYS 裁剪。
+            CREATE TABLE IF NOT EXISTS daily_energy (
+                day           TEXT    NOT NULL,
+                device_id     TEXT    NOT NULL DEFAULT '{DEFAULT_DEVICE_ID}',
+                port          INTEGER NOT NULL,
+                wh            REAL    NOT NULL DEFAULT 0,
+                session_count INTEGER NOT NULL DEFAULT 0,
+                duration_sec  INTEGER NOT NULL DEFAULT 0,
+                peak_power_w  REAL    NOT NULL DEFAULT 0,
+                updated_at    REAL    NOT NULL,
+                PRIMARY KEY (device_id, day, port)
+            ) WITHOUT ROWID;
         """)
         self._conn.commit()
 
@@ -411,17 +453,41 @@ class PortHistory:
             return False
 
     def _cleanup_old_data(self):
-        """Remove data older than retention period (port samples + closed sessions)."""
-        cutoff = time.time() - (self.retention_days * 86400)
-        self._conn.execute("DELETE FROM port_history WHERE timestamp < ?", (cutoff,))
-        # 清理过期闭环会话及其采样点（charge_sessions 行此前从不删除，会无限累积）
+        """按分层保留期清理：功率曲线 / 会话记录 / 会话曲线 / 每日电量。
+
+        四层各自的 cutoff：
+          · port_history        → retention_days（默认 2 天，贵）
+          · charge_sessions     → session_retention_days（默认 30 天，便宜）
+          · charge_points       → min(session_retention_days, POINTS_RETENTION_DAYS)
+          · daily_energy        → DAILY_RETENTION_DAYS（默认 365 天）
+        """
+        now = time.time()
+        curve_cutoff = now - (self.retention_days * 86400)
+        session_cutoff = now - (self.session_retention_days * 86400)
+        points_days = max(1, min(self.session_retention_days, POINTS_RETENTION_DAYS))
+        points_cutoff = now - (points_days * 86400)
+        daily_cutoff_day = (
+            datetime.now() - timedelta(days=DAILY_RETENTION_DAYS - 1)
+        ).strftime("%Y-%m-%d")
+
+        self._conn.execute("DELETE FROM port_history WHERE timestamp < ?", (curve_cutoff,))
+        # 删除顺序仍然是 points → sessions：charge_points 没有 device_id/port，
+        # 归属只能靠 session_id 反查（history_down.py:52 的同一条教训）。
+        #
+        # 判据用"点自身时间戳"而不是"所属会话的 end_time"：记录期放大到 30 天后，
+        # 后者会把详情曲线一起留 30 天。但按时间戳无差别删会踩一个回归——
+        # close_stale_sessions 靠采样点给崩溃遗留会话补算能量，点没了就得到 0 Wh，
+        # 随后整条会话被当成"没有能量"删掉。未闭环会话的点必须留下。
         self._conn.execute(
-            """DELETE FROM charge_points WHERE session_id IN
-               (SELECT id FROM charge_sessions WHERE end_time IS NOT NULL AND end_time < ?)""",
-            (cutoff,))
+            """DELETE FROM charge_points WHERE timestamp < ?
+               AND session_id NOT IN
+                   (SELECT id FROM charge_sessions WHERE end_time IS NULL)""",
+            (points_cutoff,))
         self._conn.execute(
             """DELETE FROM charge_sessions WHERE end_time IS NOT NULL AND end_time < ?""",
-            (cutoff,))
+            (session_cutoff,))
+        # 每日电量是用户资产：只按天裁剪，不参与上面任何曲线/会话的 cutoff。
+        self._conn.execute("DELETE FROM daily_energy WHERE day < ?", (daily_cutoff_day,))
         self._conn.commit()
 
     def flush(self):
@@ -436,7 +502,7 @@ class PortHistory:
 
         调用方必须已持有 _db_lock。
         """
-        if not self._pending and not self._pending_points:
+        if not self._pending and not self._pending_points and not self._daily:
             return
         try:
             if self._pending:
@@ -453,7 +519,12 @@ class PortHistory:
                     self._pending_points,
                 )
                 self._pending_points.clear()
+            # 日汇总与上面两表共用同一次 commit；必须在 commit() 之前。
+            self._flush_daily()
             self._conn.commit()
+            with self._daily_lock:
+                self._daily_inflight = None
+                self._daily_overflow_warned = False
             self._last_commit = time.time()
             # 周期性清理/checkpoint 挂在提交路径上，只按时间间隔触发（每 1h / 5min）；
             # checkpoint 本身还会再判一次 WAL 阈值（见 _checkpoint_wal）。
@@ -471,6 +542,243 @@ class PortHistory:
                 self._conn.rollback()
             except Exception:
                 pass
+            # 日汇总是不可重算的（基线已经前移）：放回缓冲，下一次写重试。
+            self._restore_daily_inflight()
+
+    # ── 每日电量（daily_energy，热力图数据源）──
+
+    #: 会话维度的 UPSERT：只累加 count/duration/peak，**不动 wh**（wh 由增量写入）。
+    _UPSERT_DAILY_SESSION = """
+        INSERT INTO daily_energy (day, device_id, port, wh, session_count,
+                                  duration_sec, peak_power_w, updated_at)
+        VALUES (?, ?, ?, 0, 1, ?, ?, ?)
+        ON CONFLICT(device_id, day, port) DO UPDATE SET
+          session_count = session_count + 1,
+          duration_sec  = duration_sec + excluded.duration_sec,
+          peak_power_w  = MAX(peak_power_w, excluded.peak_power_w),
+          updated_at    = excluded.updated_at
+    """
+
+    #: 回填用的 UPSERT：整行覆盖（回填前已 DELETE，或只写尚无增量的日期）。
+    _UPSERT_DAILY_SET = """
+        INSERT INTO daily_energy (day, device_id, port, wh, session_count,
+                                  duration_sec, peak_power_w, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(device_id, day, port) DO UPDATE SET
+          wh            = excluded.wh,
+          session_count = excluded.session_count,
+          duration_sec  = excluded.duration_sec,
+          peak_power_w  = excluded.peak_power_w,
+          updated_at    = excluded.updated_at
+    """
+
+    #: 非替换回填：只补缺失的 (device_id, day, port)，已有行（实时增量）绝不覆盖。
+    _INSERT_DAILY_MISSING = """
+        INSERT OR IGNORE INTO daily_energy
+          (day, device_id, port, wh, session_count, duration_sec,
+           peak_power_w, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    def add_energy_delta(self, port: int, wh: float, ts: float, *,
+                         device_id: str = DEFAULT_DEVICE_ID) -> None:
+        """累加一段能量到它发生的那个本地日。调用方不持锁、不做 IO。
+
+        只做 dict 累加：它在事件循环里被每个 BLE 帧调用，一旦去抢 `_db_lock`
+        就会被一次慢查询阻塞整个事件循环。
+        """
+        if not self._conn or wh <= 0 or not math.isfinite(wh):
+            return
+        day = time.strftime("%Y-%m-%d", time.localtime(ts))
+        with self._daily_lock:     # 微秒级；锁序 _db_lock → _daily_lock，反向禁止
+            key = (day, device_id, port)
+            cur = self._daily.get(key)
+            if cur is None:
+                if len(self._daily) >= self.DAILY_MAX_KEYS:
+                    if not self._daily_overflow_warned:
+                        self._daily_overflow_warned = True
+                        _LOGGER.error(
+                            "daily_energy buffer full (%d keys, DB writes failing?); "
+                            "dropping new deltas until a flush succeeds",
+                            len(self._daily))
+                    return
+                cur = 0.0
+            self._daily[key] = cur + wh
+
+    def _flush_daily(self) -> None:
+        """把内存缓冲落到 daily_energy（调用方必须已持 `_db_lock` 且正处在一次提交里）。
+
+        `_daily_inflight` 一直保留到 commit 成功：executemany 或 commit 失败时
+        `_restore_daily_inflight()` 会把整批按 key 加回缓冲，下一次提交重试。
+        """
+        with self._daily_lock:
+            batch, self._daily = self._daily, {}
+            if not batch:
+                return
+            self._daily_inflight = batch
+        now = time.time()
+        try:
+            self._conn.executemany(
+                """INSERT INTO daily_energy (day, device_id, port, wh, session_count,
+                                             duration_sec, peak_power_w, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(device_id, day, port) DO UPDATE SET
+                     wh            = wh + excluded.wh,
+                     session_count = session_count + excluded.session_count,
+                     duration_sec  = duration_sec + excluded.duration_sec,
+                     peak_power_w  = MAX(peak_power_w, excluded.peak_power_w),
+                     updated_at    = excluded.updated_at""",
+                [(d, dev, p, v, 0, 0, 0.0, now)
+                 for (d, dev, p), v in batch.items()])
+        except Exception:
+            self._restore_daily_inflight()
+            raise
+
+    def _restore_daily_inflight(self) -> None:
+        """把没提交成功的一批日汇总按 key 加回缓冲（调用方持有 `_db_lock`）。"""
+        with self._daily_lock:
+            batch, self._daily_inflight = self._daily_inflight, None
+            if not batch:
+                return
+            for key, v in batch.items():
+                self._daily[key] = self._daily.get(key, 0.0) + v
+
+    def get_daily_energy(self, days: int = 365, *,
+                         device_id: str = DEFAULT_DEVICE_ID) -> dict:
+        """按天聚合查询（热力图）。返回 `{"days": [...], "data_since": ...}`。
+
+        `data_since` 取该设备**全量**的 `MIN(day)`，而不是查询窗口的起点：
+        前端要用它把"统计开始之前"的格子画成无数据，而不是 0。
+        """
+        if not self._conn:
+            return {"days": [], "data_since": None}
+        days = max(1, int(days or 365))
+        now = time.time()
+        end_day = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+        start_day = (datetime.fromtimestamp(now) - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+        with self._db_lock:
+            self._flush_pending()   # 缓冲中的增量要先落盘，否则"今天"那格不实时
+            rows = self._conn.execute(
+                """SELECT day, SUM(wh) AS wh, SUM(session_count) AS sessions,
+                          MAX(peak_power_w) AS peak_w
+                   FROM daily_energy
+                   WHERE device_id = ? AND day >= ? AND day <= ?
+                   GROUP BY day
+                  HAVING SUM(wh) > 0
+                   ORDER BY day""",
+                (device_id, start_day, end_day)).fetchall()
+            since = self._conn.execute(
+                "SELECT MIN(day) AS d FROM daily_energy WHERE device_id = ?",
+                (device_id,)).fetchone()
+        return {
+            "days": [{
+                "date": r["day"],
+                "wh": round(r["wh"] or 0.0, 2),
+                "sessions": int(r["sessions"] or 0),
+                "peak_w": round(r["peak_w"] or 0.0, 1),
+            } for r in rows],
+            "data_since": (since["d"] if since and since["d"] else None),
+        }
+
+    def backfill_daily_energy(self, *, replace: bool = True) -> dict:
+        """从 charge_sessions 重建 daily_energy。
+
+        回填口径：整段会话记在 `start_time` 所在日（与 get_energy_stats /
+        get_sessions 一致）。在线增量按帧归日，两者对跨零点会话的归属不同，
+        这是刻意取舍——没有采样点就无法拆分，而常供端口根本没有采样点。
+
+        `replace=True` 会先清空整表。启动路径上表必然为空（首次升级），是空操作；
+        服务跑过之后再调用会丢掉"纯增量日"，所以脚本默认拒绝非空表。
+        `replace=False` 只补**缺失**的 (device, day, port)，已有行原样保留
+        （与脚本 `--force` 的 INSERT OR IGNORE 语义一致）。
+        """
+        if not self._conn:
+            return {"rows": 0, "sessions": 0, "first_day": None, "last_day": None}
+        with self._db_lock:
+            self._flush_pending()
+            rows = self._conn.execute(
+                """SELECT date(start_time, 'unixepoch', 'localtime') AS day,
+                          device_id, port,
+                          SUM(total_wh)      AS wh,
+                          COUNT(*)           AS c,
+                          SUM(duration_sec)  AS dur,
+                          MAX(peak_power_w)  AS peak
+                   FROM charge_sessions
+                   WHERE total_wh > 0 AND end_time IS NOT NULL
+                   GROUP BY day, device_id, port
+                   ORDER BY day""").fetchall()
+            if replace:
+                self._conn.execute("DELETE FROM daily_energy")
+            now = time.time()
+            sql = self._UPSERT_DAILY_SET if replace else self._INSERT_DAILY_MISSING
+            self._conn.executemany(
+                sql,
+                [(r["day"], r["device_id"], r["port"], round(r["wh"] or 0.0, 4),
+                  int(r["c"] or 0), int(r["dur"] or 0), round(r["peak"] or 0.0, 2), now)
+                 for r in rows])
+            self._conn.commit()
+        return {
+            "rows": len(rows),
+            "sessions": sum(int(r["c"] or 0) for r in rows),
+            "first_day": rows[0]["day"] if rows else None,
+            "last_day": rows[-1]["day"] if rows else None,
+        }
+
+    def _backfill_daily_if_needed(self) -> None:
+        """启动时的一次性回填。失败只记日志，不拖垮启动（下次启动会重试）。"""
+        if self.get_meta("daily_stats_version", ""):
+            return
+        try:
+            # 表非空说明已经有真实数据（旧库没写版本号、或手工恢复了备份）：
+            # 只能补缺失键，绝不能 DELETE 后重建——纯增量日没有会话可重算，
+            # 清掉就是静默丢用户资产。
+            empty = self._conn.execute(
+                "SELECT 1 FROM daily_energy LIMIT 1").fetchone() is None
+            result = self.backfill_daily_energy(replace=empty)
+            self.set_meta("daily_stats_version", "1")
+            self.set_meta("daily_stats_since",
+                          time.strftime("%Y-%m-%d", time.localtime()))
+            _LOGGER.info("daily_energy backfilled: %d rows / %d sessions (%s ~ %s)",
+                         result["rows"], result["sessions"],
+                         result["first_day"], result["last_day"])
+        except Exception as e:
+            _LOGGER.warning("daily_energy backfill failed (will retry next start): %s", e)
+
+    def audit_daily_energy(self) -> dict:
+        """日汇总 vs 会话表按 (day, device_id, port) 对账，返回漂移。"""
+        if not self._conn:
+            return {"daily_wh": 0.0, "session_wh": 0.0, "drift": []}
+        with self._db_lock:
+            self._flush_pending()
+            daily = {(r["day"], r["device_id"], r["port"]): (r["wh"] or 0.0)
+                     for r in self._conn.execute(
+                         """SELECT day, device_id, port, SUM(wh) AS wh
+                            FROM daily_energy GROUP BY day, device_id, port""")}
+            ses = {(r["day"], r["device_id"], r["port"]): (r["wh"] or 0.0)
+                   for r in self._conn.execute(
+                       """SELECT date(start_time, 'unixepoch', 'localtime') AS day,
+                                 device_id, port, SUM(total_wh) AS wh
+                          FROM charge_sessions WHERE total_wh > 0
+                          GROUP BY day, device_id, port""")}
+        drift = []
+        for key in sorted(set(daily) | set(ses)):
+            a, b = daily.get(key, 0.0), ses.get(key, 0.0)
+            if abs(a - b) > max(0.05, 0.01 * max(abs(a), abs(b))):
+                drift.append({"day": key[0], "device_id": key[1], "port": key[2],
+                              "daily_wh": round(a, 2), "session_wh": round(b, 2)})
+        return {"daily_wh": round(sum(daily.values()), 2),
+                "session_wh": round(sum(ses.values()), 2),
+                "drift": drift}
+
+    def purge_daily_energy(self, before_day: str) -> int:
+        """删除 `before_day` 之前的日汇总，返回删除行数。供脚本使用。"""
+        if not self._conn or not before_day:
+            return 0
+        with self._db_lock:
+            cur = self._conn.execute(
+                "DELETE FROM daily_energy WHERE day < ?", (before_day,))
+            self._conn.commit()
+            return cur.rowcount
 
     def record_port_data(self, port: int, data: dict, *,
                          device_id: str = DEFAULT_DEVICE_ID):
@@ -905,6 +1213,12 @@ class PortHistory:
             avg_voltage, avg_current = calc_v, calc_i
         with self._db_lock:
             try:
+                # 先读旧 end_time：只有"本次真正闭合"的行才累加会话次数/时长/峰值。
+                # 重复调用（异常路径 / 关停批量清理）不能把同一次充电记两遍。
+                row = self._conn.execute(
+                    """SELECT start_time, port, device_id, end_time
+                       FROM charge_sessions WHERE id = ?""",
+                    (session_id,)).fetchone()
                 self._conn.execute(
                     """UPDATE charge_sessions SET
                        end_time = ?, total_wh = ?, avg_power_w = ?,
@@ -916,6 +1230,15 @@ class PortHistory:
                      round(peak_power_w, 2), round(avg_voltage, 2),
                      round(avg_current, 2), duration_sec, session_id),
                 )
+                if row is not None and row["end_time"] is None:
+                    # 会话维度统计的唯一写入口：close_stale_sessions（崩溃遗留）
+                    # 也经这里，自动获得同样的行为。
+                    day = time.strftime("%Y-%m-%d", time.localtime(row["start_time"]))
+                    self._conn.execute(
+                        self._UPSERT_DAILY_SESSION,
+                        (day, row["device_id"], row["port"],
+                         int(duration_sec or 0), round(peak_power_w or 0.0, 2),
+                         time.time()))
                 self._conn.commit()
             except Exception as e:
                 _LOGGER.error("Failed to end session: %s", e)
@@ -1041,6 +1364,9 @@ class PortHistory:
 
         query = """SELECT id, port, start_time, end_time, total_wh, avg_power_w,
                    peak_power_w, avg_voltage, avg_current, duration_sec, protocol,
+                   EXISTS(SELECT 1 FROM charge_points
+                          WHERE charge_points.session_id = charge_sessions.id)
+                       AS has_points,
                    COUNT(*) OVER() AS total
                    FROM charge_sessions
                    WHERE start_time >= ? AND total_wh > 0 AND device_id = ?"""
@@ -1239,6 +1565,13 @@ class DeviceHistory:
     def __init__(self, store: "PortHistory", device_id: str = DEFAULT_DEVICE_ID):
         self.store = store
         self.device_id = device_id or DEFAULT_DEVICE_ID
+
+    # ── 每日电量（设备维度）──
+    def add_energy_delta(self, port: int, wh: float, ts: float):
+        return self.store.add_energy_delta(port, wh, ts, device_id=self.device_id)
+
+    def get_daily_energy(self, days: int = 365):
+        return self.store.get_daily_energy(days, device_id=self.device_id)
 
     # ── 采样写入 / 查询（设备维度）──
     def record_port_data(self, port: int, data: dict):

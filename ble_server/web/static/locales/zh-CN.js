@@ -202,6 +202,8 @@
             peakPower: '峰值功率 W',
             noRecords: '暂无充电记录',
             inProgress: '进行中',
+            noCurveBadge: '无曲线',
+            noCurveHint: '详情曲线仅保留最近 7 天',
             energy: '电量：{{wh}}Wh',
             powerTooltip: '功率: {{power}}W',
             protocolTooltip: '协议: {{protocol}}',
@@ -231,11 +233,29 @@
             tabShare: '占比',
             tabHourly: '每小时',
             tabProtocols: '快充协议',
+            tabCalendar: '热力图',
             total: '{{period}} · 合计 {{wh}} Wh',
             count: '{{count}} 次',
             unknown: '未识别',
             noData: '该周期暂无数据',
             hourlyAria: '近 24 小时每小时用电量柱状图'
+        },
+
+        // ── Contribution-style calendar heatmap (用电统计 → 热力图) ──
+        heatmap: {
+            total: '近一年 · 合计 {{wh}} Wh',
+            peak: '峰值 {{date}} · {{wh}}',
+            less: '少',
+            more: '多',
+            tipSessions: '{{count}} 次充电',
+            tipEmpty: '无充电记录',
+            tipNoStats: '无统计数据',
+            empty: '还没有充电记录',
+            aria: '最近一年的每日充电量，最高 {{wh}} 于 {{date}}',
+            ariaShort: '最近一年的每日充电量',
+            months: ['1月', '2月', '3月', '4月', '5月', '6月',
+                     '7月', '8月', '9月', '10月', '11月', '12月'],
+            weekdays: ['一', '二', '三', '四', '五', '六', '日']
         },
 
         // ── Phone page ──
@@ -316,7 +336,10 @@
             bleStatusHint: '留空自动派生（设备 ID + _ble）。只钉住巴法云那边的实体标识，不影响 HA 的实体名/设备名。',
             serverSection: '服务器',
             webPort: 'Web 端口',
-            retention: '数据保留天数',
+            retention: '曲线保留天数',
+            retentionSessions: '充电记录保留天数',
+            retentionSessionsHint: '会话详情曲线单独只保留 7 天',
+            retentionInvalid: '充电记录保留天数需为 1–3650 的整数',
             webLanguage: '界面语言',
             webLanguageHint: '即时生效，无需重启；所有页面自动同步',
             langAuto: '跟随系统',

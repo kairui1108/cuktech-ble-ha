@@ -37,6 +37,7 @@ from .const import (
     STATUS_STALE_SECONDS,
     ENERGY_TICK_INTERVAL,
     ENERGY_SYNTH_AFTER_SEC,
+    ENERGY_NATIVE_RATE_SEC,
     ENERGY_HOLD_MAX_SEC,
     LIMIT_STORE_VERSION,
     LIMIT_BACKEND_LOCAL,
@@ -180,11 +181,14 @@ class CuktechMQTTCoordinator:
         # 引擎按 1Hz 连续样本写窗口/去抖，而 MQTT 上只有设备推送才有帧。
         # 定时器在静默期用最后已知 V/I 合成样本（见 _async_energy_tick）。
         self._energy_tick_unsub = None
-        # port -> (voltage, current, active)：最后一条**任意**端口帧的读数
-        # （含 retained，供显示外的合成基线用）
+        # port -> (voltage, current, active)：最后一条**实时**端口帧的读数
+        # （retained 只更新显示、不写这里，见 _async_ingest_port）
         self._last_port_sample: dict[str, tuple[float, float, bool]] = {}
         # port -> 最后一条**实时**（非 retained）端口帧的 loop 时间
         self._last_live_sample_ts: dict[str, float] = {}
+        # port -> 实时帧间隔的指数滑动平均（判断设备本身是否已经按 ~1Hz 推送，
+        # 是则不再合成，避免把按帧计数的窗口喂成 2Hz）
+        self._live_interval: dict[str, float] = {}
         # port -> 最后一条实时帧的 payload ts（ESP32 v1.1.6+），用于识别重放
         self._last_port_ts: dict[str, float] = {}
 
@@ -586,6 +590,7 @@ class CuktechMQTTCoordinator:
             self._last_port_sample.clear()
             self._last_live_sample_ts.clear()
             self._last_port_ts.clear()
+            self._live_interval.clear()
             # 以 link_loss 结束会话（对齐 ble_manager.py:900 断连时的处理）。
             # 链路中断属基础设施故障、会话可续，因此"保留" once 限额——否则重连
             # 之后端口报 inactive，会被判成 USER_OFF 而把用户刚设的一次性限额吃掉。
@@ -804,6 +809,13 @@ class CuktechMQTTCoordinator:
             return
         self._last_port_ts[port] = ts_value
         self._last_port_sample[port] = (voltage, current, active)
+        prev_live = self._last_live_sample_ts.get(port)
+        if prev_live is not None:
+            gap = now - prev_live
+            if 0 < gap < 60:
+                old = self._live_interval.get(port)
+                self._live_interval[port] = (
+                    gap if old is None else old * 0.7 + gap * 0.3)
         self._last_live_sample_ts[port] = now
         self._charge_limits.ingest(port, voltage, current, active, now)
         self._persist_limits_if_changed()
@@ -836,7 +848,13 @@ class CuktechMQTTCoordinator:
             if sample is None or last_live is None:
                 continue
             age = now - last_live
-            if age <= ENERGY_SYNTH_AFTER_SEC:
+            # 设备本身已经按 ~1Hz 推送时不要再合成：引擎窗口按"帧"计数，
+            # 额外补帧会把 LOW_CURRENT_N=300 之类的去抖压缩成一半时长。
+            interval = self._live_interval.get(port)
+            if (interval is not None and interval < ENERGY_NATIVE_RATE_SEC
+                    and age < ENERGY_NATIVE_RATE_SEC):
+                continue
+            if age < ENERGY_SYNTH_AFTER_SEC:
                 continue  # real frames are flowing; nothing to synthesize
             if not self._charge_limits.is_charging(port):
                 continue
@@ -875,7 +893,14 @@ class CuktechMQTTCoordinator:
 
         Cheap: comparing a 4-entry dict once per sample, and it only writes on
         an actual change (i.e. once per consumption).
+
+        Before `_async_load_limits()` finishes, the snapshot is the in-memory
+        default (all wh=0) — saving it would overwrite the user's persisted
+        limits, and the later load would read those defaults back. Live frames
+        can arrive in that window because MQTT subscriptions are set up first.
         """
+        if not self._limits_loaded:
+            return
         snapshot = self._charge_limits.snapshot_limits()
         if snapshot == self._saved_limits:
             return

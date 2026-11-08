@@ -36,8 +36,8 @@
     })();
     </script>
 
-    <script src="/static/locales/zh-CN.js?v=31"></script>
-    <script src="/static/locales/en.js?v=31"></script>
+    <script src="/static/locales/zh-CN.js?v=33"></script>
+    <script src="/static/locales/en.js?v=33"></script>
     <script src="/static/i18n.js?v=6"></script>
     <!-- 多设备状态中枢：必须早于 app.js（后者在顶层就用它的视图），
          也必须早于 charge_history/charge_limit（两者都经它发请求） -->
@@ -45,11 +45,12 @@
     <!-- 多设备工作台（切换条 + 全部设备汇总）：只做呈现，数据与请求仍走 device-store.js -->
     <script src="/static/device-bench.js?v=18"></script>
     <script defer src="/static/chart.umd.min.js"></script>
-    <script defer src="/static/charge_history.js?v=21"></script>
+    <script defer src="/static/charge_history.js?v=23"></script>
+    <script defer src="/static/heatmap.js?v=2"></script>
     <script defer src="/static/charge_limit.js?v=25"></script>
     <script src="/static/chart-loader.js"></script>
     <script src="/static/chart-config.js"></script>
-    <link rel="stylesheet" href="static/index.css?v=60">
+    <link rel="stylesheet" href="static/index.css?v=66">
 </head>
 <body>
 
@@ -294,6 +295,8 @@
                                     data-i18n="energy.tabHourly">每小时</button>
                             <button class="time-btn active" data-energy-tab="share" onclick="setEnergyTab('share')"
                                     data-i18n="energy.tabShare">占比</button>
+                            <button class="time-btn" data-energy-tab="calendar" onclick="setEnergyTab('calendar')"
+                                    data-i18n="energy.tabCalendar">日历</button>
                         </div>
                     </div>
 
@@ -319,6 +322,39 @@
                     <div class="energy-pane" data-energy-pane="hourly">
                         <div class="energy-chart"><canvas id="hourlyChart" role="img"
                              data-i18n-aria-label="energy.hourlyAria" aria-label="近 24 小时每小时用电量"></canvas></div>
+                    </div>
+
+                    <!-- 日历：GitHub 贡献图风格的年度热力图。数据由 heatmap.js 自己拉，
+                         只在这一屏可见时刷新；取数/单飞/清空都挂在既有用电统计节拍上。
+                         .heatmap-fit = 宽度 max-content + 居中：格子铺满卡宽时它不可见，
+                         只在"格子被高度封顶、两边有余"时把矩阵摆到中间。 -->
+                    <div class="energy-pane energy-pane--calendar" data-energy-pane="calendar">
+                        <div class="heatmap-summary">
+                            <span id="heatmapPeak"></span>
+                            <span class="heatmap-no-data" id="heatmapNoData" hidden></span>
+                        </div>
+                        <div class="heatmap-scroll">
+                            <div class="heatmap-fit">
+                                <div class="heatmap-months" id="heatmapMonths"></div>
+                                <div class="heatmap-main">
+                                    <div class="heatmap-weekdays" id="heatmapWeekdays"></div>
+                                    <!-- 键盘可达：方向键在格子里走，游标那一格弹同一个气泡，
+                                         移动结果同时播报给读屏器（#heatmapLive）。 -->
+                                    <div class="heatmap-grid" id="heatmapGrid" role="group" tabindex="0"
+                                         data-i18n-aria-label="heatmap.ariaShort"
+                                         aria-label="最近一年的每日充电量"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="heatmap-legend">
+                            <span data-i18n="heatmap.less">少</span>
+                            <span class="heatmap-legend-swatches">
+                                <i class="hm-cell lv0"></i><i class="hm-cell lv1"></i>
+                                <i class="hm-cell lv2"></i><i class="hm-cell lv3"></i><i class="hm-cell lv4"></i>
+                            </span>
+                            <span data-i18n="heatmap.more">多</span>
+                        </div>
+                        <span class="hm-live" id="heatmapLive" aria-live="polite"></span>
                     </div>
 
                 </section>
@@ -766,6 +802,6 @@
 
 </script>
 
-<script defer src="/static/app.js?v=33"></script>
+<script defer src="/static/app.js?v=34"></script>
 </body>
 </html>

@@ -29,6 +29,9 @@ ENV PYTHONUNBUFFERED=1
 # 没有 TTY 时默认不加 StreamHandler（避免 ctl 场景日志整份重复），容器里显式打开，
 # 这样 `docker logs` 能看到业务日志而不是只有启动横幅。
 ENV CUKTECH_LOG_STREAM=1
+# glibc 默认每个线程一个 64MB 虚拟 malloc arena：7 线程下 RSS 里会留下数 MB
+# 已释放但未归还的页。压到 2 个（与 cuktech_ctl.sh 一致）。
+ENV MALLOC_ARENA_MAX=2
 
 RUN mkdir -p /data
 

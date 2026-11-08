@@ -115,7 +115,7 @@ jobs:
           # 改名 / 挪目录 / 漏提交都会直接指出是哪一个文件不见了。
           for required in charge_limit_test.js charge_limit_contrast_test.js \
               charge_limit_deck_test.js config_devices_test.js config_primary_test.js \
-              device_bench_test.js \
+              device_bench_test.js heatmap_test.js \
               device_store_test.js i18n_runtime_test.js index_light_contrast_test.js \
               port_modes_test.js smoke_test.js syntax_test.js; do
             [ -f "tests/js/$required" ] || { echo "缺少套件 tests/js/$required"; exit 1; }

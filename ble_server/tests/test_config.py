@@ -5,6 +5,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import load_config, BLEConfig, MQTTConfig, ServerConfig, Config
@@ -62,6 +64,9 @@ class TestServerConfig:
         assert config.port == 8199
         assert config.log_level == "info"
         assert config.history_retention_days == 2
+        # 曲线（2 天）与会话记录（30 天）是两条独立的保留期；后者是热力图的
+        # 回填来源，必须比曲线长。
+        assert config.session_retention_days == 30
         assert config.reconnect_base_delay == 1.0
         assert config.reconnect_max_delay == 300.0
 
@@ -113,6 +118,36 @@ class TestLoadConfig:
         """Test history retention days from environment variable."""
         config = load_config()
         assert config.server.history_retention_days == 7
+
+    @patch.dict(os.environ, {
+        "CUKTECH_DEVICE_MAC": "AA:BB:CC:DD:EE:FF",
+        "CUKTECH_DEVICE_TOKEN": "aabbccddeeff",
+        "CUKTECH_SESSION_RETENTION_DAYS": "90",
+    })
+    def test_session_retention_days_from_env(self):
+        """会话记录保留期与曲线保留期互不影响。"""
+        config = load_config()
+        assert config.server.session_retention_days == 90
+        assert config.server.history_retention_days == 2
+
+    @patch.dict(os.environ, {
+        "CUKTECH_DEVICE_MAC": "AA:BB:CC:DD:EE:FF",
+        "CUKTECH_DEVICE_TOKEN": "aabbccddeeff",
+        "CUKTECH_SESSION_RETENTION_DAYS": "0",
+    })
+    def test_session_retention_days_rejects_zero(self):
+        """0 会让清理把当天刚闭合并写入的记录也删掉。"""
+        with pytest.raises(ValueError):
+            load_config()
+
+    @patch.dict(os.environ, {
+        "CUKTECH_DEVICE_MAC": "AA:BB:CC:DD:EE:FF",
+        "CUKTECH_DEVICE_TOKEN": "aabbccddeeff",
+        "CUKTECH_SESSION_RETENTION_DAYS": "not-a-number",
+    })
+    def test_session_retention_days_rejects_garbage(self):
+        with pytest.raises(ValueError):
+            load_config()
 
 
 class TestHistoryDbPath:

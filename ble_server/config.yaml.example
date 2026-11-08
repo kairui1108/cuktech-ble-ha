@@ -26,7 +26,8 @@ server:
   reconnect_max_delay: 300.0      # 最大重连延迟（秒）
   settings_refresh_interval: 10.0 # 端口状态刷新间隔（秒）
   log_level: "info"               # debug, info, warning, error
-  history_retention_days: 2       # 保留最近 N 天的历史数据
+  history_retention_days: 2       # 功率曲线保留天数（port_history，秒级数据，贵）
+  session_retention_days: 30      # 充电记录保留天数（charge_sessions，汇总行，便宜）
   history_db_path: ""             # SQLite 数据库文件路径
   startup_stagger_sec: 2.0        # 多设备启动错峰（秒）：第 N 台等 N×该值。单设备恒 0 延迟
 
