@@ -173,8 +173,6 @@ Target-specific symbols (`BTDM_CTRL_MODE_BLE_ONLY`, `ESP_TASK_WDT_CHECK_IDLE_TAS
 
 **Note**: keep `CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM` / `DYNAMIC_TX_BUFFER_NUM` in the shared defaults. The ESP32/S3 IDF defaults are 32/32, and one image-heavy page load drained the heap from 73 KB to 2.5 KB and stalled the HTTP server for ~30 s; the measured 8/6 values avoid that.
 
-**Note (BLE link compatibility)**: a classic ESP32 (this board is an ESP32-D0WDQ6, revision v1.0) cannot establish a link-layer connection to the AD1204 charger (HS6621C, BLE 5.0) — every `ble_gap_connect` ends with HCI 0x3E (574, "connection failed to be established"). This is independent of the firmware version: the same failure occurs with the released v1.1.4 code from git, and the BLE scan/connect code has not changed since the first release. The same board connects fine as a central to other peripherals (including a random-address device at −71 dBm) and to a host-emulated peripheral (MTU 256), while an ESP32-C3 (BLE 5.0) and the host's BlueZ (BLE 5.2) both connect to the charger at the same location (−65 dBm). RF, heap and the connect flow are ruled out; the most likely cause is an interoperability problem between this first-generation ESP32 silicon's BLE controller and the charger. Use a C3 or S3 (BLE 5.0, newer controllers) for this charger.
-
 ## License
 
 MIT

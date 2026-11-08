@@ -172,8 +172,6 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 **注意**：`CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM` / `DYNAMIC_TX_BUFFER_NUM` 必须保留在公共配置里。ESP32/S3 的 IDF 默认值是 32/32，一次图片较多的整页加载就会把堆从 73 KB 压到 2.5 KB，HTTP 服务会卡死约 30 秒；8/6 的实测值可避免该问题。
 
-**注意（BLE 链路兼容性）**：实测经典 ESP32（此板为 ESP32-D0WDQ6，revision v1.0）无法与 AD1204 充电器（HS6621C，BLE 5.0）建立链路层连接，每次 `ble_gap_connect` 都以 HCI 0x3E（574，connection failed to be established）结束。该结论与固件版本无关：用 git 中的 v1.1.4 发布代码烧录后同样失败，而 BLE 扫描/连接代码从首个版本起未改动。同一板子作为 Central 能正常连接其他外设（含随机地址设备，-71 dBm）和主机模拟的外设（MTU 256）；ESP32-C3（BLE 5.0）与本机 BlueZ（BLE 5.2）在同一位置（-65 dBm）都能连上该充电器。射频、堆内存与连接流程均已排除，最可能是初代 ESP32 silicon 的 BLE 控制器与该充电器的互操作问题。该充电器请使用 C3 或 S3（均为 BLE 5.0，较新控制器）。
-
 ## 协议
 
 MIT
