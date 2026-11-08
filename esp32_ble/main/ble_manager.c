@@ -1,5 +1,6 @@
 #include "ble_manager.h"
 #include "config.h"
+#include "device_state.h"
 #include "miot_protocol.h"
 #include "miot_auth.h"
 #include "queue_msg.h"
@@ -35,6 +36,7 @@ static void _discover(void);
 static void _handle_cmd_recv(void);
 static void _handle_cmd_send(void);
 static void _pending_check_timeouts(void);
+static void _pending_start_next(void);
 static void _keepalive(void);
 static void _reconnect(void);
 static void _disable_all_notifications(void);
@@ -62,19 +64,20 @@ static SessionKeys _keys = {};
 static uint32_t _send_it = 0;
 static uint8_t _seq = 1;
 static PortData _ports[4] = {};
-static uint32_t _settings[32] = {};
-static bool _settings_valid[32] = {};
-/* Spinlock protects _settings[] / _settings_valid[] from concurrent
-   access between ble_task (reads during _parse_port) and app_task
-   (writes via ble_manager_store_setting). */
-static portMUX_TYPE _settings_spinlock = portMUX_INITIALIZER_UNLOCKED;
-#define LOCK_SETTINGS()   portENTER_CRITICAL(&_settings_spinlock)
-#define UNLOCK_SETTINGS() portEXIT_CRITICAL(&_settings_spinlock)
+/* Settings now live in device_state (single source of truth). */
 static uint32_t _ra = 0;
 static uint64_t _last_keepalive = 0;
 static SemaphoreHandle_t _disc_sem = NULL, _connected_sem = NULL, _disconnect_sem = NULL;
 static uint16_t _disc_service_start = 0, _disc_service_end = 0;
 static uint8_t _target_addr[6] = {}, _token[12] = {};
+/* Peer captured by the scan callback; the connect itself is issued from
+   the manager loop (task context) after the discovery procedure has been
+   cancelled — see ble_manager_loop(). */
+static ble_addr_t _found_peer;
+static volatile bool _peer_found = false;
+/* A connect procedure has been started and its result is pending.  Used to
+   keep DISC_COMPLETE from rescanning while the link is being established. */
+static volatile bool _connect_pending = false;
 static char _mac_str[18] = {};
 static volatile bool _nimble_ready = false;  /* written by NimBLE host task, read by ble_task */
 static volatile bool _enabled = true;
@@ -90,7 +93,10 @@ static int _char_ctx_n = 0;
 #define CIPHER_BUF_SIZE 128
 
 typedef enum { PENDING_GET, PENDING_SET } PendingType;
-typedef enum { SEND_IDLE, SEND_AWAIT_RDY, SEND_AWAIT_OK, SEND_AWAIT_RESP } SendPhase;
+/* Commands must be sent strictly one at a time: the device performs a
+   header/RCV_RDY/ciphertext/RCV_OK handshake per command.  SEND_QUEUED
+   entries are encrypted and started only when the wire is idle. */
+typedef enum { SEND_IDLE, SEND_QUEUED, SEND_AWAIT_RDY, SEND_AWAIT_OK, SEND_AWAIT_RESP } SendPhase;
 
 typedef struct {
     bool      in_use;
@@ -99,10 +105,13 @@ typedef struct {
     PendingType type;
     uint32_t  send_value;
     uint32_t  poll_seq;
-    uint64_t  deadline;
+    uint64_t  deadline;         /* 0 while still queued */
+    uint32_t  timeout_ms;       /* starts when the command is sent */
     bool      acked;
     bool      no_result;
     SendPhase phase;
+    uint8_t   plaintext[16];
+    uint8_t   pt_len;
     uint8_t   ciphertext[CIPHER_BUF_SIZE];  // [1,0] + encrypted data
     size_t    ct_len;
 } PendingEntry;
@@ -112,7 +121,9 @@ static PendingEntry _pending[MAX_PENDING] = {};
 static void _pending_check_timeouts(void) {
     uint64_t now = esp_timer_get_time() / 1000;
     for (int i = 0; i < MAX_PENDING; i++) {
-        if (!_pending[i].in_use || now < _pending[i].deadline) continue;
+        if (!_pending[i].in_use) continue;
+        if (_pending[i].phase == SEND_QUEUED) continue;   /* not sent yet */
+        if (now < _pending[i].deadline) continue;
         ESP_LOGW(TAG, "Pending %s seq=%d piid=%d timed out",
                  _pending[i].type == PENDING_GET ? "GET" : "SET",
                  _pending[i].seq, _pending[i].piid);
@@ -123,6 +134,20 @@ static void _pending_check_timeouts(void) {
             r = (BleResult){RES_SET, false, _pending[i].piid, _pending[i].send_value, 0};
         }
         xQueueSend(result_queue, &r, pdMS_TO_TICKS(50));
+        _pending[i].in_use = false;
+    }
+}
+
+static void _pending_abort_all(void) {
+    for (int i = 0; i < MAX_PENDING; i++) {
+        if (!_pending[i].in_use) continue;
+        BleResult r;
+        if (_pending[i].type == PENDING_GET) {
+            r = (BleResult){RES_GET, false, _pending[i].piid, 0, _pending[i].poll_seq};
+        } else {
+            r = (BleResult){RES_SET, false, _pending[i].piid, _pending[i].send_value, 0};
+        }
+        xQueueSend(result_queue, &r, 0);
         _pending[i].in_use = false;
     }
 }
@@ -171,17 +196,78 @@ static void _nimble_on_sync(void) {
     ESP_LOGI(TAG, "NimBLE ready");
 }
 
+static volatile bool _params_requested = false;
+static uint32_t _params_next_try_ms = 0;
+
+/* The charger asks for a 30-50 ms connection interval with latency 0,
+   which keeps the radio in a connection event almost every other WiFi
+   frame.  Measured on this C3: TCP round trips become bimodal (3 ms or
+   ~100 ms) and page loads drop from 35-48 KB/s to 10-22 KB/s.  Status
+   updates arrive about once a second and commands tolerate a few hundred
+   ms, so ask for 200 ms with a latency of 2 (commands may therefore wait
+   up to ~600 ms), which cuts the number of connection events — and the
+   airtime WiFi loses to them — by four.  Issued from the manager loop,
+   not from the connect callback, because an update cannot start while
+   the MTU exchange or discovery procedure is running (it returns
+   BLE_HS_EBUSY, retried a little later). */
+static void _maybe_update_params(void) {
+    /* Only after authentication: the auth handshake exchanges several
+       notifications, and a 200 ms interval with latency 2 made the first
+       attempt time out ("Phase A: no key exchange data"), costing a full
+       disconnect/reconnect before it succeeded. */
+    if (_state != BLE_READY) return;
+    if (!_connected || _params_requested || _conn_handle == 0xFFFF) return;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if ((int32_t)(now - _params_next_try_ms) < 0) return;
+    struct ble_gap_upd_params up = {
+        .itvl_min = 160,            /* 200 ms */
+        .itvl_max = 160,
+        .latency = 2,
+        .supervision_timeout = 600, /* 6 s */
+    };
+    int rc = ble_gap_update_params(_conn_handle, &up);
+    if (rc == BLE_HS_EBUSY) {
+        _params_next_try_ms = now + 200;
+    } else {
+        _params_requested = true;
+        if (rc != 0) ESP_LOGW(TAG, "ble_gap_update_params: %d", rc);
+    }
+}
+
 void ble_manager_loop(void) {
     if (!_nimble_ready) return;
+    /* Anything queued belongs to the old connection; fail it cleanly
+       instead of replaying stale commands after a reconnect. */
+    if (_state != BLE_READY) _pending_abort_all();
+    _maybe_update_params();
     switch (_state) {
     case BLE_SCANNING:     _scan(); break;
     case BLE_CONNECTING:
-        if (xSemaphoreTake(_connected_sem, pdMS_TO_TICKS(100)) == pdTRUE) _discover();
+        if (_peer_found) {
+            _peer_found = false;
+            /* Issuing ble_gap_connect() from inside the discovery event
+               races with the cancel of the discovery procedure; the
+               controller then aborts the first attempt with HCI 0x3E
+               ("connection failed to be established").  Doing it here,
+               after the callback returned, connects on the first try. */
+            if (ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &_found_peer, 30000,
+                                NULL, _gap_event, NULL) != 0) {
+                ESP_LOGE(TAG, "ble_gap_connect failed");
+                _connect_pending = false;
+                _set_state(BLE_RECONNECT);
+            } else {
+                _connect_pending = true;
+            }
+        } else if (xSemaphoreTake(_connected_sem, pdMS_TO_TICKS(100)) == pdTRUE) {
+            _discover();
+        }
         break;
     case BLE_READY:
         _handle_cmd_recv();
         _handle_cmd_send();
+        _pending_start_next();
         _pending_check_timeouts();
+        _pending_start_next();
         if ((esp_timer_get_time() / 1000) - _last_keepalive >= KEEPALIVE_INTERVAL_MS) _keepalive();
         break;
     case BLE_RECONNECT: _reconnect(); break;
@@ -295,39 +381,40 @@ static bool _wru(uint16_t handle, const uint8_t *data, size_t len) {
 // Hardware protocol code from PIID 17/18 (byte positions aligned with Python ble_manager.py):
 // PIID 17: byte[3] = C1, byte[1] = C2; PIID 18: byte[3] = C3, byte[1] = A
 static uint8_t _get_hw_proto(uint8_t piid) {
-    LOCK_SETTINGS();
+    uint32_t v17 = 0, v18 = 0;
+    bool ok17 = device_state_get_setting(17, &v17);
+    bool ok18 = device_state_get_setting(18, &v18);
     uint8_t result = 0;
     switch (piid) {
-        case 1: result = (_settings_valid[17] && ((_settings[17] >> 24) & 0xFF) > 0)
-                       ? (_settings[17] >> 24) & 0xFF : 0; break;
-        case 2: result = (_settings_valid[17] && ((_settings[17] >> 8) & 0xFF) > 0)
-                       ? (_settings[17] >> 8) & 0xFF : 0; break;
-        case 3: result = (_settings_valid[18] && ((_settings[18] >> 24) & 0xFF) > 0)
-                       ? (_settings[18] >> 24) & 0xFF : 0; break;
-        case 4: result = (_settings_valid[18] && ((_settings[18] >> 8) & 0xFF) > 0)
-                       ? (_settings[18] >> 8) & 0xFF : 0; break;
+        case 1: result = (ok17 && ((v17 >> 24) & 0xFF) > 0) ? (v17 >> 24) & 0xFF : 0; break;
+        case 2: result = (ok17 && ((v17 >> 8) & 0xFF) > 0) ? (v17 >> 8) & 0xFF : 0; break;
+        case 3: result = (ok18 && ((v18 >> 24) & 0xFF) > 0) ? (v18 >> 24) & 0xFF : 0; break;
+        case 4: result = (ok18 && ((v18 >> 8) & 0xFF) > 0) ? (v18 >> 8) & 0xFF : 0; break;
     }
-    UNLOCK_SETTINGS();
     return result;
 }
 
 static uint8_t _estimate_proto(uint8_t piid, float voltage, uint8_t code, uint8_t hw_protocol) {
     if (hw_protocol > 0) return hw_protocol;
-    LOCK_SETTINGS();
+
+    uint32_t ext = 0, s17 = 0, s18 = 0;
+    bool ext_ok = device_state_get_setting(21, &ext);
+    bool s17_ok = device_state_get_setting(17, &s17);
+    bool s18_ok = device_state_get_setting(18, &s18);
+
     int pd_bit = (piid == 1) ? 0 : 8;
     int pps_bit = (piid == 1) ? 1 : 9;
-    bool pd_enabled = (_settings_valid[21]) ? ((_settings[21] >> pd_bit) & 1) : true;
-    bool pps_enabled = (_settings_valid[21]) ? ((_settings[21] >> pps_bit) & 1) : true;
+    bool pd_enabled = ext_ok ? ((ext >> pd_bit) & 1) : true;
+    bool pps_enabled = ext_ok ? ((ext >> pps_bit) & 1) : true;
     uint8_t pdo_kind = 0;
-    if ((piid == 1 || piid == 2) && _settings_valid[17]) {
-        uint16_t port_word = (piid == 1) ? (_settings[17] & 0xFFFF) : ((_settings[17] >> 16) & 0xFFFF);
+    if ((piid == 1 || piid == 2) && s17_ok) {
+        uint16_t port_word = (piid == 1) ? (s17 & 0xFFFF) : ((s17 >> 16) & 0xFFFF);
         pdo_kind = (port_word >> 8) & 0xFF;
-    } else if ((piid == 3 || piid == 4) && _settings_valid[18]) {
+    } else if ((piid == 3 || piid == 4) && s18_ok) {
         /* C3 (piid=3) = lower 16 bits; A (piid=4) = upper 16 bits (same layout as PIID 17) */
-        uint16_t port_word = (piid == 3) ? (_settings[18] & 0xFFFF) : ((_settings[18] >> 16) & 0xFFFF);
+        uint16_t port_word = (piid == 3) ? (s18 & 0xFFFF) : ((s18 >> 16) & 0xFFFF);
         pdo_kind = (port_word >> 8) & 0xFF;
     }
-    UNLOCK_SETTINGS();
     return estimate_protocol_shared(piid, voltage, code, pd_enabled, pps_enabled, pdo_kind, hw_protocol);
 }
 
@@ -610,28 +697,84 @@ static void _handle_cmd_send(void) {
 /* ============================================================
  * Async command send
  * ============================================================ */
-static bool _send_enc_start(const uint8_t *pt, size_t pt_len, uint8_t *enc_out, size_t *enc_len) {
-    if (!encrypt_command(&_keys, &_send_it, pt, pt_len, enc_out, enc_len)) return false;
-    // Write CMD HEADER [0,0,0,0,1,0] — tells device to expect one encrypted frame
-    return _wru_nr(_cmd_send_handle, (uint8_t[]){0, 0, 0, 0, 1, 0}, 6);
-}
-
 static bool _alloc_pending(uint8_t seq, uint8_t piid, PendingType type,
-                            uint32_t send_value, uint32_t poll_seq, uint64_t timeout_ms,
-                            bool no_result, const uint8_t *ct, size_t ct_len) {
+                            uint32_t send_value, uint32_t poll_seq, uint32_t timeout_ms,
+                            bool no_result, const uint8_t *pt, size_t pt_len) {
+    if (pt_len > sizeof(_pending[0].plaintext)) return false;
+
+    /* Keep slots free for user commands: background GET polling must
+       never crowd out a SET/port toggle. */
+    if (type == PENDING_GET) {
+        int used = 0;
+        for (int i = 0; i < MAX_PENDING; i++) if (_pending[i].in_use) used++;
+        if (used >= MAX_PENDING - 4) {
+            ESP_LOGD(TAG, "Pending table reserved for SETs, skipping GET piid=%d", piid);
+            return false;
+        }
+    }
+
     for (int i = 0; i < MAX_PENDING; i++) {
         if (_pending[i].in_use) continue;
         _pending[i] = (PendingEntry){
             .in_use = true, .seq = seq, .piid = piid, .type = type,
             .send_value = send_value, .poll_seq = poll_seq,
-            .deadline = (esp_timer_get_time() / 1000) + timeout_ms,
-            .no_result = no_result, .phase = SEND_AWAIT_RDY, .ct_len = ct_len,
+            .deadline = 0,                 /* set when actually sent */
+            .timeout_ms = timeout_ms,
+            .no_result = no_result, .phase = SEND_QUEUED,
+            .pt_len = (uint8_t)pt_len,
         };
-        memcpy(_pending[i].ciphertext, ct, ct_len);
+        memcpy(_pending[i].plaintext, pt, pt_len);
         return true;
     }
     ESP_LOGW(TAG, "Pending table full");
     return false;
+}
+
+/* Start the oldest queued command, but only when no command is in flight.
+   The MiOT command channel is a strict request/response handshake, so
+   overlapping headers would desynchronise the device. */
+static void _pending_start_next(void) {
+    for (int i = 0; i < MAX_PENDING; i++) {
+        if (!_pending[i].in_use) continue;
+        if (_pending[i].phase != SEND_QUEUED) return;  /* wire busy */
+    }
+
+    /* User SETs first, then background GET polling.  Two passes over a
+       12-entry table are cheaper than any sort. */
+    for (int pass = 0; pass < 2; pass++) {
+        PendingType want = pass == 0 ? PENDING_SET : PENDING_GET;
+        for (int i = 0; i < MAX_PENDING; i++) {
+            if (!_pending[i].in_use || _pending[i].phase != SEND_QUEUED) continue;
+            if (_pending[i].type != want) continue;
+
+            uint8_t enc[CIPHER_BUF_SIZE];
+            size_t el = 0;
+            if (!encrypt_command(&_keys, &_send_it, _pending[i].plaintext,
+                                 _pending[i].pt_len, enc, &el) ||
+                el + 2 > sizeof(_pending[i].ciphertext)) {
+                ESP_LOGW(TAG, "Encrypt failed for piid=%d, dropping", _pending[i].piid);
+                BleResult r = {_pending[i].type == PENDING_GET ? RES_GET : RES_SET,
+                               false, _pending[i].piid, _pending[i].send_value, 0};
+                xQueueSend(result_queue, &r, 0);
+                _pending[i].in_use = false;
+                continue;
+            }
+
+            /* CMD HEADER tells the device to expect one encrypted frame. */
+            if (!_wru_nr(_cmd_send_handle, (uint8_t[]){0, 0, 0, 0, 1, 0}, 6)) {
+                ESP_LOGW(TAG, "CMD header write failed, will retry");
+                return;   /* leave queued */
+            }
+
+            _pending[i].ciphertext[0] = 1;
+            _pending[i].ciphertext[1] = 0;
+            memcpy(_pending[i].ciphertext + 2, enc, el);
+            _pending[i].ct_len = 2 + el;
+            _pending[i].deadline = esp_timer_get_time() / 1000 + _pending[i].timeout_ms;
+            _pending[i].phase = SEND_AWAIT_RDY;
+            return;
+        }
+    }
 }
 
 static bool _send_get_async(uint8_t piid, uint32_t poll_seq) {
@@ -642,9 +785,7 @@ static bool _send_get_async(uint8_t piid, uint32_t poll_seq) {
     buf[7] = piid; buf[8] = 0; buf[9] = 0x01; buf[10] = 0x10; buf[11] = 0;
     _seq = (_seq + 1) & 0xFF;
 
-    uint8_t enc[CIPHER_BUF_SIZE]; size_t el;
-    if (!_send_enc_start(buf, 12, enc, &el)) return false;
-    return _alloc_pending(req_seq, piid, PENDING_GET, 0, poll_seq, 2500, false, enc, el);
+    return _alloc_pending(req_seq, piid, PENDING_GET, 0, poll_seq, 2500, false, buf, 12);
 }
 
 static bool _send_set_async(uint8_t piid, uint32_t value, uint32_t poll_seq, bool no_result) {
@@ -661,130 +802,13 @@ static bool _send_set_async(uint8_t piid, uint32_t value, uint32_t poll_seq, boo
     if (byte_len >= 4) { buf[12] = (value >> 8) & 0xFF; buf[13] = (value >> 16) & 0xFF; buf[14] = (value >> 24) & 0xFF; }
     _seq = (_seq + 1) & 0xFF;
 
-    uint8_t enc[CIPHER_BUF_SIZE]; size_t el;
-    if (!_send_enc_start(buf, total_len, enc, &el)) return false;
-    return _alloc_pending(req_seq, piid, PENDING_SET, value, poll_seq, 4000, no_result, enc, el);
+    return _alloc_pending(req_seq, piid, PENDING_SET, value, poll_seq, 4000, no_result,
+                          buf, (size_t)total_len);
 }
 
-/* ============================================================
- * Sync wrappers (for CMD_PORT and auth flow)
- * ============================================================ */
-static void _drain_cmd_recv_pushes(void) {
-    NotifItem item;
-    while (xQueueReceive(_q_cmd_recv, &item, 0) == pdTRUE) {
-        if (item.data[2] == 0x02 && item.len >= 4) {
-            size_t tlen = 0; uint8_t pt[256];
-            if (decrypt_response(&_keys, item.data + 4, item.len - 4, pt, &tlen)) {
-                if (tlen >= 12 && pt[4] == 0x04 && pt[7] >= 1 && pt[7] <= 4) {
-                    _wru_nr(_cmd_recv_handle, (uint8_t[]){0,0,3,0}, 4);
-                    _parse_port(pt[7], pt, tlen);
-                } else {
-                    _wru_nr(_cmd_recv_handle, (uint8_t[]){0,0,3,0}, 4);
-                }
-            }
-        }
-    }
-}
-
-static bool _wait_cmd_send(uint8_t *buf, size_t *blen, uint32_t ms) {
-    uint64_t deadline = esp_timer_get_time() / 1000 + ms;
-    while ((esp_timer_get_time() / 1000) < deadline) {
-        if (_pop_cmd_send(buf, blen)) return true;
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    return false;
-}
-
-static bool _send_enc_sync(const uint8_t *pt, size_t pt_len) {
-    uint8_t enc[512]; size_t el;
-    if (!encrypt_command(&_keys, &_send_it, pt, pt_len, enc, &el)) return false;
-    if (!_wru_nr(_cmd_send_handle, (uint8_t[]){0,0,0,0,1,0}, 6)) return false;
-    uint8_t buf[256]; size_t blen;
-    if (!_wait_cmd_send(buf, &blen, 3000)) { ESP_LOGW(TAG, "CMD_SEND: no RCV_RDY"); return false; }
-    if (blen != 4 || buf[2] != 1 || buf[3] != 1) { ESP_LOGW(TAG, "RCV_RDY mismatch"); return false; }
-    uint8_t f[2+512] = {1,0}; memcpy(f + 2, enc, el);
-    if (!_wru_nr(_cmd_send_handle, f, 2 + el)) return false;
-    if (!_wait_cmd_send(buf, &blen, 3000)) { ESP_LOGW(TAG, "CMD_SEND: no RCV_OK"); return false; }
-    if (blen != 4 || buf[2] != 1 || buf[3] != 0) { ESP_LOGW(TAG, "RCV_OK mismatch"); return false; }
-    return true;
-}
-
-static bool _recv_cmd(uint8_t *out, size_t *ol, uint32_t ms) {
-    uint64_t start = esp_timer_get_time() / 1000;
-    uint8_t buf[256]; size_t blen;
-    while ((esp_timer_get_time() / 1000 - start) < ms) {
-        uint32_t rem = ms - (uint32_t)(esp_timer_get_time() / 1000 - start);
-        if (!_wait_queue(_q_cmd_recv, buf, &blen, (rem > 2000) ? 2000 : rem)) break;
-        if (blen >= 4 && buf[2] == 0x01) continue;
-        if (buf[2] == 0x02 && blen >= 4) {
-            uint8_t tmp[256]; size_t tlen = 0;
-            if (!decrypt_response(&_keys, buf + 4, blen - 4, tmp, &tlen)) continue;
-            if (tlen >= 12 && tmp[4] == 0x04 && tmp[7] >= 1 && tmp[7] <= 4) {
-                _wru_nr(_cmd_recv_handle, (uint8_t[]){0,0,3,0}, 4);
-                _parse_port(tmp[7], tmp, tlen); continue;
-            }
-            _wru_nr(_cmd_recv_handle, (uint8_t[]){0,0,3,0}, 4);
-            *ol = (tlen > 256) ? 256 : tlen; memcpy(out, tmp, *ol); return true;
-        }
-        if (buf[2] == 0x00 && blen >= 6) {
-            uint16_t cnt = buf[4] + (buf[5] << 8);
-            _wru_nr(_cmd_recv_handle, (uint8_t[]){0,0,1,1}, 4);
-            uint8_t tmp[512]; size_t t = 0;
-            for (uint16_t i = 0; i < cnt && t < 508; i++) {
-                if (!_wait_queue(_q_cmd_recv, buf, &blen, 3000)) break;
-                if (buf[2] == 0x02) { size_t cp = (blen - 2 < 508 - t) ? (blen - 2) : (508 - t); memcpy(tmp + t, buf + 2, cp); t += cp; }
-            }
-            _wru_nr(_cmd_recv_handle, (uint8_t[]){0,0,1,0}, 4);
-            if (t > 0) { size_t pl; if (decrypt_response(&_keys, tmp, t, tmp, &pl)) { *ol = (pl > 256) ? 256 : pl; memcpy(out, tmp, *ol); return true; } }
-        }
-    }
-    return false;
-}
-
-bool ble_manager_miot_get(uint8_t piid, uint32_t* value) {
-    _drain_cmd_recv_pushes();
-    uint8_t buf[16] = {0};
-    buf[0] = 12; buf[1] = 0x20; buf[2] = _seq; buf[3] = 0;
-    buf[4] = 0x02; buf[5] = 0x01; buf[6] = SIID_CHARGER;
-    buf[7] = piid; buf[8] = 0; buf[9] = 0x01; buf[10] = 0x10; buf[11] = 0;
-    _seq = (_seq + 1) & 0xFF;
-    if (!_send_enc_sync(buf, 12)) return false;
-    uint8_t resp[256]; size_t rl = 0;
-    if (!_recv_cmd(resp, &rl, 8000)) return false;
-    if (rl < 14 || resp[4] != 0x03 || resp[7] != piid) return false;
-    uint8_t vlen = resp[11];
-    if (vlen >= 4 && rl >= 17) *value = resp[13] | (resp[14] << 8) | (resp[15] << 16) | (resp[16] << 24);
-    else if (vlen >= 1 && rl >= 14) *value = resp[13];
-    else *value = 0;
-    return true;
-}
-
-bool ble_manager_miot_set(uint8_t piid, uint32_t value) {
-    _drain_cmd_recv_pushes();
-    uint8_t buf[16] = {0};
-    uint8_t byte_len, tl_lo, tl_hi;
-    if (value <= 0xFF) { byte_len = 1; tl_lo = 0x01; tl_hi = 0x10; }
-    else { byte_len = 4; tl_lo = 0x04; tl_hi = 0x50; }
-    int total_len = 11 + byte_len;
-    buf[0] = total_len; buf[1] = 0x20; buf[2] = _seq; buf[3] = 0;
-    buf[4] = 0x00; buf[5] = 0x01; buf[6] = SIID_CHARGER;
-    buf[7] = piid; buf[8] = 0; buf[9] = tl_lo; buf[10] = tl_hi;
-    buf[11] = value & 0xFF;
-    if (byte_len >= 4) { buf[12] = (value >> 8) & 0xFF; buf[13] = (value >> 16) & 0xFF; buf[14] = (value >> 24) & 0xFF; }
-    _seq = (_seq + 1) & 0xFF;
-    if (!_send_enc_sync(buf, total_len)) return false;
-    uint8_t resp[256]; size_t rl = 0;
-    if (!_recv_cmd(resp, &rl, 3000)) return false;
-    bool ok = false;
-    if (rl >= 6 && resp[4] == 0x01) {
-        ok = true;
-        if (_recv_cmd(resp, &rl, 2000)) { if (rl >= 8 && resp[4] == 0x04) ok = (resp[7] == piid); }
-    } else if (rl >= 8 && resp[4] == 0x04) { ok = (resp[7] == piid); }
-    NotifItem item;
-    QueueHandle_t qs[] = {_q_auth_ctrl, _q_auth_data, _q_cmd_send};
-    for (int i = 0; i < 3; i++) while (xQueueReceive(qs[i], &item, 0) == pdTRUE) {}
-    return ok;
-}
+/* All command traffic goes through the async pending table above.
+   The old blocking miot_get/miot_set wrappers were removed: they could
+   stall the BLE state machine for up to 8 seconds per command. */
 
 
 /* ============================================================
@@ -792,9 +816,15 @@ bool ble_manager_miot_set(uint8_t piid, uint32_t value) {
  * ============================================================ */
 static void _scan(void) {
     xSemaphoreTake(_connected_sem, 0);
+    _peer_found = false;
     ble_gap_disc_cancel();
     vTaskDelay(pdMS_TO_TICKS(100));
-    struct ble_gap_disc_params dp = {}; dp.itvl = 0x60; dp.window = 0x60;
+    /* 60 ms scan interval with a 30 ms window (50% duty) instead of
+       60 ms / 60 ms.  A 100%-duty scan leaves the single C3 radio no idle
+       airtime, which stalled every WiFi round trip whenever the charger
+       was out of range; a 30 ms window still catches its ~30 ms
+       advertisements within a few intervals. */
+    struct ble_gap_disc_params dp = {}; dp.itvl = 0x60; dp.window = 0x30;
     ESP_LOGI(TAG, "Scanning for %s...", _mac_str);
     int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, 10 * 100, &dp, _gap_event, NULL);
     if (rc != 0) { ESP_LOGE(TAG, "ble_gap_disc failed: %d", rc); vTaskDelay(pdMS_TO_TICKS(1000)); }
@@ -867,27 +897,47 @@ void ble_manager_disconnect(void) {
 static int _gap_event(struct ble_gap_event *event, void *arg) {
     switch (event->type) {
     case BLE_GAP_EVENT_DISC:
-        if (memcmp(event->disc.addr.val, _target_addr, 6) == 0) {
+        if (!_peer_found && memcmp(event->disc.addr.val, _target_addr, 6) == 0) {
             ESP_LOGI(TAG, "Found target, RSSI=%d", event->disc.rssi);
+            _found_peer = event->disc.addr;
+            _peer_found = true;
             ble_gap_disc_cancel();
-            _set_state(BLE_CONNECTING);
-            if (ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &event->disc.addr, 30000, NULL, _gap_event, NULL) != 0)
-                _set_state(BLE_RECONNECT);
         }
         break;
     case BLE_GAP_EVENT_CONNECT:
+        _connect_pending = false;
         if (event->connect.status != 0) { ESP_LOGE(TAG, "Connect fail: %d", event->connect.status); _connected = false; _set_state(BLE_RECONNECT); break; }
         _conn_handle = event->connect.conn_handle; _connected = true;
+        _params_requested = false;
         ESP_LOGI(TAG, "Connected, handle=%d", _conn_handle);
+        {
+            struct ble_gap_conn_desc desc;
+            if (ble_gap_conn_find(_conn_handle, &desc) == 0) {
+                ESP_LOGI(TAG, "params: itvl=%.2fms latency=%u timeout=%ums",
+                         desc.conn_itvl * 1.25, desc.conn_latency,
+                         desc.supervision_timeout * 10);
+            }
+        }
         ble_gattc_exchange_mtu(_conn_handle, NULL, NULL);
         if (_connected_sem) xSemaphoreGive(_connected_sem);
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "Disconnected, reason=%d", event->disconnect.reason);
-        _connected = false; _conn_handle = 0xFFFF; _drain_all_queues();
+        _connected = false; _connect_pending = false; _conn_handle = 0xFFFF;
+        _params_requested = false; _drain_all_queues();
         if (_disconnect_sem) xSemaphoreGive(_disconnect_sem);
         _set_state(BLE_RECONNECT); break;
     case BLE_GAP_EVENT_MTU: ESP_LOGI(TAG, "MTU: %d", event->mtu.value); break;
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+        struct ble_gap_conn_desc cd;
+        int crc = ble_gap_conn_find(event->conn_update.conn_handle, &cd);
+        ESP_LOGI(TAG, "Conn update: status=%d itvl=%.2fms latency=%u timeout=%ums",
+                 event->conn_update.status,
+                 crc == 0 ? cd.conn_itvl * 1.25 : -1.0,
+                 crc == 0 ? cd.conn_latency : 0,
+                 crc == 0 ? cd.supervision_timeout * 10 : 0);
+        break;
+    }
     case BLE_GAP_EVENT_NOTIFY_RX:
         _dispatch_notif(event->notify_rx.attr_handle,
                         OS_MBUF_PKTLEN(event->notify_rx.om) > 0 ? event->notify_rx.om->om_data : NULL,
@@ -895,7 +945,10 @@ static int _gap_event(struct ble_gap_event *event, void *arg) {
         break;
     case BLE_GAP_EVENT_DISC_COMPLETE:
         ESP_LOGI(TAG, "Scan complete, reason=%d", event->disc_complete.reason);
-        _set_state(BLE_SCANNING); break;
+        /* A cancel issued from the DISC callback also completes the scan;
+           keep waiting for the connect instead of rescanning. */
+        if (!_peer_found && !_connect_pending) _set_state(BLE_SCANNING);
+        break;
     default: break;
     }
     return 0;
@@ -988,25 +1041,15 @@ void ble_manager_set_state_callback(StateCallback cb) { _state_cb = cb; }
 void ble_manager_set_port_data_callback(PortDataCallback cb) { _port_data_cb = cb; }
 const PortInfo* ble_manager_get_ports(void) { return (const PortInfo*)_ports; }
 uint32_t ble_manager_get_setting(uint8_t piid) {
-    if (piid >= 32) return 0;
-    LOCK_SETTINGS();
-    uint32_t v = _settings[piid];
-    UNLOCK_SETTINGS();
+    uint32_t v = 0;
+    device_state_get_setting(piid, &v);
     return v;
 }
 bool ble_manager_has_setting(uint8_t piid) {
-    if (piid >= 32) return false;
-    LOCK_SETTINGS();
-    bool v = _settings_valid[piid];
-    UNLOCK_SETTINGS();
-    return v;
+    return device_state_has_setting(piid);
 }
 void ble_manager_store_setting(uint8_t piid, uint32_t val) {
-    if (piid < 32) {
-        LOCK_SETTINGS();
-        _settings[piid] = val; _settings_valid[piid] = true;
-        UNLOCK_SETTINGS();
-    }
+    device_state_set_setting(piid, val);
 }
 
 int ble_manager_pending_count(void) {

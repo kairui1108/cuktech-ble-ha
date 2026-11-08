@@ -1,6 +1,14 @@
-# ESP-IDF Partition Table
-# Name,   Type, SubType, Offset,  Size,    Flags
-nvs,      data, nvs,     0x9000,  0x6000,
-phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory, 0x10000, 0x3E0000,
-nvs2,     data, nvs,     0x3F0000,0x6000,
+# ESP-IDF Partition Table — 4MB flash, dual OTA
+#
+# Layout notes:
+#   - app slots are 64KB aligned
+#   - otadata lives at 0xF000 (the old single-factory table had phy_init
+#     there, so devices still running the old table need ONE USB reflash)
+#   - nvs2 was unused and has been dropped to make room for ota_1
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+otadata,  data, ota,     0xf000,   0x2000,
+phy_init, data, phy,     0x11000,  0x1000,
+ota_0,    app,  ota_0,   0x20000,  0x1F0000,
+ota_1,    app,  ota_1,   0x210000, 0x1F0000,

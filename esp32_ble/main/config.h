@@ -26,7 +26,7 @@
 
 // --- 设备信息 ---
 #define DEVICE_MODEL      "njcuk.fitting.ad1204_HS6621C"
-#define FW_VERSION        "2.1.2_0073"
+#define FW_VERSION        "1.1.5"
 
 // --- Timing ---
 #define KEEPALIVE_INTERVAL_MS    10000

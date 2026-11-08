@@ -9,7 +9,9 @@ enum CmdType {
     CMD_NOP = 0,
     CMD_GET,
     CMD_SET,
-    CMD_PORT,       // piid=bit_index(0-3), value=1(on)/0(off) — does GET+modify+SET atomically
+    CMD_PORT,       // piid=bit_index(0-3), value=1(on)/0(off)
+    CMD_PROTO,      // piid=PIID21 bit index, value=1(on)/0(off)
+    CMD_BLE,        // value=1(enable)/0(disable) — executed in ble_task
     CMD_POLL_STEP,
     CMD_DISCONNECT,
     CMD_RECONNECT,

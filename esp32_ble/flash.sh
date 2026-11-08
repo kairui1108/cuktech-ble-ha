@@ -97,17 +97,12 @@ init_idf() {
     . "$IDF_PATH/export.sh" > /dev/null 2>&1
 }
 
-# 合并 3 个 bin 为单个 firmware.bin
-# Bootloader 地址: ESP32=0x1000, 其他=0x0
+# 合并 bootloader + 分区表 + otadata + app 为单个镜像。
+# 用 IDF 内置的 merge-bin：偏移量直接取自 build/flash_args（即 partitions.csv），
+# 这里不再抄一份，避免分区表改了而脚本没改。产物是 build/merged-binary.bin。
 _merge_bins() {
-    local BOOT_OFFSET="0x1000"
-    [ "$TARGET" != "esp32" ] && BOOT_OFFSET="0x0"
-    echo "==> 合并为 firmware.bin..."
-    python -m esptool --chip "$TARGET" merge_bin \
-        -o build/firmware.bin \
-        "$BOOT_OFFSET" build/bootloader/bootloader.bin \
-        0x8000 build/partition_table/partition-table.bin \
-        0x10000 build/cuktech_ble.bin > /dev/null 2>&1
+    echo "==> 合并为 merged-binary.bin..."
+    idf.py merge-bin > /dev/null
 }
 
 # 获取烧录参数
@@ -128,7 +123,7 @@ case "$CMD" in
         idf.py set-target "$TARGET" 2>&1 | tail -3
         idf.py build
         _merge_bins
-        echo "==> 编译完成 (build/firmware.bin)"
+        echo "==> 编译完成 (build/merged-binary.bin)"
         ;;
     flash|f)
         init_idf
@@ -149,7 +144,7 @@ case "$CMD" in
         python -m esptool --chip "$TARGET" -p "$PORT" -b 460800 \
             --before default_reset --after hard_reset \
             write_flash --flash_mode "$FLASH_MODE" --flash_size "$FLASH_SIZE" \
-            0x0 build/firmware.bin
+            0x0 build/merged-binary.bin
         echo "==> 烧录完成"
         ;;
     monitor|m)
@@ -169,7 +164,7 @@ case "$CMD" in
         python -m esptool --chip "$TARGET" -p "$PORT" -b 460800 \
             --before default_reset --after hard_reset \
             write_flash --flash_mode "$FLASH_MODE" --flash_size "$FLASH_SIZE" \
-            0x0 build/firmware.bin
+            0x0 build/merged-binary.bin
         echo "==> 启动串口监控 (Ctrl+] 退出)..."
         idf.py -p "$PORT" monitor
         ;;

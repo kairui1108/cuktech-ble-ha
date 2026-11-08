@@ -1,68 +1,23 @@
-# ESP32-S3 overrides
+# ESP32-S3 overrides — dual core, BLE 5.0 controller (same family as the C3).
+# Everything else is shared in sdkconfig.defaults.
+
+# Flash: keep in sync with the module actually fitted.  A 4 MB / DIO board
+# needs FLASHSIZE_4MB and no QIO here, or the bootloader will probe modes the
+# chip cannot do.
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
-# Disable 4.1 compat — S3 is BLE 5.0
-# CONFIG_BT_NIMBLE_4_1_COMPAT is not set
 
-# NimBLE memory tuning — increased MSYS_1 blocks to prevent mbuf exhaustion
-# during notification bursts (BLE scan + GATT discovery + data push concurrently)
-CONFIG_BT_NIMBLE_ACL_BUF_COUNT=12
-CONFIG_BT_NIMBLE_ACL_BUF_SIZE=255
-CONFIG_BT_NIMBLE_HCI_EVT_BUF_SIZE=256
-CONFIG_BT_NIMBLE_HCI_EVT_HI_BUF_COUNT=8
-CONFIG_BT_NIMBLE_HCI_EVT_LO_BUF_COUNT=8
-CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=16
-CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
-CONFIG_BT_NIMBLE_MAX_BONDS=1
-CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=4096
+# IDF defaults the S3 to 160 MHz.  240 MHz cuts lwIP/TLS/JSON work per page
+# request; the board is USB powered, so the extra draw costs nothing.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
-# MQTT
-CONFIG_MQTT_PROTOCOL_311=y
+# CPU 1 runs the NimBLE host, CPU 0 runs WiFi/lwIP.
+CONFIG_BT_NIMBLE_PINNED_TO_CORE_1=y
 
-# Partition Table
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
-
-# FreeRTOS
-CONFIG_FREERTOS_HZ=1000
-# Task WDT: init + panic on timeout (detect/restart on task deadlock)
-CONFIG_ESP_TASK_WDT_INIT=y
-CONFIG_ESP_TASK_WDT_PANIC=y
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
-CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+# Watch the core-1 idle task as well as core 0 (dual-core only symbols).
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
 
-# HTTP Server
-CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
-CONFIG_HTTPD_MAX_URI_LEN=1024
-
-# LWIP
-CONFIG_LWIP_MAX_SOCKETS=16
-CONFIG_LWIP_TCP_SND_BUF_DEFAULT=8192
-CONFIG_LWIP_TCP_WND_DEFAULT=8192
-CONFIG_LWIP_TCP_MSS=1460
-# LWIP internal memory — prevent TCP depletion under fragmentation
-CONFIG_LWIP_MEM_SIZE=8192
-CONFIG_LWIP_PBUF_POOL_SIZE=16
-CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072
-# Disable OOSEQ to reduce per-connection memory when fragmented
-CONFIG_LWIP_TCP_QUEUE_OOSEQ=n
-# TCP keep-alive for MQTT long-lived connections (prevent NAT timeouts)
-CONFIG_LWIP_TCP_KEEPALIVE=y
-# Disable SO_REUSE to prevent port exhaustion on frequent reconnects
-CONFIG_LWIP_SO_REUSE=n
-# Nagle disabled for low-latency MQTT publish (small payloads sent immediately)
-CONFIG_LWIP_TCP_NODELAY=y
-
-# mbedTLS (for crypto)
-CONFIG_MBEDTLS_MD_C=y
-CONFIG_MBEDTLS_CCM_C=y
-CONFIG_MBEDTLS_SHA256_C=y
-CONFIG_MBEDTLS_HKDF_C=y
-
-# --- Heap & Memory ---
-# Enable task stack overflow detection (catches stack smashing early)
-CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY=y
-# Enable TLSF allocator — O(1) allocation, immediate coalescing, reduces fragmentation ~60-80%
-CONFIG_HEAP_TLSF_USE_MALLOC=y
+# One connection plus one scan: fewer controller activity slots leave more
+# heap for WiFi RX/TX buffers during page loads (same reasoning as the C3).
+CONFIG_BT_CTRL_BLE_MAX_ACT=2

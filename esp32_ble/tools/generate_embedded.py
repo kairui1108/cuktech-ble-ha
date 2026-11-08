@@ -3,7 +3,7 @@
 Generate embedded_files.h from data/ directory.
 Converts all files to C byte arrays for direct inclusion in firmware.
 """
-import os, sys, re
+import os, sys, re, zlib
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -24,6 +24,7 @@ def content_type(path):
     if ext == '.css':    return "text/css"
     if ext == '.js':     return "application/javascript"
     if ext == '.png':    return "image/png"
+    if ext == '.webp':   return "image/webp"
     if ext == '.jpg' or ext == '.jpeg': return "image/jpeg"
     if ext == '.svg':    return "image/svg+xml"
     if ext == '.ico':    return "image/x-icon"
@@ -54,8 +55,9 @@ def process():
     lines.append("#define EMBEDDED_FILES_H")
     lines.append("")
     lines.append("#include <stddef.h>")
+    lines.append("#include <stdint.h>")
     lines.append("")
-    lines.append("typedef struct { const char *path; const char *content_type; const char *encoding; const unsigned char *data; size_t size; } EmbeddedFile;")
+    lines.append("typedef struct { const char *path; const char *content_type; const char *encoding; const unsigned char *data; size_t size; uint32_t crc; } EmbeddedFile;")
     lines.append("")
 
     entries = []
@@ -63,6 +65,7 @@ def process():
         with open(fpath, 'rb') as f:
             data = f.read()
         var = mangle(rel)
+        crc = zlib.crc32(data) & 0xFFFFFFFF
         lines.append(f"static const unsigned char {var}[] = {{")
         for i in range(0, len(data), 16):
             chunk = data[i:i+16]
@@ -70,18 +73,18 @@ def process():
             lines.append(f"  {hexvals},")
         lines.append("};")
         lines.append("")
-        entries.append((rel, content_type(rel), encoding(rel), var, len(data)))
+        entries.append((rel, content_type(rel), encoding(rel), var, len(data), crc))
 
         # Also create a .gz alias if this is a .gz file
         if rel.endswith('.gz'):
             alias = rel[:-3]
-            entries.append((alias, content_type(alias), "gzip", var, len(data)))
+            entries.append((alias, content_type(alias), "gzip", var, len(data), crc))
 
     lines.append("static const EmbeddedFile embedded_files[] = {")
-    for rel, ct, enc, var, size in entries:
+    for rel, ct, enc, var, size, crc in entries:
         enc_str = f'"{enc}"' if enc else "NULL"
-        lines.append(f'  {{"/{rel}", "{ct}", {enc_str}, {var}, {size}}},')
-    lines.append("  {NULL, NULL, NULL, NULL, 0}")
+        lines.append(f'  {{"/{rel}", "{ct}", {enc_str}, {var}, {size}, 0x{crc:08x}u}},')
+    lines.append("  {NULL, NULL, NULL, NULL, 0, 0}")
     lines.append("};")
     lines.append("#endif")
 

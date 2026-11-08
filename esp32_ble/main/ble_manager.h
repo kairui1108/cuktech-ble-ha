@@ -36,9 +36,6 @@ bool ble_manager_send_get_async(uint8_t piid, uint32_t poll_seq);
 bool ble_manager_send_set_async(uint8_t piid, uint32_t value, uint32_t poll_seq);
 // Async SET without RES_SET (caller sends its own — used by CMD_PORT)
 bool ble_manager_send_set_nr_async(uint8_t piid, uint32_t value);
-// Sync: blocking wrappers (for CMD_PORT and auth)
-bool ble_manager_miot_get(uint8_t piid, uint32_t* value);
-bool ble_manager_miot_set(uint8_t piid, uint32_t value);
 void ble_manager_keepalive(void);
 void ble_manager_disconnect(void);
 void ble_manager_set_enabled(bool enabled);

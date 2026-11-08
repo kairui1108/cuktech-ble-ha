@@ -1,0 +1,11 @@
+# ESP32 (classic) overrides — dual core, BTDM controller.
+# Everything else is shared in sdkconfig.defaults.
+
+# This firmware never uses BR/EDR; dual-mode costs controller RAM for nothing.
+CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
+
+# CPU 1 runs the NimBLE host, CPU 0 runs WiFi/lwIP.
+CONFIG_BT_NIMBLE_PINNED_TO_CORE_1=y
+
+# Watch the core-1 idle task as well as core 0 (dual-core only symbols).
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y

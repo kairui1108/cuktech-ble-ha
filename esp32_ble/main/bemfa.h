@@ -9,5 +9,6 @@ typedef bool (*bemfa_ble_cb)(bool enable);
 void bemfa_init(DeviceConfig *cfg, bemfa_cmd_cb on_cmd, bemfa_ble_cb on_ble);
 void bemfa_disconnect(void);
 void bemfa_loop(void);
+bool bemfa_enabled(void);
 void bemfa_publish_port(int idx, float voltage, float current, float power, bool active);
 void bemfa_publish_status(bool connected);

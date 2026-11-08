@@ -18,10 +18,11 @@ static uint64_t _connect_time = 0;
 static portMUX_TYPE _state_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool _port_state[4] = {false, false, false, false};
 static bool _ble_state = false;
-static bool _connected = false;      // Bemfa MQTT connection state
+static volatile bool _connected = false;  // Bemfa MQTT connection state
 static int _connect_fail_count = 0;
 static bool _circuit_open = false;
 static uint64_t _circuit_open_time = 0;
+static uint64_t _restart_at = 0;      /* non-blocking stop/start handoff */
 #define MAX_CONNECT_FAILS 5
 #define CIRCUIT_RESET_SEC 300
 static DeviceConfig *_cfg = NULL;
@@ -202,14 +203,14 @@ static void _mqtt_event_handler(void *arg, esp_event_base_t base, int32_t id, vo
             portENTER_CRITICAL(&_state_mux);
             state = _port_state[i] ? "on" : "off";
             portEXIT_CRITICAL(&_state_mux);
-            esp_mqtt_client_publish(_client, _pub_topics[i], state, 0, 1, 1);
+            esp_mqtt_client_publish(_client, _pub_topics[i], state, 0, 0, 1);
         }
         {
             const char *state;
             portENTER_CRITICAL(&_state_mux);
             state = _ble_state ? "on" : "off";
             portEXIT_CRITICAL(&_state_mux);
-            esp_mqtt_client_publish(_client, _pub_topics[4], state, 0, 1, 1);
+            esp_mqtt_client_publish(_client, _pub_topics[4], state, 0, 0, 1);
         }
         break;
 
@@ -307,6 +308,13 @@ void bemfa_init(DeviceConfig *cfg, bemfa_cmd_cb on_cmd, bemfa_ble_cb on_ble) {
         .broker.address.uri = uri,
         .session.keepalive = 600,
         .credentials.client_id = cfg->bemfa_uid,
+        /* Only tiny state strings travel over this client.  Explicit
+           small buffers keep two MQTT clients affordable on the C3. */
+        .buffer.size = 512,
+        .buffer.out_size = 256,
+        .task.stack_size = 4096,
+        .network.reconnect_timeout_ms = 5000,
+        .network.timeout_ms = 10000,
     };
     _client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(_client, ESP_EVENT_ANY_ID, _mqtt_event_handler, NULL);
@@ -328,22 +336,29 @@ void bemfa_disconnect(void) {
 // ---- Publish state ----
 
 void bemfa_publish_port(int idx, float voltage, float current, float power, bool active) {
-    if (!_enabled || !_client || !_connected || idx < 0 || idx >= 4) return;
+    (void)voltage; (void)current; (void)power;
+    if (!_enabled || idx < 0 || idx >= 4) return;
+    /* Cache the state even while offline: the connect handler replays
+       _port_state so a late Bemfa connection still reports the truth. */
     portENTER_CRITICAL(&_state_mux);
     _port_state[idx] = active;
     portEXIT_CRITICAL(&_state_mux);
+    if (!_client || !_connected) return;
     const char *state = active ? "on" : "off";
-    esp_mqtt_client_publish(_client, _pub_topics[idx], state, 0, 1, 1);
+    esp_mqtt_client_publish(_client, _pub_topics[idx], state, 0, 0, 1);
 }
 
 void bemfa_publish_status(bool connected) {
-    if (!_enabled || !_client || !_connected) return;
+    if (!_enabled) return;
     portENTER_CRITICAL(&_state_mux);
     _ble_state = connected;
     portEXIT_CRITICAL(&_state_mux);
+    if (!_client || !_connected) return;
     const char *state = connected ? "on" : "off";
-    esp_mqtt_client_publish(_client, _pub_topics[4], state, 0, 1, 1);
+    esp_mqtt_client_publish(_client, _pub_topics[4], state, 0, 0, 1);
 }
+
+bool bemfa_enabled(void) { return _enabled; }
 
 // ---- Ping/pong loop (called from app_task) ----
 
@@ -362,6 +377,13 @@ void bemfa_loop(void) {
         return;
     }
 
+    /* Non-blocking replacement for the old vTaskDelay(1000) restart. */
+    if (_restart_at && now >= _restart_at) {
+        _restart_at = 0;
+        ESP_LOGI(TAG, "Restarting Bemfa MQTT");
+        esp_mqtt_client_start(_client);
+    }
+
     // Send ping every 30s
     if (now - _last_ping_time >= INTERVAL_PING_SEND) {
         _last_ping_time = now;
@@ -378,8 +400,7 @@ void bemfa_loop(void) {
             ESP_LOGW(TAG, "Max ping lost, restarting Bemfa MQTT...");
             _ping_lost = 0;
             esp_mqtt_client_stop(_client);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            if (!_circuit_open) esp_mqtt_client_start(_client);
+            _restart_at = now + 1;   /* retry from the next loops */
         }
     }
 }

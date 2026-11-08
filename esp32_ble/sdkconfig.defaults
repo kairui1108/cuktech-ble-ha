@@ -1,30 +1,57 @@
-# BT — NimBLE host on CPU 1 (CPU 0 is WiFi/TCP-IP)
+# Settings shared by every target (ESP32, ESP32-S3, ESP32-C3).
+# Target-specific overrides live in sdkconfig.defaults.<target>.
+
+# BT — NimBLE host.  Pinning and the second idle-task watchdog live in the
+# dual-core target files (esp32 / esp32s3); the C3 has one core.
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_PINNED_TO_CORE_1=y
 CONFIG_BT_BLUEDROID_ENABLED=n
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
-CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
-CONFIG_BT_NIMBLE_4_1_COMPAT=y
-CONFIG_BT_NIMBLE_LOG_LEVEL=4
-# NimBLE memory tuning — single-device, relaxed enough for service discovery
-CONFIG_BT_NIMBLE_ACL_BUF_COUNT=12
-CONFIG_BT_NIMBLE_ACL_BUF_SIZE=255
-CONFIG_BT_NIMBLE_HCI_EVT_BUF_SIZE=256
-CONFIG_BT_NIMBLE_HCI_EVT_HI_BUF_COUNT=8
-CONFIG_BT_NIMBLE_HCI_EVT_LO_BUF_COUNT=8
-CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=16
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+CONFIG_BT_NIMBLE_LOG_LEVEL=2
+# NimBLE memory tuning.  The pools only need to cover one link: auth
+# (two 100-200 B exchanges) and one status notification at a time.  They
+# were sized for a burst that never happens, and every KB held here is a
+# KB the WiFi/TCP path cannot use while the browser streams a page.
+# (These are the IDF 5.3 transport names; the old ACL_BUF_*/HCI_EVT_* names
+# are in components/bt/sdkconfig.rename and only work through migration.)
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_SIZE=255
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_SIZE=256
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=6
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=6
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=12
 CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
 CONFIG_BT_NIMBLE_MAX_BONDS=1
 CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=4096
 # ATT_PREFERRED_MTU left at default (256)
 
+# WiFi — WPA2/WPA3 home networks only; enterprise (802.1X) unused
+# CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT is not set
+# WiFi buffers — six browser connections + dashboard polling.  The driver
+# grows these pools from the same heap as the HTTP send buffers, so they
+# are capped low enough that a page load cannot evict the TCP stack.  The
+# ESP32/S3 defaults (32 dynamic RX + 32 dynamic TX) drained a cold page
+# load from 73 KB free heap to 2.5 KB, after which sends timed out and the
+# HTTP server stalled for ~30 s.  Pinning the same amount as static
+# buffers was measured worse on the C3 (17 KB fewer idle bytes, largest
+# block 1.5 KB), so they stay dynamic and are only paid for while traffic
+# is flowing.  DYNAMIC_RX must be >= WIFI_RX_BA_WIN (6).
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=6
+
 # MQTT
 CONFIG_MQTT_PROTOCOL_311=y
+# Plain mqtt:// only — drop the TLS/WebSocket transports for flash + RAM
+# (Bemfa still speaks TLS through its own esp-mqtt client.)
+# CONFIG_MQTT_TRANSPORT_SSL is not set
+# CONFIG_MQTT_TRANSPORT_WEBSOCKET is not set
+# CONFIG_MQTT_TRANSPORT_WEBSOCKET_SECURE is not set
 
 # Partition Table
 CONFIG_PARTITION_TABLE_CUSTOM=y
@@ -38,36 +65,47 @@ CONFIG_FREERTOS_HZ=1000
 
 # HTTP Server (prevent ENFILE fd exhaustion)
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
-CONFIG_HTTPD_MAX_URI_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=256
 
 # LWIP
 CONFIG_LWIP_MAX_SOCKETS=16
-CONFIG_LWIP_TCP_SND_BUF_DEFAULT=4096
-CONFIG_LWIP_TCP_WND_DEFAULT=4096
+# IPv6: link-local always, plus SLAAC for a global address when the
+# AP announces a prefix (shown on the config page status card).
+CONFIG_LWIP_IPV6_AUTOCONFIG=y
+# RST instead of a retransmitting pcb when a dead peer must be dropped
+CONFIG_LWIP_SO_LINGER=y
+# Three MSS (4.4 KB) of send buffer per connection.  The radio round trip
+# is ~100 ms whenever BLE coexists with Wi-Fi, so in-flight bytes / RTT is
+# what caps each stream: measured cold page loads with BLE connected were
+# ~10-13 s at 2 MSS, ~8-10 s at 3 MSS and ~7.5-9 s at 4 MSS.  Four MSS was
+# not kept: under a six-connection storm its heap dipped to 3.9 KB (3 MSS:
+# 5.5 KB, 2 MSS: 8 KB), leaving too little headroom for OTA or an MQTT
+# reconnect.  Two streams run at once (HTTPD_STATIC_WORKERS) and
+# http_server.c sends one MSS per chunk.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=4380
+CONFIG_LWIP_TCP_WND_DEFAULT=5840
 CONFIG_LWIP_TCP_MSS=1460
-# LWIP internal memory — prevent TCP depletion under fragmentation
-CONFIG_LWIP_MEM_SIZE=8192
-CONFIG_LWIP_PBUF_POOL_SIZE=16
 CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072
-# Disable OOSEQ to reduce per-connection memory when fragmented
+# Disable out-of-order queueing: less per-connection memory when fragmented
 CONFIG_LWIP_TCP_QUEUE_OOSEQ=n
-# TCP keep-alive for MQTT long-lived connections
-CONFIG_LWIP_TCP_KEEPALIVE=y
+# Disable SO_REUSE to prevent port exhaustion on frequent reconnects
 CONFIG_LWIP_SO_REUSE=n
-CONFIG_LWIP_TCP_NODELAY=y
 
 # mbedTLS (for crypto)
-CONFIG_MBEDTLS_MD_C=y
+# Bemfa's TLS session only carries small MQTT packets, but every mbedTLS
+# session reserves an input record buffer of this size.  The 16 KB default
+# cost 12 KB more than the MQTT traffic ever needs.
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=4096
 CONFIG_MBEDTLS_CCM_C=y
-CONFIG_MBEDTLS_SHA256_C=y
 CONFIG_MBEDTLS_HKDF_C=y
 
 # --- Stability ---
+# OTA rollback: a freshly flashed image must prove itself before it is
+# marked valid (app_task does this after 60s of healthy uptime).
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY=y
-CONFIG_HEAP_TLSF_USE_MALLOC=y
 # Task WDT: init + panic on timeout (detect/restart on task deadlock)
 CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
-CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
