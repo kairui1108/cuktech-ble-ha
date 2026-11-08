@@ -341,8 +341,15 @@ void bemfa_publish_port(int idx, float voltage, float current, float power, bool
     /* Cache the state even while offline: the connect handler replays
        _port_state so a late Bemfa connection still reports the truth. */
     portENTER_CRITICAL(&_state_mux);
+    bool changed = (_port_state[idx] != active);
     _port_state[idx] = active;
     portEXIT_CRITICAL(&_state_mux);
+    /* Only changes go out. The firmware republishes a port reading every few
+       seconds (heartbeat) so HA keeps metering; forwarding those unchanged
+       samples would burn the Bemfa message quota on identical "on"s. A
+       reconnect is still covered: the connect handler replays all four
+       cached states, and _port_state only ever holds confirmed values. */
+    if (!changed) return;
     if (!_client || !_connected) return;
     const char *state = active ? "on" : "off";
     esp_mqtt_client_publish(_client, _pub_topics[idx], state, 0, 0, 1);

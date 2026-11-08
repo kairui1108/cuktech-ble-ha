@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # Firmware version of this ESP32 image.  Keep in sync with FW_VERSION in
 # main/config.h (the /api and MQTT payloads report that macro).
-set(PROJECT_VER "1.1.5")
+set(PROJECT_VER "1.1.6")
 project(cuktech_ble)
 
 # Merged images: use IDF's built-in `idf.py merge-bin`.  It merges exactly the

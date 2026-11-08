@@ -157,9 +157,11 @@ static bool _publish_port_now(int idx, const PortState *p) {
     const char *proto = p->active ? get_proto_name(p->protocol) : "idle";
     char payload[256];
     int n = snprintf(payload, sizeof(payload),
-                     "{\"voltage\":%.1f,\"current\":%.1f,\"power\":%.1f,\"active\":%s,\"protocol\":\"%s\"}",
+                     "{\"voltage\":%.1f,\"current\":%.1f,\"power\":%.1f,\"active\":%s,"
+                     "\"protocol\":\"%s\",\"ts\":%llu}",
                      p->voltage, p->current, p->power,
-                     p->active ? "true" : "false", proto);
+                     p->active ? "true" : "false", proto,
+                     (unsigned long long)(esp_timer_get_time() / 1000));
     if (n <= 0 || n >= (int)sizeof(payload)) return false;
 
     const char *topics[] = {s_topic_port_c1, s_topic_port_c2, s_topic_port_c3, s_topic_port_a};

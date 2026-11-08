@@ -60,6 +60,85 @@ static volatile uint64_t last_set_time = 0;
 static volatile uint8_t  last_set_piid = 0;
 
 /* ============================================================
+ * Port polling / heartbeat (app_task only)
+ *
+ * Why polling at all: the charger only sends a BLE notification when a
+ * reading *changes*. While it holds a constant output (CV/CC at fixed
+ * power) nothing at all arrives, so MQTT port topics go silent. HA's
+ * energy engine counts frames (300 frames ≈ 5 min at 1 Hz) and discards a
+ * >30 s gap entirely, so a silent phase metered as 0 Wh and the session
+ * state machine never advanced. The Python server has the same protection
+ * (1 s timer + active GET); the firmware had no port GET at all, which is
+ * why a *steady* C3/USB-A charge never showed up on the ESP32 backend.
+ *
+ * What the device actually pushes (verified against the real HCI captures
+ * in ble_server/tests/fixtures/notify_frames.json): per-port
+ * `properties_changed` frames, including piid 3 and 4 — a plug-in or a
+ * protocol transition produces a full 1→2→3→4 snapshot ~90 ms apart, and a
+ * port's own changes push that port. So discovery is normally push-driven;
+ * what pushes cannot cover is (a) the steady phase and (b) a *late*
+ * connection: if we connect while a port is already charging steadily,
+ * nothing changes, so nothing is ever pushed and the port sits at the idle
+ * default (this is exactly the case the Python server's 3 s poll fixed).
+ *
+ * Cadence therefore follows whether power is actually flowing
+ * (`active && current > 0.1`, the same threshold HA uses to open a
+ * session), but a port only gets a GET when it has gone quiet — a push
+ * (or a previous GET) newer than PORT_POLL_FRESH_MS makes the read
+ * redundant:
+ *
+ *   charging   one GET per second, round-robin over the ports that have not
+ *              been heard from in 3 s — in steady CV/CC silence that is every
+ *              port every ~4 s, well inside the 30 s gap window; while the
+ *              charger keeps pushing, nothing is sent at all. The 4 s
+ *              heartbeat republishes unchanged readings.
+ *   idle       same rule, one probe every 5 s (0.2 cmd/s), so a port that
+ *              stops being heard from is re-read within 20 s. This is the
+ *              *safety net* for the missed-push and dropped-resync cases.
+ *   on connect the cadence is raised to 1 Hz for 4 s, so every port that has
+ *              no fresh sample (a charger that was already delivering power
+ *              when we connected pushes nothing) is read within seconds.
+ *
+ * A stale "drawing" reading after a missed unplug push self-heals: it keeps
+ * the fast cadence, which corrects the state within ~4 s.
+ *
+ * NOTE: the 0.1 A threshold below is an implicit contract with
+ * ha_integration/custom_components/cuktech_charger/energy_engine.py
+ * (START_THRESHOLD / the `current <= 0.1` end rule). If HA's threshold
+ * changes, this one must follow — otherwise one side believes a session is
+ * running while the other has already dropped to the idle tier and stopped
+ * sampling that port.
+ * ============================================================ */
+#define PORT_POLL_ACTIVE_MS   1000   /* a port is delivering power */
+#define PORT_POLL_IDLE_MS     5000   /* idle: safety probe over all 4 ports */
+#define PORT_HEARTBEAT_MS     4000   /* active port re-publish cadence */
+/* A port sampled this recently needs no GET: the charger is already pushing.
+   Measured on hardware: while the load fluctuates it pushes ~0.75 frames/s,
+   and polling on top of that filled the serialized command channel (pend=5-7
+   of 12, GETs timing out) for data we already had. Push frames and GET
+   results both refresh this stamp. */
+#define PORT_POLL_FRESH_MS    3000   /* a drawing port goes this long before a GET */
+#define PORT_POLL_IDLE_FRESH_MS 15000  /* idle ports only need the safety probe */
+static uint64_t last_port_poll = 0;
+static bool     port_poll_fast = false;          /* true = 有口在输出，1Hz 档 */
+static uint8_t  port_poll_piid = 1;              /* next port to consider, 1..DEVICE_PORT_COUNT */
+static uint8_t  port_resync_left = 0;            /* 连接后 4 s 内按 1 Hz 找一遍缺口 */
+static uint64_t last_port_pub_ms[DEVICE_PORT_COUNT] = {0};
+/* 每个口最近一次拿到样本（推送或 GET 成功）的时间，用于跳过重复轮询。 */
+static uint64_t last_port_rx_ms[DEVICE_PORT_COUNT] = {0};
+/* 连续零读数确认（见 RES_GET 分支）：避免单帧 0V/0A 被当成"端口空了"。 */
+static uint8_t  zero_confirm[DEVICE_PORT_COUNT] = {0};
+
+/* 真正在对外输出功率的端口。active 只代表"端口开着/有电压"——充满后的
+   5V/0A 也是 active，但那种状态不需要 1 Hz 采样（功率为 0，变化会推送）。 */
+static bool _any_port_drawing(const PortState *ports) {
+    for (int i = 0; i < DEVICE_PORT_COUNT; i++) {
+        if (ports[i].active && ports[i].current > 0.1f) return true;
+    }
+    return false;
+}
+
+/* ============================================================
  * Protocol name mapping
  * ============================================================ */
 static const char *PROTO_NAMES[] = {"idle","5V","5V","QC","AFC","FCP","SCP","PD","PPS","PPS","UFCS"};
@@ -450,10 +529,17 @@ static void process_result(const BleResult *res) {
         };
         device_state_set_port(idx, &p);
         uplink_publish_port(idx);
+        last_port_pub_ms[idx] = esp_timer_get_time() / 1000;
+        last_port_rx_ms[idx] = last_port_pub_ms[idx];
         break;
     }
     case RES_GET: {
         if (res->piid >= 1 && res->piid <= 4) {
+            /* A failed GET (timeout / aborted on disconnect) carries value=0.
+               Treating that as a reading would publish "0 V 0 A / inactive"
+               and make the HA integration end the session and consume a
+               `once` limit on the very next poll. */
+            if (!res->success) break;
             int idx = res->piid - 1;
             float v = ((res->value >> 24) & 0xFF) / 10.0f;
             float c = ((res->value >> 16) & 0xFF) / 10.0f;
@@ -507,6 +593,19 @@ static void process_result(const BleResult *res) {
                 (now - last_set_time < 500)) {
                 break;  /* ignore transient zero during protocol transitions */
             }
+            /* 单帧全零不足以认定"端口空了"：协议切换/刚上电时设备会瞬时报 0，
+               而轮询是 4s 一次，撞上这个窗口会让 HA 立刻结束会话（并消费
+               once 限额）。要求连续两次采样都为零才接受——与 Python 服务端
+               "单帧 V/I=0 绝不结束会话" 的去抖同义，只是这里用采样数代替秒数。 */
+            if (nearly_zero && was_valid && was_active) {
+                if (zero_confirm[idx] < 1) {
+                    zero_confirm[idx]++;
+                    ESP_LOGD(TAG, "Port%d reads zero, confirming before publish", idx + 1);
+                    break;
+                }
+            } else {
+                zero_confirm[idx] = 0;
+            }
 
             PortState p = {
                 .voltage = v,
@@ -518,11 +617,25 @@ static void process_result(const BleResult *res) {
                 .valid = true,
             };
             device_state_set_port(idx, &p);
+            last_port_rx_ms[idx] = now;
 
             bool publish = (was_active != p.active) || !was_valid;
+            /* 读数变化也要发：GET 轮询是静默期唯一的样本来源，只在
+               active 变化时发布会把"恒功率一直 60W"整段吞掉。 */
+            if (fabsf(p.voltage - old.voltage) > 0.05f ||
+                fabsf(p.current - old.current) > 0.05f ||
+                p.status != old.status)
+                publish = true;
             if (now - last_set_time < 500 && (last_set_piid == 16 || last_set_piid == 21))
                 publish = true;
-            if (publish) uplink_publish_port(idx);
+            /* 心跳：设备在恒压恒流固定功率下完全不推 notify，HA 的积分器
+               对 >30s 的间隔整段丢弃，所以活跃口必须周期性给出样本。 */
+            if (p.active && (now - last_port_pub_ms[idx]) >= PORT_HEARTBEAT_MS)
+                publish = true;
+            if (publish) {
+                uplink_publish_port(idx);
+                last_port_pub_ms[idx] = now;
+            }
         } else {
             if (res->success) {
                 uint64_t now = esp_timer_get_time() / 1000;
@@ -559,6 +672,11 @@ static void process_result(const BleResult *res) {
                 BleCommand c = {CMD_GET, INIT_PIIDS[i], 0, 0};
                 xQueueSend(cmd_queue, &c, 0);
             }
+            /* 连接（含重连）后把端口轮询提到 1 Hz 持续 4 s：如果连上时已经有
+               设备在恒功率充电，设备不会因为"没变化"而推送，端口会一直停在
+               默认值——这正是 Python 服务端加 3s 轮询要解决的场景。这 4 个
+               时隙由 app_task 按新鲜度挑选没有样本的口，已有推送的口直接跳过。 */
+            port_resync_left = DEVICE_PORT_COUNT;
         }
         break;
     }
@@ -658,6 +776,68 @@ static void app_task(void *pvParameters) {
             for (int i = 0; i < (int)sizeof(FAST_PIIDS); i++) {
                 BleCommand c = {CMD_GET, FAST_PIIDS[i], 0, 0};
                 xQueueSend(cmd_queue, &c, 0);
+            }
+        }
+        /* Port poll: cadence follows whether power is actually flowing, and
+           a port is only read when it has gone quiet — see the block at the
+           top of the file.
+             resync:   after (re)connect, 1 Hz for 4 s to fill whatever port
+                       produced no fresh sample;
+             charging: one GET/s, round-robin over the ports not heard from
+                       in 3 s (each port every ~4 s during steady silence);
+             idle:     same rule, one probe every 5 s.
+           While the charger keeps pushing, every port stays fresh and no
+           GET is sent at all. The tier is re-evaluated once per poll (not
+           per loop iteration), so a state change costs at most one interval
+           of extra/missing polling. */
+        {
+            /* 1 Hz both while charging and during the post-connect resync;
+               only the fully idle tier drops to one probe per 5 s. */
+            uint32_t interval = (port_poll_fast || port_resync_left > 0)
+                                    ? PORT_POLL_ACTIVE_MS : PORT_POLL_IDLE_MS;
+            if (ble_ready && (now - last_port_poll >= interval)) {
+                last_port_poll = now;
+
+                PortState ps[DEVICE_PORT_COUNT];
+                device_state_get_ports(ps);
+                port_poll_fast = _any_port_drawing(ps);
+
+                /* First port at or after the cursor whose newest sample (push
+                   or GET) is older than its threshold: a port that is actually
+                   delivering power must be re-read within seconds while the
+                   charger sits in silent CV/CC, whereas a port that is not
+                   drawing only needs the occasional safety probe. */
+                uint8_t piid = 0;
+                for (int k = 0; k < DEVICE_PORT_COUNT; k++) {
+                    uint8_t cand = (uint8_t)((port_poll_piid - 1 + k) %
+                                             DEVICE_PORT_COUNT + 1);
+                    const PortState *pp = &ps[cand - 1];
+                    uint32_t need_ms = (pp->active && pp->current > 0.1f)
+                                           ? PORT_POLL_FRESH_MS
+                                           : PORT_POLL_IDLE_FRESH_MS;
+                    if (now - last_port_rx_ms[cand - 1] >= need_ms) {
+                        piid = cand;
+                        break;
+                    }
+                }
+
+                /* The resync slot is spent either way: if the charger pushed
+                   everything we needed, there is nothing left to resync. */
+                if (port_resync_left > 0) port_resync_left--;
+
+                if (piid == 0) {
+                    ESP_LOGD(TAG, "port poll: every port fresh, skipping");
+                } else {
+                    BleCommand c = {CMD_GET, piid, 0, 0};
+                    if (xQueueSend(cmd_queue, &c, 0) != pdTRUE) {
+                        /* Queue full: leave the cursor where it is, so the
+                           next interval retries the same port. */
+                        ESP_LOGW(TAG, "port poll piid=%d dropped (queue full)", piid);
+                    } else {
+                        port_poll_piid = (piid >= DEVICE_PORT_COUNT)
+                                             ? 1 : (uint8_t)(piid + 1);
+                    }
+                }
             }
         }
 

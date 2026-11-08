@@ -785,7 +785,14 @@ static bool _send_get_async(uint8_t piid, uint32_t poll_seq) {
     buf[7] = piid; buf[8] = 0; buf[9] = 0x01; buf[10] = 0x10; buf[11] = 0;
     _seq = (_seq + 1) & 0xFF;
 
-    return _alloc_pending(req_seq, piid, PENDING_GET, 0, poll_seq, 2500, false, buf, 12);
+    /* 2 s, not 2.5 s: the command channel is strictly serialized, so a hung
+       GET holds it and a SET queued behind it waits the whole timeout. On
+       hardware a 1.5 s budget still produced the occasional timeout (two in
+       75 s while the charger was pushing), so 2 s keeps the margin without
+       going back to 2.5 s. Dropping a GET frame costs nothing —
+       process_result() ignores !success results and the poll retries the
+       port on the next interval. SETs keep their 4 s budget. */
+    return _alloc_pending(req_seq, piid, PENDING_GET, 0, poll_seq, 2000, false, buf, 12);
 }
 
 static bool _send_set_async(uint8_t piid, uint32_t value, uint32_t poll_seq, bool no_result) {
